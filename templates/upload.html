@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Upload File - Lease File Audit{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0">Upload Lease Data for Audit</h4>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('main.upload') }}" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="file" class="form-label">Select Excel File (.xlsx)</label>
+                        <input type="file" class="form-control" id="file" name="file" accept=".xlsx" required>
+                        <div class="form-text">
+                            File must contain two sheets:
+                            <ul class="mb-0 mt-2">
+                                <li>AR Transactions (required columns: PROPERTY_ID, LEASE_INTERVAL_ID, AR_CODE_ID, TRANSACTION_AMOUNT, POST_MONTH_DATE, IS_POSTED, IS_DELETED, IS_REVERSAL, ID)</li>
+                                <li>Scheduled Charges (required columns: SCHEDULED_CHARGES_ID, PROPERTY_ID, LEASE_INTERVAL_ID, AR_CODE_ID, CHARGE_AMOUNT, DATE_CHARGE_START, DATE_CHARGE_END)</li>
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    <div class="card mb-3 bg-light">
+                        <div class="card-body">
+                            <h6 class="card-title">Audit Period (Optional)</h6>
+                            <p class="text-muted small">Filter audit to specific year/month. Leave blank to audit all periods in file.</p>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <label for="audit_year" class="form-label">Year</label>
+                                    <select class="form-select" id="audit_year" name="audit_year">
+                                        <option value="">All Years</option>
+                                        <option value="2024">2024</option>
+                                        <option value="2025">2025</option>
+                                        <option value="2026" selected>2026</option>
+                                        <option value="2027">2027</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="audit_month" class="form-label">Month</label>
+                                    <select class="form-select" id="audit_month" name="audit_month">
+                                        <option value="">All Months</option>
+                                        <option value="1">January</option>
+                                        <option value="2">February</option>
+                                        <option value="3">March</option>
+                                        <option value="4">April</option>
+                                        <option value="5">May</option>
+                                        <option value="6">June</option>
+                                        <option value="7">July</option>
+                                        <option value="8">August</option>
+                                        <option value="9">September</option>
+                                        <option value="10">October</option>
+                                        <option value="11">November</option>
+                                        <option value="12">December</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary">Upload and Run Audit</button>
+                </form>
+            </div>
+        </div>
+
+        {% if recent_runs %}
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0">Recent Audit Runs</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Run ID</th>
+                                <th>Timestamp</th>
+                                <th>File Name</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for run in recent_runs %}
+                            <tr>
+                                <td><code>{{ run.run_id }}</code></td>
+                                <td>{{ run.timestamp }}</td>
+                                <td>{{ run.file_name }}</td>
+                                <td>
+                                    <a href="{{ url_for('main.portfolio', run_id=run.run_id) }}" class="btn btn-sm btn-primary">View Results</a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
