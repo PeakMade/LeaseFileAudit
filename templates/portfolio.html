@@ -79,7 +79,7 @@
                             <tbody>
                                 {% for property in properties %}
                                 <tr>
-                                    <td>{{ property.property_id }}</td>
+                                    <td>{{ property.property_id|int }}</td>
                                     <td>{{ property.total_buckets }}</td>
                                     <td>
                                         <span class="badge bg-success">{{ property.matched_buckets }}</span>

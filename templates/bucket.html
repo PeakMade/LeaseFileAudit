@@ -22,13 +22,13 @@
     <div class="card-body">
         <div class="row">
             <div class="col-md-3">
-                <strong>Property ID:</strong> {{ bucket_info.PROPERTY_ID }}
+                <strong>Property ID:</strong> {{ bucket_info.PROPERTY_ID|int }}
             </div>
             <div class="col-md-3">
-                <strong>Lease ID:</strong> {{ bucket_info.LEASE_INTERVAL_ID }}
+                <strong>Lease ID:</strong> {{ bucket_info.LEASE_INTERVAL_ID|int }}
             </div>
             <div class="col-md-3">
-                <strong>AR Code:</strong> {{ bucket_info.AR_CODE_ID }}
+                <strong>AR Code:</strong> {{ bucket_info.AR_CODE_ID|int }}
             </div>
             <div class="col-md-3">
                 <strong>Audit Month:</strong> {{ bucket_info.AUDIT_MONTH.strftime('%Y-%m-%d') if bucket_info.AUDIT_MONTH else 'N/A' }}
