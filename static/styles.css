@@ -49,3 +49,73 @@ h1 {
 p {
     margin-bottom: 1rem;
 }
+
+/* Metric cards - smaller and more compact */
+.metric-card .card-body {
+    padding: 1rem 0.75rem;
+}
+
+.metric-card .card-subtitle {
+    font-size: 0.75rem;
+    margin-bottom: 0.25rem !important;
+}
+
+.metric-card .card-title {
+    font-size: 1.5rem;
+    margin-bottom: 0;
+    font-weight: bold;
+}
+
+.metric-card small {
+    font-size: 0.7rem;
+}
+
+/* Tooltip styles */
+.info-tooltip {
+    position: relative;
+    display: inline-block;
+    cursor: help;
+    margin-left: 0.25rem;
+}
+
+.info-tooltip i {
+    font-size: 0.85rem;
+    opacity: 0.7;
+    transition: opacity 0.2s;
+}
+
+.info-tooltip:hover i {
+    opacity: 1;
+}
+
+.info-tooltip .tooltip-text {
+    display: none;
+    position: absolute;
+    bottom: 150%;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: #333;
+    color: #fff;
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    white-space: normal;
+    width: 250px;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    z-index: 1000;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.info-tooltip .tooltip-text::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #333;
+}
+
+.info-tooltip:hover .tooltip-text {
+    display: block;
+}

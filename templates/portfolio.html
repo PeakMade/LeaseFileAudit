@@ -29,36 +29,28 @@
 
     <!-- KPIs -->
     <div class="row mb-4">
-        <div class="col-md-3">
-            <div class="card bg-primary text-white">
+        <div class="col-md-4">
+            <div class="card bg-success text-white metric-card">
                 <div class="card-body">
-                    <h6 class="card-title">Total Buckets</h6>
-                    <h2 class="mb-0">{{ kpis.total_buckets }}</h2>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-success text-white">
-                <div class="card-body">
-                    <h6 class="card-title">Matched</h6>
-                    <h2 class="mb-0">{{ kpis.matched_buckets }}</h2>
+                    <h6 class="card-subtitle mb-2">Matched</h6>
+                    <h3 class="card-title">{{ kpis.matched_buckets }}</h3>
                     <small>{{ "%.1f"|format(kpis.match_rate) }}%</small>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card bg-warning text-white">
+        <div class="col-md-4">
+            <div class="card bg-warning text-white metric-card">
                 <div class="card-body">
-                    <h6 class="card-title">Exceptions</h6>
-                    <h2 class="mb-0">{{ kpis.exception_buckets }}</h2>
+                    <h6 class="card-subtitle mb-2">Exceptions</h6>
+                    <h3 class="card-title">{{ kpis.exception_buckets }}</h3>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card bg-danger text-white">
+        <div class="col-md-4">
+            <div class="card bg-danger text-white metric-card">
                 <div class="card-body">
-                    <h6 class="card-title">Total Variance</h6>
-                    <h2 class="mb-0">${{ "%.2f"|format(kpis.total_variance) }}</h2>
+                    <h6 class="card-subtitle mb-2">Total Variance</h6>
+                    <h3 class="card-title">${{ "%.2f"|format(kpis.total_variance) }}</h3>
                 </div>
             </div>
         </div>

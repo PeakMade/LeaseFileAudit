@@ -31,7 +31,7 @@
     <!-- Summary Cards -->
     <div class="row mb-4">
         <div class="col-md-3">
-            <div class="card bg-warning text-white">
+            <div class="card bg-warning text-white metric-card">
                 <div class="card-body">
                     <h6 class="card-subtitle mb-2">Total Exceptions</h6>
                     <h3 class="card-title">{{ exception_count }}</h3>
@@ -39,7 +39,7 @@
             </div>
         </div>
         <div class="col-md-3">
-            <div class="card bg-info text-white">
+            <div class="card bg-info text-white metric-card">
                 <div class="card-body">
                     <h6 class="card-subtitle mb-2">Expected Total</h6>
                     <h3 class="card-title">${{ "%.2f"|format(total_expected) }}</h3>
@@ -47,7 +47,7 @@
             </div>
         </div>
         <div class="col-md-3">
-            <div class="card bg-primary text-white">
+            <div class="card bg-primary text-white metric-card">
                 <div class="card-body">
                     <h6 class="card-subtitle mb-2">Actual Total</h6>
                     <h3 class="card-title">${{ "%.2f"|format(total_actual) }}</h3>
@@ -55,7 +55,7 @@
             </div>
         </div>
         <div class="col-md-3">
-            <div class="card bg-danger text-white">
+            <div class="card bg-danger text-white metric-card">
                 <div class="card-body">
                     <h6 class="card-subtitle mb-2">Total Variance</h6>
                     <h3 class="card-title">${{ "%.2f"|format(total_variance) }}</h3>
