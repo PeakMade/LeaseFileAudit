@@ -9,7 +9,7 @@
         <p class="text-muted">Run ID: <code>{{ run_id }}</code></p>
     </div>
     <div class="col-auto">
-        <a href="{{ url_for('main.property_view', run_id=run_id, property_id=property_id) }}" 
+        <a href="{{ url_for('main.property_view', property_id=property_id, run_id=run_id) }}" 
            class="btn btn-secondary">Back to Property</a>
     </div>
 </div>

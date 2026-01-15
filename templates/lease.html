@@ -11,110 +11,106 @@
             <p class="text-muted">
                 Property ID: <code>{{ property_id|int }}</code> | Run ID: <code>{{ run_id }}</code>
                 {% if metadata.audit_period %}
-                | Period: 
+                <br><strong>Audit Period: 
                 {% if metadata.audit_period.month %}
                     {{ ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][metadata.audit_period.month] }}
                 {% endif %}
                 {% if metadata.audit_period.year %}
                     {{ metadata.audit_period.year }}
                 {% endif %}
+                </strong>
                 {% endif %}
             </p>
         </div>
         <div class="col-auto">
-            <a href="{{ url_for('main.property_view', run_id=run_id, property_id=property_id) }}" class="btn btn-secondary">
+            <a href="{{ url_for('main.property_view', property_id=property_id, run_id=run_id) }}" class="btn btn-secondary">
                 <i class="fas fa-arrow-left"></i> Back to Property
             </a>
         </div>
     </div>
 
-    <!-- Summary Cards -->
-    <div class="row mb-4">
-        <div class="col-md-3">
-            <div class="card bg-warning text-white metric-card">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2">Total Exceptions</h6>
-                    <h3 class="card-title">{{ exception_count }}</h3>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-info text-white metric-card">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2">Expected Total</h6>
-                    <h3 class="card-title">${{ "%.2f"|format(total_expected) }}</h3>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-primary text-white metric-card">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2">Actual Total</h6>
-                    <h3 class="card-title">${{ "%.2f"|format(total_actual) }}</h3>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-danger text-white metric-card">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2">Total Variance</h6>
-                    <h3 class="card-title">${{ "%.2f"|format(total_variance) }}</h3>
+    <!-- Summary Banner -->
+    <div class="row mb-3">
+        <div class="col-12">
+            <div class="alert alert-light border" role="alert">
+                <div class="row">
+                    <div class="col-md-6">
+                        <strong>Total Undercharge:</strong> <span class="text-danger">${{ "%.2f"|format(total_variance|abs) }}</span>
+                    </div>
+                    <div class="col-md-6 text-end">
+                        <strong>Expected Transaction:</strong> ${{ "%.2f"|format(total_expected) }}
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Detailed Exceptions -->
+    <!-- Discrepancy Details Table -->
     <div class="row">
         <div class="col-12">
             <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">
-                        <i class="fas fa-list-ul"></i> Detailed Exception Analysis
-                    </h5>
+                <div class="card-header bg-light">
+                    <h5 class="mb-0">Discrepancy Details</h5>
                 </div>
                 <div class="card-body p-0">
                     {% if exceptions %}
                     <div class="table-responsive">
-                        <table class="table table-hover table-striped mb-0">
+                        <table class="table table-sm table-hover mb-0">
                             <thead class="table-light">
                                 <tr>
-                                    <th>Status</th>
                                     <th>AR Code</th>
-                                    <th>AR Code Name</th>
-                                    <th>Period</th>
-                                    <th class="text-end">Expected</th>
-                                    <th class="text-end">Actual</th>
-                                    <th class="text-end">Variance</th>
-                                    <th class="text-center">Issue</th>
+                                    <th>Scheduled Start</th>
+                                    <th>Scheduled End</th>
+                                    <th>Posted Date(s)</th>
+                                    <th class="text-end">Lease Amount</th>
+                                    <th class="text-end">Actual Ledger</th>
+                                    <th class="text-end">Difference</th>
+                                    <th class="text-center">Details</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for exc in exceptions %}
                                 <tr>
-                                    <td><span class="badge bg-{{ exc.status_color }}">{{ exc.status_label }}</span></td>
-                                    <td><code>{{ exc.ar_code_id|int }}</code></td>
-                                    <td>{{ exc.ar_code_name if exc.ar_code_name else 'N/A' }}</td>
-                                    <td class="text-muted">{{ exc.audit_month.strftime('%b %Y') if exc.audit_month else 'N/A' }}</td>
-                                    <td class="text-end text-info">${{ "%.2f"|format(exc.expected_total) }}</td>
-                                    <td class="text-end text-primary">${{ "%.2f"|format(exc.actual_total) }}</td>
-                                    <td class="text-end text-{{ 'danger' if exc.variance < 0 else 'success' }}">
-                                        <strong>${{ "%.2f"|format(exc.variance) }}</strong>
+                                    <td>
+                                        <strong>{{ exc.ar_code_id|int }}{% if exc.ar_code_name %} - {{ exc.ar_code_name }}{% endif %}</strong><br>
+                                        <small><span class="badge bg-{{ exc.status_color }}">{{ exc.status_label }}</span></small>
+                                    </td>
+                                    <td>{{ exc.charge_start.strftime('%m/%d/%Y') if exc.charge_start else '-' }}</td>
+                                    <td>{{ exc.charge_end.strftime('%m/%d/%Y') if exc.charge_end else '-' }}</td>
+                                    <td>
+                                        {% if exc.post_dates %}
+                                            {% for post_date in exc.post_dates %}
+                                                {{ post_date.strftime('%m/%d/%Y') if post_date else '-' }}{% if not loop.last %}<br>{% endif %}
+                                            {% endfor %}
+                                        {% else %}
+                                            -
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-end">${{ "%.2f"|format(exc.expected_total) }}</td>
+                                    <td class="text-end">${{ "%.2f"|format(exc.actual_total) }}</td>
+                                    <td class="text-end">
+                                        <strong class="text-{{ 'danger' if exc.variance < 0 else 'success' }}">
+                                            ${{ "%.2f"|format(exc.variance) }}
+                                        </strong>
                                     </td>
                                     <td class="text-center">
-                                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#issue-{{ loop.index }}" aria-expanded="false" title="View Details">
+                                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#detail-{{ loop.index }}" aria-expanded="false" title="View Details">
                                             <i class="fas fa-info-circle"></i>
                                         </button>
                                     </td>
                                 </tr>
-                                <tr class="collapse" id="issue-{{ loop.index }}">
+                                <tr class="collapse" id="detail-{{ loop.index }}">
                                     <td colspan="8" class="bg-light">
                                         <div class="p-3">
-                                            <div class="mb-2">
-                                                <strong><i class="fas fa-exclamation-circle text-{{ exc.status_color }}"></i> Issue:</strong> {{ exc.description }}
-                                            </div>
-                                            <div>
-                                                <strong><i class="fas fa-lightbulb text-warning"></i> Recommendation:</strong> {{ exc.recommendation }}
+                                            <div class="row">
+                                                <div class="col-md-6 mb-2">
+                                                    <strong><i class="fas fa-exclamation-circle text-{{ exc.status_color }}"></i> Issue:</strong><br>
+                                                    <span>{{ exc.description }}</span>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <strong><i class="fas fa-lightbulb text-warning"></i> Recommendation:</strong><br>
+                                                    <span>{{ exc.recommendation }}</span>
+                                                </div>
                                             </div>
                                         </div>
                                     </td>

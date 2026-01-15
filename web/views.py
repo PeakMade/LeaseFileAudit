@@ -30,6 +30,24 @@ def get_storage_service() -> StorageService:
     return StorageService(config.storage.base_dir)
 
 
+def get_available_runs() -> list:
+    """Get all available runs sorted by date (most recent first)."""
+    storage = get_storage_service()
+    runs = storage.list_runs(limit=1000)  # Get all runs
+    
+    # Format runs for dropdown
+    formatted_runs = []
+    for run in runs:
+        run_info = {
+            'run_id': run['run_id'],
+            'timestamp': run.get('timestamp', 'Unknown'),
+            'audit_period': run.get('audit_period', {})
+        }
+        formatted_runs.append(run_info)
+    
+    return formatted_runs
+
+
 def filter_by_audit_period(df: pd.DataFrame, year: int = None, month: int = None) -> pd.DataFrame:
     """
     Filter a DataFrame by audit period (year and/or month).
@@ -257,11 +275,23 @@ def portfolio(run_id: str):
         return redirect(url_for('main.index'))
 
 
-@bp.route('/property/<run_id>/<property_id>')
-def property_view(run_id: str, property_id: str):
-    """Property view - exceptions grouped by lease."""
+@bp.route('/property/<property_id>')
+@bp.route('/property/<property_id>/<run_id>')
+def property_view(property_id: str, run_id: str = None):
+    """Property view - exceptions grouped by lease with run selector."""
     try:
         storage = get_storage_service()
+        
+        # Get all available runs
+        all_runs = get_available_runs()
+        
+        # If no run_id specified, use the most recent
+        if not run_id and all_runs:
+            run_id = all_runs[0]['run_id']
+        elif not run_id:
+            flash('No audit runs available', 'warning')
+            return redirect(url_for('main.index'))
+        
         run_data = storage.load_run(run_id)
         
         # Filter bucket results by property - only exceptions
@@ -321,7 +351,9 @@ def property_view(run_id: str, property_id: str):
             metadata=run_data["metadata"],
             kpis=property_kpis,
             lease_summary=lease_summary,
-            exception_count=len(property_buckets)
+            exception_count=len(property_buckets),
+            all_runs=all_runs,
+            current_run_id=run_id
         )
     except Exception as e:
         import traceback
@@ -366,20 +398,72 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             (bucket_results[CanonicalField.STATUS.value] != config.reconciliation.status_matched)
         ].copy()
         
-        # Build detailed exception list
+        # Get expected and actual detail for this lease
+        expected_detail = run_data["expected_detail"]
+        actual_detail = run_data["actual_detail"]
+        
+        lease_expected = expected_detail[
+            expected_detail[CanonicalField.LEASE_INTERVAL_ID.value] == float(lease_interval_id)
+        ]
+        lease_actual = actual_detail[
+            actual_detail[CanonicalField.LEASE_INTERVAL_ID.value] == float(lease_interval_id)
+        ]
+        
+        # Build detailed exception list with actual dates
         exceptions = []
         for _, bucket in lease_buckets.iterrows():
+            ar_code = bucket[CanonicalField.AR_CODE_ID.value]
+            audit_month = bucket[CanonicalField.AUDIT_MONTH.value]
+            
+            # Get expected records for this bucket
+            expected_records = lease_expected[
+                (lease_expected[CanonicalField.AR_CODE_ID.value] == ar_code) &
+                (lease_expected[CanonicalField.AUDIT_MONTH.value] == audit_month)
+            ]
+            
+            # Get actual records for this bucket
+            actual_records = lease_actual[
+                (lease_actual[CanonicalField.AR_CODE_ID.value] == ar_code) &
+                (lease_actual[CanonicalField.AUDIT_MONTH.value] == audit_month)
+            ]
+            
+            # Extract dates
+            charge_start = None
+            charge_end = None
+            post_dates = []
+            ar_code_name = None
+            
+            if not expected_records.empty:
+                if 'PERIOD_START' in expected_records.columns:
+                    charge_start = expected_records['PERIOD_START'].iloc[0]
+                if 'PERIOD_END' in expected_records.columns:
+                    charge_end = expected_records['PERIOD_END'].iloc[0]
+            
+            if not actual_records.empty:
+                if 'POST_DATE' in actual_records.columns:
+                    post_dates = actual_records['POST_DATE'].dropna().tolist()
+                # Try to get AR code name from actual records first
+                if 'AR_CODE_NAME' in actual_records.columns:
+                    ar_code_name = actual_records['AR_CODE_NAME'].iloc[0]
+            
+            # If not in actual, try expected records
+            if not ar_code_name and not expected_records.empty:
+                if 'AR_CODE_NAME' in expected_records.columns:
+                    ar_code_name = expected_records['AR_CODE_NAME'].iloc[0]
+            
             exception = {
-                'ar_code_id': bucket[CanonicalField.AR_CODE_ID.value],
-                'audit_month': bucket[CanonicalField.AUDIT_MONTH.value],
+                'ar_code_id': ar_code,
+                'ar_code_name': ar_code_name,
+                'audit_month': audit_month,
+                'charge_start': charge_start,
+                'charge_end': charge_end,
+                'post_dates': post_dates,
                 'status': bucket[CanonicalField.STATUS.value],
                 'status_label': _get_status_label(bucket[CanonicalField.STATUS.value]),
                 'status_color': _get_status_color(bucket[CanonicalField.STATUS.value]),
                 'expected_total': bucket[CanonicalField.EXPECTED_TOTAL.value],
                 'actual_total': bucket[CanonicalField.ACTUAL_TOTAL.value],
-                'variance': bucket[CanonicalField.VARIANCE.value],
-                'expected_count': bucket[CanonicalField.EXPECTED_COUNT.value],
-                'actual_count': bucket[CanonicalField.ACTUAL_COUNT.value]
+                'variance': bucket[CanonicalField.VARIANCE.value]
             }
             
             # Get detailed reason/description

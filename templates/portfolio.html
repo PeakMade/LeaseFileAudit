@@ -4,26 +4,10 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-    <!-- Run Info -->
-    <div class="row mb-4">
+    <!-- Execution Timestamp -->
+    <div class="row mb-3">
         <div class="col-12">
-            <div class="card">
-                <div class="card-body">
-                    <h5 class="card-title">Run Information</h5>
-                    <p class="mb-1"><strong>Run ID:</strong> {{ run_id }}</p>
-                    <p class="mb-1"><strong>Executed:</strong> {{ metadata.timestamp }}</p>
-                    {% if metadata.audit_period %}
-                    <p class="mb-1"><strong>Audit Period:</strong> 
-                        {% if metadata.audit_period.month %}
-                            {{ ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][metadata.audit_period.month] }}
-                        {% endif %}
-                        {% if metadata.audit_period.year %}
-                            {{ metadata.audit_period.year }}
-                        {% endif %}
-                    </p>
-                    {% endif %}
-                </div>
-            </div>
+            <small class="text-muted">Executed: {{ metadata.timestamp }}</small>
         </div>
     </div>
 
@@ -89,7 +73,7 @@
                                     </td>
                                     <td>${{ "%.2f"|format(property.total_variance) }}</td>
                                     <td>
-                                        <a href="{{ url_for('main.property_view', run_id=run_id, property_id=property.property_id) }}" 
+                                        <a href="{{ url_for('main.property_view', property_id=property.property_id, run_id=run_id) }}" 
                                            class="btn btn-sm btn-primary">
                                             <i class="fas fa-eye"></i> View Details
                                         </a>
