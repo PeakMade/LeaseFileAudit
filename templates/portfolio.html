@@ -9,7 +9,7 @@
         <div class="col">
             <h2>PeakMade Portfolio</h2>
             <p class="text-muted">
-                Run ID: <code>{{ run_id }}</code> | 
+                Most Recent Run: <code>{{ run_id }}</code> | 
                 Executed: {{ metadata.timestamp }}
                 {% if metadata.audit_period %}
                 | <strong>Audit Period: 
@@ -21,6 +21,7 @@
                 {% endif %}
                 </strong>
                 {% endif %}
+                <br><small>Cumulative data from {{ total_runs }} audit run(s)</small>
             </p>
         </div>
     </div>
@@ -32,28 +33,34 @@
                 <div class="card-body">
                     <div class="row text-center">
                         <div class="col-md-2">
-                            <h6 class="text-muted mb-2">Total Undercharge</h6>
-                            <h3 class="text-danger mb-0">${{ "%.2f"|format(kpis.total_undercharge) }}</h3>
+                            <h6 class="text-muted mb-2">Current Undercharge</h6>
+                            <h3 class="text-danger mb-0">${{ "%.2f"|format(kpis.current_undercharge) }}</h3>
+                            <small class="text-muted">Historical: ${{ "%.2f"|format(kpis.historical_undercharge) }}</small>
                         </div>
                         <div class="col-md-2">
-                            <h6 class="text-muted mb-2">Total Overcharge</h6>
-                            <h3 class="text-success mb-0">${{ "%.2f"|format(kpis.total_overcharge) }}</h3>
+                            <h6 class="text-muted mb-2">Current Overcharge</h6>
+                            <h3 class="text-success mb-0">${{ "%.2f"|format(kpis.current_overcharge) }}</h3>
+                            <small class="text-muted">Historical: ${{ "%.2f"|format(kpis.historical_overcharge) }}</small>
+                        </div>
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">Money Recovered</h6>
+                            <h3 class="text-primary mb-0">${{ "%.2f"|format(kpis.money_recovered) }}</h3>
+                            <small class="text-muted">Exceptions Fixed</small>
                         </div>
                         <div class="col-md-2">
                             <h6 class="text-muted mb-2">Total Variance</h6>
-                            <h3 class="mb-0">${{ "%.2f"|format(kpis.total_variance_abs) }}</h3>
+                            <h3 class="mb-0">${{ "%.2f"|format(kpis.current_variance) }}</h3>
+                            <small class="text-muted">Current Net</small>
                         </div>
                         <div class="col-md-2">
                             <h6 class="text-muted mb-2">Open Exceptions</h6>
-                            <h3 class="text-warning mb-0">{{ kpis.exception_buckets }}</h3>
-                        </div>
-                        <div class="col-md-2">
-                            <h6 class="text-muted mb-2">Total Audits</h6>
-                            <h3 class="mb-0">{{ kpis.total_buckets }}</h3>
+                            <h3 class="text-warning mb-0">{{ kpis.open_exceptions }}</h3>
+                            <small class="text-muted">{{ kpis.total_audits }} Audits</small>
                         </div>
                         <div class="col-md-2">
                             <h6 class="text-muted mb-2">Match Rate</h6>
                             <h3 class="text-success mb-0">{{ "%.1f"|format(kpis.match_rate) }}%</h3>
+                            <small class="text-muted">Latest Run</small>
                         </div>
                     </div>
                 </div>

@@ -48,6 +48,118 @@ def get_available_runs() -> list:
     return formatted_runs
 
 
+def calculate_cumulative_metrics() -> dict:
+    """Calculate cumulative portfolio metrics across all audit runs."""
+    storage = get_storage_service()
+    all_runs = storage.list_runs(limit=1000)
+    
+    if not all_runs:
+        return {
+            'current_undercharge': 0,
+            'current_overcharge': 0,
+            'current_variance': 0,
+            'open_exceptions': 0,
+            'total_audits': 0,
+            'match_rate': 0,
+            'money_recovered': 0,
+            'historical_undercharge': 0,
+            'historical_overcharge': 0,
+            'most_recent_run': None,
+            'total_runs': 0
+        }
+    
+    # Get most recent run for current state
+    most_recent = all_runs[0]
+    latest_data = storage.load_run(most_recent['run_id'])
+    latest_buckets = latest_data['bucket_results']
+    
+    # Current state from most recent audit
+    current_exceptions = latest_buckets[
+        latest_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
+    ]
+    
+    current_undercharge = abs(current_exceptions[
+        current_exceptions[CanonicalField.VARIANCE.value] < 0
+    ][CanonicalField.VARIANCE.value].sum())
+    
+    current_overcharge = current_exceptions[
+        current_exceptions[CanonicalField.VARIANCE.value] > 0
+    ][CanonicalField.VARIANCE.value].sum()
+    
+    open_exceptions_count = len(current_exceptions)
+    total_audits = len(latest_buckets)
+    matched = len(latest_buckets) - open_exceptions_count
+    match_rate = (matched / total_audits * 100) if total_audits > 0 else 0
+    
+    # Historical tracking - aggregate all unique exceptions ever found
+    # Use dictionary to deduplicate and keep most recent occurrence
+    exception_history = {}  # key: exc_key, value: {variance, run_id, timestamp}
+    
+    for run in all_runs:
+        try:
+            run_data = storage.load_run(run['run_id'])
+            run_buckets = run_data['bucket_results']
+            run_timestamp = run.get('timestamp', '')
+            run_exceptions = run_buckets[
+                run_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
+            ]
+            
+            for _, exc in run_exceptions.iterrows():
+                # Create unique key for each exception
+                exc_key = (
+                    exc[CanonicalField.PROPERTY_ID.value],
+                    exc[CanonicalField.LEASE_INTERVAL_ID.value],
+                    exc[CanonicalField.AR_CODE_ID.value],
+                    exc[CanonicalField.AUDIT_MONTH.value]
+                )
+                
+                # Keep only the most recent occurrence of each exception
+                if exc_key not in exception_history or run_timestamp > exception_history[exc_key]['timestamp']:
+                    exception_history[exc_key] = {
+                        'key': exc_key,
+                        'variance': exc[CanonicalField.VARIANCE.value],
+                        'run_id': run['run_id'],
+                        'timestamp': run_timestamp
+                    }
+        except Exception as e:
+            print(f"Error loading run {run['run_id']}: {e}")
+            continue
+    
+    # Calculate historical totals (all unique exceptions ever found - deduplicated)
+    all_exception_data = list(exception_history.values())
+    historical_undercharge = sum(abs(exc['variance']) for exc in all_exception_data if exc['variance'] < 0)
+    historical_overcharge = sum(exc['variance'] for exc in all_exception_data if exc['variance'] > 0)
+    
+    # Calculate recovery - exceptions that existed historically but not in current
+    current_exception_keys = set()
+    for _, exc in current_exceptions.iterrows():
+        exc_key = (
+            exc[CanonicalField.PROPERTY_ID.value],
+            exc[CanonicalField.LEASE_INTERVAL_ID.value],
+            exc[CanonicalField.AR_CODE_ID.value],
+            exc[CanonicalField.AUDIT_MONTH.value]
+        )
+        current_exception_keys.add(exc_key)
+    
+    # Recovered = historical exceptions not in current
+    recovered_exceptions = [exc for exc in all_exception_data if exc['key'] not in current_exception_keys]
+    money_recovered = sum(abs(exc['variance']) for exc in recovered_exceptions)
+    
+    return {
+        'current_undercharge': float(current_undercharge),
+        'current_overcharge': float(current_overcharge),
+        'current_variance': float(current_undercharge + current_overcharge),
+        'open_exceptions': int(open_exceptions_count),
+        'total_audits': int(total_audits),
+        'match_rate': float(match_rate),
+        'money_recovered': float(money_recovered),
+        'historical_undercharge': float(historical_undercharge),
+        'historical_overcharge': float(historical_overcharge),
+        'most_recent_run': most_recent,
+        'total_runs': len(all_runs)
+    }
+
+
 def filter_by_audit_period(df: pd.DataFrame, year: int = None, month: int = None) -> pd.DataFrame:
     """
     Filter a DataFrame by audit period (year and/or month).
@@ -244,29 +356,28 @@ def upload():
         return redirect(url_for('main.index'))
 
 
+@bp.route('/portfolio')
 @bp.route('/portfolio/<run_id>')
-def portfolio(run_id: str):
-    """Portfolio view - KPIs and property summary."""
+def portfolio(run_id: str = None):
+    """Portfolio view - Cumulative KPIs across all runs."""
     try:
         storage = get_storage_service()
+        
+        # Calculate cumulative metrics across all runs
+        cumulative = calculate_cumulative_metrics()
+        
+        if not cumulative['most_recent_run']:
+            flash('No audit runs available', 'warning')
+            return redirect(url_for('main.index'))
+        
+        # Use most recent run if not specified
+        if not run_id:
+            run_id = cumulative['most_recent_run']['run_id']
+        
+        # Get most recent run data for property breakdown
         run_data = storage.load_run(run_id)
         
-        # Calculate portfolio KPIs
-        portfolio_kpis = calculate_kpis(
-            run_data["bucket_results"],
-            run_data["findings"]
-        )
-        
-        # Calculate undercharge/overcharge from variance
-        bucket_results = run_data["bucket_results"]
-        undercharge = bucket_results[bucket_results[CanonicalField.VARIANCE.value] < 0][CanonicalField.VARIANCE.value].sum()
-        overcharge = bucket_results[bucket_results[CanonicalField.VARIANCE.value] > 0][CanonicalField.VARIANCE.value].sum()
-        
-        portfolio_kpis['total_undercharge'] = abs(undercharge)  # Make positive for display
-        portfolio_kpis['total_overcharge'] = overcharge
-        portfolio_kpis['total_variance_abs'] = abs(portfolio_kpis['total_variance'])
-        
-        # Calculate property summary
+        # Calculate property summary from most recent run
         property_summary = calculate_property_summary(
             run_data["bucket_results"],
             run_data["findings"]
@@ -276,11 +387,15 @@ def portfolio(run_id: str):
             'portfolio.html',
             run_id=run_id,
             metadata=run_data["metadata"],
-            kpis=portfolio_kpis,
-            properties=property_summary.to_dict('records')
+            kpis=cumulative,
+            properties=property_summary.to_dict('records'),
+            total_runs=cumulative['total_runs']
         )
     except Exception as e:
-        flash(f'Error loading run: {str(e)}', 'danger')
+        import traceback
+        print(f"[ERROR] Portfolio view error: {str(e)}")
+        print(traceback.format_exc())
+        flash(f'Error loading portfolio: {str(e)}', 'danger')
         return redirect(url_for('main.index'))
 
 
@@ -466,8 +581,14 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             if not expected_records.empty:
                 if 'PERIOD_START' in expected_records.columns:
                     charge_start = expected_records['PERIOD_START'].iloc[0]
+                    # Convert NaT to None
+                    if pd.isna(charge_start):
+                        charge_start = None
                 if 'PERIOD_END' in expected_records.columns:
                     charge_end = expected_records['PERIOD_END'].iloc[0]
+                    # Convert NaT to None
+                    if pd.isna(charge_end):
+                        charge_end = None
             
             if not actual_records.empty:
                 if 'POST_DATE' in actual_records.columns:
@@ -561,13 +682,62 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             
             exceptions.append(exception)
         
-        # Sort by variance magnitude
-        exceptions = sorted(exceptions, key=lambda x: abs(x['variance']), reverse=True)
+        # Group exceptions by AR code and status
+        grouped_exceptions = {}
+        for exc in exceptions:
+            group_key = (exc['ar_code_id'], exc['status'])
+            
+            if group_key not in grouped_exceptions:
+                # Create new group
+                grouped_exceptions[group_key] = {
+                    'ar_code_id': exc['ar_code_id'],
+                    'ar_code_name': exc['ar_code_name'],
+                    'status': exc['status'],
+                    'status_label': exc['status_label'],
+                    'status_color': exc['status_color'],
+                    'total_variance': 0,
+                    'total_expected': 0,
+                    'total_actual': 0,
+                    'month_count': 0,
+                    'monthly_details': [],
+                    'all_expected_transactions': [],
+                    'all_actual_transactions': []
+                }
+            
+            # Aggregate totals
+            group = grouped_exceptions[group_key]
+            group['total_variance'] += exc['variance']
+            group['total_expected'] += exc['expected_total']
+            group['total_actual'] += exc['actual_total']
+            group['month_count'] += 1
+            
+            # Store monthly detail
+            group['monthly_details'].append({
+                'audit_month': exc['audit_month'],
+                'charge_start': exc['charge_start'],
+                'charge_end': exc['charge_end'],
+                'post_dates': exc['post_dates'],
+                'expected_total': exc['expected_total'],
+                'actual_total': exc['actual_total'],
+                'variance': exc['variance'],
+                'expected_transactions': exc['expected_transactions'],
+                'actual_transactions': exc['actual_transactions'],
+                'description': exc['description'],
+                'recommendation': exc['recommendation']
+            })
+            
+            # Aggregate all transactions
+            group['all_expected_transactions'].extend(exc['expected_transactions'])
+            group['all_actual_transactions'].extend(exc['actual_transactions'])
+        
+        # Convert to list and sort by total variance
+        grouped_list = list(grouped_exceptions.values())
+        grouped_list = sorted(grouped_list, key=lambda x: abs(x['total_variance']), reverse=True)
         
         # Calculate lease totals
-        total_variance = sum(abs(e['variance']) for e in exceptions)
-        total_expected = sum(e['expected_total'] for e in exceptions)
-        total_actual = sum(e['actual_total'] for e in exceptions)
+        total_variance = sum(abs(g['total_variance']) for g in grouped_list)
+        total_expected = sum(g['total_expected'] for g in grouped_list)
+        total_actual = sum(g['total_actual'] for g in grouped_list)
         
         return render_template(
             'lease.html',
@@ -575,8 +745,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             property_id=property_id,
             lease_interval_id=lease_interval_id,
             metadata=run_data["metadata"],
-            exceptions=exceptions,
-            exception_count=len(exceptions),
+            exceptions=grouped_list,
+            exception_count=len(grouped_list),
             total_variance=total_variance,
             total_expected=total_expected,
             total_actual=total_actual

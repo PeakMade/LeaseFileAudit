@@ -70,103 +70,127 @@
                             </thead>
                             <tbody>
                                 {% for exc in exceptions %}
-                                <!-- Summary Row -->
+                                <!-- Summary Row (Grouped by AR Code) -->
                                 <tr class="table-active">
                                     <td>
                                         <strong>{{ exc.ar_code_id|int }}{% if exc.ar_code_name %} - {{ exc.ar_code_name }}{% endif %}</strong><br>
                                         <small><span class="badge bg-{{ exc.status_color }}">{{ exc.status_label }}</span></small>
-                                    </td>
-                                    <td>{{ exc.charge_start.strftime('%m/%d/%Y') if exc.charge_start else '-' }}</td>
-                                    <td>{{ exc.charge_end.strftime('%m/%d/%Y') if exc.charge_end else '-' }}</td>
-                                    <td>
-                                        {% if exc.post_dates %}
-                                            {{ exc.post_dates|length }} transaction(s)
-                                        {% else %}
-                                            -
+                                        {% if exc.month_count > 1 %}
+                                        <br><small class="text-muted">{{ exc.month_count }} months</small>
                                         {% endif %}
                                     </td>
-                                    <td class="text-end"><strong>${{ "%.2f"|format(exc.expected_total) }}</strong></td>
-                                    <td class="text-end"><strong>${{ "%.2f"|format(exc.actual_total) }}</strong></td>
+                                    <td colspan="2" class="text-center text-muted">
+                                        {% if exc.month_count > 1 %}
+                                            Multiple months
+                                        {% else %}
+                                            {% set detail = exc.monthly_details[0] %}
+                                            {{ detail.charge_start.strftime('%m/%d/%Y') if detail.charge_start else '-' }} to {{ detail.charge_end.strftime('%m/%d/%Y') if detail.charge_end else '-' }}
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-center text-muted">
+                                        {{ exc.all_actual_transactions|length }} transaction(s)
+                                    </td>
+                                    <td class="text-end"><strong>${{ "%.2f"|format(exc.total_expected) }}</strong></td>
+                                    <td class="text-end"><strong>${{ "%.2f"|format(exc.total_actual) }}</strong></td>
                                     <td class="text-end">
-                                        <strong class="text-{{ 'danger' if exc.variance < 0 else 'success' }}">
-                                            ${{ "%.2f"|format(exc.variance) }}
+                                        <strong class="text-{{ 'danger' if exc.total_variance < 0 else 'success' }}">
+                                            ${{ "%.2f"|format(exc.total_variance) }}
                                         </strong>
                                     </td>
                                     <td class="text-center">
-                                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#transactions-{{ loop.index }}" aria-expanded="false" title="View Transaction Details">
+                                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#details-{{ loop.index }}" aria-expanded="false" title="View Monthly Details">
                                             <i class="fas fa-chevron-down"></i>
                                         </button>
                                     </td>
                                 </tr>
-                                <!-- Expandable Transaction Details -->
-                                <tr class="collapse" id="transactions-{{ loop.index }}">
+                                <!-- Expandable Monthly Details -->
+                                <tr class="collapse" id="details-{{ loop.index }}">
                                     <td colspan="8" class="p-0">
                                         <div class="bg-light p-3">
-                                            <div class="row">
-                                                <!-- Expected Transactions -->
-                                                <div class="col-md-6">
-                                                    <h6 class="text-info"><i class="fas fa-calendar-check"></i> Expected Charges ({{ exc.expected_transactions|length }})</h6>
-                                                    {% if exc.expected_transactions %}
-                                                    <table class="table table-sm table-bordered mb-0">
-                                                        <thead class="table-light">
-                                                            <tr>
-                                                                <th>Period Start</th>
-                                                                <th>Period End</th>
-                                                                <th class="text-end">Amount</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            {% for exp in exc.expected_transactions %}
-                                                            <tr>
-                                                                <td>{{ exp.period_start.strftime('%m/%d/%Y') if exp.period_start else '-' }}</td>
-                                                                <td>{{ exp.period_end.strftime('%m/%d/%Y') if exp.period_end else '-' }}</td>
-                                                                <td class="text-end">${{ "%.2f"|format(exp.amount) }}</td>
-                                                            </tr>
-                                                            {% endfor %}
-                                                        </tbody>
-                                                    </table>
-                                                    {% else %}
-                                                    <p class="text-muted mb-0">No scheduled charges</p>
-                                                    {% endif %}
-                                                </div>
-                                                <!-- Actual Transactions -->
-                                                <div class="col-md-6">
-                                                    <h6 class="text-primary"><i class="fas fa-receipt"></i> Actual Transactions ({{ exc.actual_transactions|length }})</h6>
-                                                    {% if exc.actual_transactions %}
-                                                    <table class="table table-sm table-bordered mb-0">
-                                                        <thead class="table-light">
-                                                            <tr>
-                                                                <th>Posted Date</th>
-                                                                <th>Transaction ID</th>
-                                                                <th class="text-end">Amount</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            {% for act in exc.actual_transactions %}
-                                                            <tr>
-                                                                <td>{{ act.post_date.strftime('%m/%d/%Y') if act.post_date else '-' }}</td>
-                                                                <td><small>{{ act.transaction_id|int if act.transaction_id else '-' }}</small></td>
-                                                                <td class="text-end">${{ "%.2f"|format(act.amount) }}</td>
-                                                            </tr>
-                                                            {% endfor %}
-                                                        </tbody>
-                                                    </table>
-                                                    {% else %}
-                                                    <p class="text-muted mb-0">No actual transactions</p>
-                                                    {% endif %}
-                                                </div>
-                                            </div>
-                                            <hr>
-                                            <div class="row mt-3">
-                                                <div class="col-md-6">
-                                                    <strong><i class="fas fa-exclamation-circle text-{{ exc.status_color }}"></i> Issue:</strong><br>
-                                                    <span>{{ exc.description }}</span>
-                                                </div>
-                                                <div class="col-md-6">
-                                                    <strong><i class="fas fa-lightbulb text-warning"></i> Recommendation:</strong><br>
-                                                    <span>{{ exc.recommendation }}</span>
-                                                </div>
-                                            </div>
+                                            <h6 class="mb-3"><i class="fas fa-calendar-alt"></i> Monthly Breakdown</h6>
+                                            
+                                            <table class="table table-sm table-bordered table-hover bg-white">
+                                                <thead class="table-secondary">
+                                                    <tr>
+                                                        <th rowspan="2" class="align-middle">Month</th>
+                                                        <th colspan="3" class="text-center text-info">Expected</th>
+                                                        <th colspan="3" class="text-center text-primary">Actual</th>
+                                                        <th rowspan="2" class="text-end align-middle">Variance</th>
+                                                    </tr>
+                                                    <tr>
+                                                        <th class="text-info">Period Start</th>
+                                                        <th class="text-info">Period End</th>
+                                                        <th class="text-end text-info">Amount</th>
+                                                        <th class="text-primary">Posted Date</th>
+                                                        <th class="text-primary">Txn ID</th>
+                                                        <th class="text-end text-primary">Amount</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {% for monthly in exc.monthly_details %}
+                                                    {% set exp_count = monthly.expected_transactions|length %}
+                                                    {% set act_count = monthly.actual_transactions|length %}
+                                                    {% set max_rows = [exp_count, act_count]|max %}
+                                                    {% set max_rows = max_rows if max_rows > 0 else 1 %}
+                                                    
+                                                    {% for i in range(max_rows) %}
+                                                    <tr>
+                                                        {% if i == 0 %}
+                                                        <td rowspan="{{ max_rows }}" class="align-middle">
+                                                            <strong>{{ monthly.audit_month.strftime('%B %Y') if monthly.audit_month else '-' }}</strong>
+                                                        </td>
+                                                        {% endif %}
+                                                        
+                                                        <!-- Expected columns -->
+                                                        {% if i < exp_count %}
+                                                        {% set exp = monthly.expected_transactions[i] %}
+                                                        <td>{{ exp.period_start.strftime('%m/%d/%Y') if exp.period_start else '-' }}</td>
+                                                        <td>{{ exp.period_end.strftime('%m/%d/%Y') if exp.period_end else '-' }}</td>
+                                                        <td class="text-end">${{ "%.2f"|format(exp.amount) }}</td>
+                                                        {% else %}
+                                                        <td colspan="3" class="text-muted text-center">
+                                                            {% if i == 0 %}No scheduled charges{% endif %}
+                                                        </td>
+                                                        {% endif %}
+                                                        
+                                                        <!-- Actual columns -->
+                                                        {% if i < act_count %}
+                                                        {% set act = monthly.actual_transactions[i] %}
+                                                        <td>{{ act.post_date.strftime('%m/%d/%Y') if act.post_date else '-' }}</td>
+                                                        <td><small>{{ act.transaction_id|int if act.transaction_id else '-' }}</small></td>
+                                                        <td class="text-end">${{ "%.2f"|format(act.amount) }}</td>
+                                                        {% else %}
+                                                        <td colspan="3" class="text-muted text-center">
+                                                            {% if i == 0 %}No actual transactions{% endif %}
+                                                        </td>
+                                                        {% endif %}
+                                                        
+                                                        {% if i == 0 %}
+                                                        <td rowspan="{{ max_rows }}" class="align-middle text-end">
+                                                            <strong class="text-{{ 'danger' if monthly.variance < 0 else 'success' }}">
+                                                                ${{ "%.2f"|format(monthly.variance) }}
+                                                            </strong>
+                                                        </td>
+                                                        {% endif %}
+                                                    </tr>
+                                                    {% endfor %}
+                                                    {% endfor %}
+                                                </tbody>
+                                                <tfoot class="table-light">
+                                                    <tr>
+                                                        <th>Total</th>
+                                                        <th colspan="2" class="text-end">{{ exc.all_expected_transactions|length }} transaction(s)</th>
+                                                        <th class="text-end">${{ "%.2f"|format(exc.total_expected) }}</th>
+                                                        <th colspan="2" class="text-end">{{ exc.all_actual_transactions|length }} transaction(s)</th>
+                                                        <th class="text-end">${{ "%.2f"|format(exc.total_actual) }}</th>
+                                                        <th class="text-end">
+                                                            <strong class="text-{{ 'danger' if exc.total_variance < 0 else 'success' }}">
+                                                                ${{ "%.2f"|format(exc.total_variance) }}
+                                                            </strong>
+                                                        </th>
+                                                    </tr>
+                                                </tfoot>
+                                            </table>
                                         </div>
                                     </td>
                                 </tr>
