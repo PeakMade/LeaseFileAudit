@@ -451,6 +451,47 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 if 'AR_CODE_NAME' in expected_records.columns:
                     ar_code_name = expected_records['AR_CODE_NAME'].iloc[0]
             
+            # Build individual transaction details
+            expected_transactions = []
+            actual_transactions = []
+            missing_dates_warning = []
+            
+            if not expected_records.empty:
+                for _, exp_rec in expected_records.iterrows():
+                    period_start = exp_rec.get('PERIOD_START')
+                    period_end = exp_rec.get('PERIOD_END')
+                    
+                    # Convert NaT to None for template compatibility
+                    if pd.isna(period_start):
+                        missing_dates_warning.append(f"Missing PERIOD_START for expected charge")
+                        period_start = None
+                    if pd.isna(period_end):
+                        missing_dates_warning.append(f"Missing PERIOD_END for expected charge")
+                        period_end = None
+                    
+                    expected_transactions.append({
+                        'amount': exp_rec.get('expected_amount', 0),
+                        'period_start': period_start,
+                        'period_end': period_end,
+                        'ar_code_name': exp_rec.get('AR_CODE_NAME', ar_code_name)
+                    })
+            
+            if not actual_records.empty:
+                for _, act_rec in actual_records.iterrows():
+                    post_date = act_rec.get('POST_DATE')
+                    
+                    # Convert NaT to None for template compatibility
+                    if pd.isna(post_date):
+                        missing_dates_warning.append(f"Missing POST_DATE for actual transaction")
+                        post_date = None
+                    
+                    actual_transactions.append({
+                        'amount': act_rec.get('actual_amount', 0),
+                        'post_date': post_date,
+                        'ar_code_name': act_rec.get('AR_CODE_NAME', ar_code_name),
+                        'transaction_id': act_rec.get('AR_TRANSACTION_ID')
+                    })
+            
             exception = {
                 'ar_code_id': ar_code,
                 'ar_code_name': ar_code_name,
@@ -463,7 +504,10 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 'status_color': _get_status_color(bucket[CanonicalField.STATUS.value]),
                 'expected_total': bucket[CanonicalField.EXPECTED_TOTAL.value],
                 'actual_total': bucket[CanonicalField.ACTUAL_TOTAL.value],
-                'variance': bucket[CanonicalField.VARIANCE.value]
+                'variance': bucket[CanonicalField.VARIANCE.value],
+                'expected_transactions': expected_transactions,
+                'actual_transactions': actual_transactions,
+                'missing_dates_warning': missing_dates_warning
             }
             
             # Get detailed reason/description
@@ -476,6 +520,10 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             elif exception['status'] == 'AMOUNT_MISMATCH':
                 exception['description'] = f"Expected ${exception['expected_total']:.2f} but ${exception['actual_total']:.2f} was billed (${exception['variance']:.2f} difference)."
                 exception['recommendation'] = "Review if this is due to proration, lease amendment, or billing error."
+            
+            # Add missing date warning to description if present
+            if missing_dates_warning:
+                exception['description'] += f" ⚠️ DATA QUALITY ISSUE: {'; '.join(set(missing_dates_warning))}."
             
             exceptions.append(exception)
         

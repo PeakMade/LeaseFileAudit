@@ -24,6 +24,7 @@ class ARSourceColumns:
     PROPERTY_ID = "PROPERTY_ID"
     LEASE_INTERVAL_ID = "LEASE_INTERVAL_ID"
     AR_CODE_ID = "AR_CODE_ID"
+    AR_CODE_NAME = "AR_CODE_NAME"
     TRANSACTION_AMOUNT = "TRANSACTION_AMOUNT"
     POST_DATE = "POST_DATE"
     POST_MONTH_DATE = "POST_MONTH_DATE"
@@ -39,6 +40,7 @@ class ScheduledSourceColumns:
     PROPERTY_ID = "PROPERTY_ID"
     LEASE_INTERVAL_ID = "LEASE_INTERVAL_ID"
     AR_CODE_ID = "AR_CODE_ID"
+    AR_CODE = "AR_CODE"
     CHARGE_AMOUNT = "CHARGE_AMOUNT"
     DATE_CHARGE_START = "DATE_CHARGE_START"
     DATE_CHARGE_END = "DATE_CHARGE_END"
@@ -145,6 +147,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ARSourceColumns.PROPERTY_ID,
         ARSourceColumns.LEASE_INTERVAL_ID,
         ARSourceColumns.AR_CODE_ID,
+        ARSourceColumns.AR_CODE_NAME,
         ARSourceColumns.TRANSACTION_AMOUNT,
         ARSourceColumns.POST_DATE,
         ARSourceColumns.POST_MONTH_DATE,
@@ -157,6 +160,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ColumnTransform(ARSourceColumns.PROPERTY_ID, CanonicalField.PROPERTY_ID),
         ColumnTransform(ARSourceColumns.LEASE_INTERVAL_ID, CanonicalField.LEASE_INTERVAL_ID),
         ColumnTransform(ARSourceColumns.AR_CODE_ID, CanonicalField.AR_CODE_ID),
+        ColumnTransform(ARSourceColumns.AR_CODE_NAME, CanonicalField.AR_CODE_NAME),
         ColumnTransform(ARSourceColumns.TRANSACTION_AMOUNT, CanonicalField.ACTUAL_AMOUNT),
         ColumnTransform(ARSourceColumns.POST_DATE, CanonicalField.POST_DATE,
                        transform_func=lambda s: pd.to_datetime(s.astype(int).astype(str), format='%Y%m%d', errors='coerce')),
@@ -225,6 +229,7 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
         ScheduledSourceColumns.PROPERTY_ID,
         ScheduledSourceColumns.LEASE_INTERVAL_ID,
         ScheduledSourceColumns.AR_CODE_ID,
+        ScheduledSourceColumns.AR_CODE,
         ScheduledSourceColumns.CHARGE_AMOUNT,
         ScheduledSourceColumns.DATE_CHARGE_START,
         ScheduledSourceColumns.DATE_CHARGE_END,
@@ -238,6 +243,8 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
                        CanonicalField.LEASE_INTERVAL_ID),
         ColumnTransform(ScheduledSourceColumns.AR_CODE_ID, 
                        CanonicalField.AR_CODE_ID),
+        ColumnTransform(ScheduledSourceColumns.AR_CODE, 
+                       CanonicalField.AR_CODE_NAME),
         ColumnTransform(ScheduledSourceColumns.CHARGE_AMOUNT, 
                        CanonicalField.EXPECTED_AMOUNT),
     ],
