@@ -95,6 +95,15 @@ def calculate_property_summary(bucket_results: pd.DataFrame, findings: pd.DataFr
     for prop_id in properties:
         kpis = calculate_kpis(bucket_results, findings, property_id=prop_id)
         kpis["property_id"] = prop_id
+        
+        # Calculate undercharge/overcharge for this property
+        prop_buckets = bucket_results[bucket_results[CanonicalField.PROPERTY_ID.value] == prop_id]
+        undercharge = prop_buckets[prop_buckets[CanonicalField.VARIANCE.value] < 0][CanonicalField.VARIANCE.value].sum()
+        overcharge = prop_buckets[prop_buckets[CanonicalField.VARIANCE.value] > 0][CanonicalField.VARIANCE.value].sum()
+        
+        kpis['total_undercharge'] = abs(undercharge)
+        kpis['total_overcharge'] = overcharge
+        
         summaries.append(kpis)
     
     return pd.DataFrame(summaries)

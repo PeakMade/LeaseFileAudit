@@ -257,6 +257,15 @@ def portfolio(run_id: str):
             run_data["findings"]
         )
         
+        # Calculate undercharge/overcharge from variance
+        bucket_results = run_data["bucket_results"]
+        undercharge = bucket_results[bucket_results[CanonicalField.VARIANCE.value] < 0][CanonicalField.VARIANCE.value].sum()
+        overcharge = bucket_results[bucket_results[CanonicalField.VARIANCE.value] > 0][CanonicalField.VARIANCE.value].sum()
+        
+        portfolio_kpis['total_undercharge'] = abs(undercharge)  # Make positive for display
+        portfolio_kpis['total_overcharge'] = overcharge
+        portfolio_kpis['total_variance_abs'] = abs(portfolio_kpis['total_variance'])
+        
         # Calculate property summary
         property_summary = calculate_property_summary(
             run_data["bucket_results"],
@@ -294,6 +303,13 @@ def property_view(property_id: str, run_id: str = None):
         
         run_data = storage.load_run(run_id)
         
+        # Get all unique leases for this property from expected_detail
+        expected_detail = run_data["expected_detail"]
+        property_expected = expected_detail[
+            expected_detail[CanonicalField.PROPERTY_ID.value] == float(property_id)
+        ]
+        all_lease_ids = property_expected[CanonicalField.LEASE_INTERVAL_ID.value].unique()
+        
         # Filter bucket results by property - only exceptions
         bucket_results = run_data["bucket_results"]
         property_buckets = bucket_results[
@@ -321,18 +337,32 @@ def property_view(property_id: str, run_id: str = None):
             }
             lease_groups[lease_id].append(exception)
         
-        # Sort leases by total variance (descending)
+        # Build comprehensive lease summary (including clean leases)
         lease_summary = []
-        for lease_id, exceptions in lease_groups.items():
-            total_variance = sum(abs(e['variance']) for e in exceptions)
-            lease_summary.append({
-                'lease_interval_id': lease_id,
-                'exception_count': len(exceptions),
-                'total_variance': total_variance,
-                'exceptions': sorted(exceptions, key=lambda x: abs(x['variance']), reverse=True)
-            })
+        for lease_id in all_lease_ids:
+            if lease_id in lease_groups:
+                # Lease has exceptions
+                exceptions = lease_groups[lease_id]
+                total_variance = sum(abs(e['variance']) for e in exceptions)
+                lease_summary.append({
+                    'lease_interval_id': lease_id,
+                    'has_exceptions': True,
+                    'exception_count': len(exceptions),
+                    'total_variance': total_variance,
+                    'exceptions': sorted(exceptions, key=lambda x: abs(x['variance']), reverse=True)
+                })
+            else:
+                # Clean lease - no exceptions
+                lease_summary.append({
+                    'lease_interval_id': lease_id,
+                    'has_exceptions': False,
+                    'exception_count': 0,
+                    'total_variance': 0,
+                    'exceptions': []
+                })
         
-        lease_summary = sorted(lease_summary, key=lambda x: x['total_variance'], reverse=True)
+        # Sort: exceptions first (by variance), then clean leases
+        lease_summary = sorted(lease_summary, key=lambda x: (not x['has_exceptions'], -x['total_variance']))
         
         # Calculate property KPIs
         all_property_buckets = bucket_results[
@@ -444,12 +474,16 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     post_dates = actual_records['POST_DATE'].dropna().tolist()
                 # Try to get AR code name from actual records first
                 if 'AR_CODE_NAME' in actual_records.columns:
-                    ar_code_name = actual_records['AR_CODE_NAME'].iloc[0]
+                    name_value = actual_records['AR_CODE_NAME'].iloc[0]
+                    if pd.notna(name_value):
+                        ar_code_name = name_value
             
             # If not in actual, try expected records
             if not ar_code_name and not expected_records.empty:
                 if 'AR_CODE_NAME' in expected_records.columns:
-                    ar_code_name = expected_records['AR_CODE_NAME'].iloc[0]
+                    name_value = expected_records['AR_CODE_NAME'].iloc[0]
+                    if pd.notna(name_value):
+                        ar_code_name = name_value
             
             # Build individual transaction details
             expected_transactions = []

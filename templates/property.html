@@ -87,8 +87,12 @@
                                         </h6>
                                     </div>
                                     <div class="text-end">
-                                        <span class="badge bg-warning me-2">{{ lease.exception_count }} Exceptions</span>
-                                        <span class="badge bg-danger">Variance: ${{ "%.2f"|format(lease.total_variance|abs) }}</span>
+                                        {% if lease.has_exceptions %}
+                                            <span class="badge bg-warning me-2">{{ lease.exception_count }} Exceptions</span>
+                                            <span class="badge bg-danger">Variance: ${{ "%.2f"|format(lease.total_variance|abs) }}</span>
+                                        {% else %}
+                                            <span class="badge bg-success"><i class="fas fa-check-circle"></i> Clean - No Exceptions</span>
+                                        {% endif %}
                                     </div>
                                 </div>
                             </div>

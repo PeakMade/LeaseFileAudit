@@ -4,37 +4,58 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-    <!-- Execution Timestamp -->
-    <div class="row mb-3">
-        <div class="col-12">
-            <small class="text-muted">Executed: {{ metadata.timestamp }}</small>
+    <!-- Header -->
+    <div class="row mb-4">
+        <div class="col">
+            <h2>PeakMade Portfolio</h2>
+            <p class="text-muted">
+                Run ID: <code>{{ run_id }}</code> | 
+                Executed: {{ metadata.timestamp }}
+                {% if metadata.audit_period %}
+                | <strong>Audit Period: 
+                {% if metadata.audit_period.month %}
+                    {{ ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][metadata.audit_period.month] }}
+                {% endif %}
+                {% if metadata.audit_period.year %}
+                    {{ metadata.audit_period.year }}
+                {% endif %}
+                </strong>
+                {% endif %}
+            </p>
         </div>
     </div>
 
-    <!-- KPIs -->
+    <!-- Overall Dashboard -->
     <div class="row mb-4">
-        <div class="col-md-4">
-            <div class="card bg-success text-white metric-card">
+        <div class="col-12">
+            <div class="card">
                 <div class="card-body">
-                    <h6 class="card-subtitle mb-2">Matched</h6>
-                    <h3 class="card-title">{{ kpis.matched_buckets }}</h3>
-                    <small>{{ "%.1f"|format(kpis.match_rate) }}%</small>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card bg-warning text-white metric-card">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2">Exceptions</h6>
-                    <h3 class="card-title">{{ kpis.exception_buckets }}</h3>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card bg-danger text-white metric-card">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2">Total Variance</h6>
-                    <h3 class="card-title">${{ "%.2f"|format(kpis.total_variance) }}</h3>
+                    <div class="row text-center">
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">Total Undercharge</h6>
+                            <h3 class="text-danger mb-0">${{ "%.2f"|format(kpis.total_undercharge) }}</h3>
+                        </div>
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">Total Overcharge</h6>
+                            <h3 class="text-success mb-0">${{ "%.2f"|format(kpis.total_overcharge) }}</h3>
+                        </div>
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">Total Variance</h6>
+                            <h3 class="mb-0">${{ "%.2f"|format(kpis.total_variance_abs) }}</h3>
+                        </div>
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">Open Exceptions</h6>
+                            <h3 class="text-warning mb-0">{{ kpis.exception_buckets }}</h3>
+                        </div>
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">Total Audits</h6>
+                            <h3 class="mb-0">{{ kpis.total_buckets }}</h3>
+                        </div>
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">Match Rate</h6>
+                            <h3 class="text-success mb-0">{{ "%.1f"|format(kpis.match_rate) }}%</h3>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -44,38 +65,56 @@
     <div class="row">
         <div class="col-12">
             <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">Property Summary</h5>
+                <div class="card-header bg-light">
+                    <h5 class="mb-0">Properties</h5>
                 </div>
-                <div class="card-body">
+                <div class="card-body p-0">
                     <div class="table-responsive">
-                        <table class="table table-hover">
-                            <thead>
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
                                 <tr>
                                     <th>Property ID</th>
-                                    <th>Total Buckets</th>
-                                    <th>Matched</th>
-                                    <th>Exceptions</th>
-                                    <th>Total Variance</th>
-                                    <th>Actions</th>
+                                    <th class="text-center">Total Audits</th>
+                                    <th class="text-center">Exceptions</th>
+                                    <th class="text-end">Undercharge</th>
+                                    <th class="text-end">Overcharge</th>
+                                    <th class="text-end">Total Variance</th>
+                                    <th class="text-center">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for property in properties %}
                                 <tr>
-                                    <td>{{ property.property_id|int }}</td>
-                                    <td>{{ property.total_buckets }}</td>
-                                    <td>
-                                        <span class="badge bg-success">{{ property.matched_buckets }}</span>
+                                    <td><strong>{{ property.property_id|int }}</strong></td>
+                                    <td class="text-center">{{ property.total_buckets }}</td>
+                                    <td class="text-center">
+                                        {% if property.exception_buckets > 0 %}
+                                            <span class="badge bg-warning">{{ property.exception_buckets }}</span>
+                                        {% else %}
+                                            <span class="badge bg-success">0</span>
+                                        {% endif %}
                                     </td>
-                                    <td>
-                                        <span class="badge bg-warning">{{ property.exception_buckets }}</span>
+                                    <td class="text-end text-danger">
+                                        {% if property.total_undercharge > 0 %}
+                                            ${{ "%.2f"|format(property.total_undercharge) }}
+                                        {% else %}
+                                            $0.00
+                                        {% endif %}
                                     </td>
-                                    <td>${{ "%.2f"|format(property.total_variance) }}</td>
-                                    <td>
+                                    <td class="text-end text-success">
+                                        {% if property.total_overcharge > 0 %}
+                                            ${{ "%.2f"|format(property.total_overcharge) }}
+                                        {% else %}
+                                            $0.00
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-end">
+                                        <strong>${{ "%.2f"|format(property.total_variance|abs) }}</strong>
+                                    </td>
+                                    <td class="text-center">
                                         <a href="{{ url_for('main.property_view', property_id=property.property_id, run_id=run_id) }}" 
                                            class="btn btn-sm btn-primary">
-                                            <i class="fas fa-eye"></i> View Details
+                                            <i class="fas fa-eye"></i> View
                                         </a>
                                     </td>
                                 </tr>
