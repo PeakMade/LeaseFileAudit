@@ -32,12 +32,12 @@
             <div class="card">
                 <div class="card-body">
                     <div class="row text-center">
-                        <div class="col-md-2">
+                        <div class="col-md-3">
                             <h6 class="text-muted mb-2">Current Undercharge</h6>
                             <h3 class="text-danger mb-0">${{ "%.2f"|format(kpis.current_undercharge) }}</h3>
                             <small class="text-muted">Historical: ${{ "%.2f"|format(kpis.historical_undercharge) }}</small>
                         </div>
-                        <div class="col-md-2">
+                        <div class="col-md-3">
                             <h6 class="text-muted mb-2">Current Overcharge</h6>
                             <h3 class="text-success mb-0">${{ "%.2f"|format(kpis.current_overcharge) }}</h3>
                             <small class="text-muted">Historical: ${{ "%.2f"|format(kpis.historical_overcharge) }}</small>
@@ -55,12 +55,7 @@
                         <div class="col-md-2">
                             <h6 class="text-muted mb-2">Open Exceptions</h6>
                             <h3 class="text-warning mb-0">{{ kpis.open_exceptions }}</h3>
-                            <small class="text-muted">{{ kpis.total_audits }} Audits</small>
-                        </div>
-                        <div class="col-md-2">
-                            <h6 class="text-muted mb-2">Match Rate</h6>
-                            <h3 class="text-success mb-0">{{ "%.1f"|format(kpis.match_rate) }}%</h3>
-                            <small class="text-muted">Latest Run</small>
+                            <small class="text-muted">Match Rate: {{ "%.1f"|format(kpis.match_rate) }}%</small>
                         </div>
                     </div>
                 </div>

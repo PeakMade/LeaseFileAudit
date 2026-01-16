@@ -86,10 +86,16 @@ def calculate_cumulative_metrics() -> dict:
         current_exceptions[CanonicalField.VARIANCE.value] > 0
     ][CanonicalField.VARIANCE.value].sum()
     
+    # Count unique leases audited (not buckets)
+    total_leases_audited = latest_buckets[CanonicalField.LEASE_INTERVAL_ID.value].nunique()
+    
+    # Count open exceptions (unique buckets with issues)
     open_exceptions_count = len(current_exceptions)
-    total_audits = len(latest_buckets)
-    matched = len(latest_buckets) - open_exceptions_count
-    match_rate = (matched / total_audits * 100) if total_audits > 0 else 0
+    
+    # Calculate match rate based on buckets
+    total_buckets = len(latest_buckets)
+    matched = total_buckets - open_exceptions_count
+    match_rate = (matched / total_buckets * 100) if total_buckets > 0 else 0
     
     # Historical tracking - aggregate all unique exceptions ever found
     # Use dictionary to deduplicate and keep most recent occurrence
@@ -145,12 +151,15 @@ def calculate_cumulative_metrics() -> dict:
     recovered_exceptions = [exc for exc in all_exception_data if exc['key'] not in current_exception_keys]
     money_recovered = sum(abs(exc['variance']) for exc in recovered_exceptions)
     
+    # Calculate true net variance: Overcharge - Undercharge (positive = net over-billed, negative = net under-billed)
+    current_net_variance = current_overcharge - current_undercharge
+    
     return {
         'current_undercharge': float(current_undercharge),
         'current_overcharge': float(current_overcharge),
-        'current_variance': float(current_undercharge + current_overcharge),
+        'current_variance': float(current_net_variance),
         'open_exceptions': int(open_exceptions_count),
-        'total_audits': int(total_audits),
+        'total_audits': int(total_leases_audited),
         'match_rate': float(match_rate),
         'money_recovered': float(money_recovered),
         'historical_undercharge': float(historical_undercharge),
