@@ -71,24 +71,24 @@ class AuditConfig:
         name="ar_transactions",
         column_mapping=ColumnMapping(
             required_columns=[
-                "PROPERTY_ID", "LEASE_INTERVAL_ID", "AR_CODE_ID",
+                "PROPERTY_ID", "LEASE_INTERVAL_ID", "AR_CODE_ID", "AR_CODE_NAME",
                 "TRANSACTION_AMOUNT", "POST_MONTH_DATE", "POST_DATE",
                 "IS_POSTED", "IS_DELETED", "IS_REVERSAL", "ID"
             ]
         ),
-        detection_keywords=["ar", "receivable"]  # Removed generic "transaction"
+        detection_keywords=["ar_trans", "ar trans"]  # Matches AR_TRANS_1_EXPANDED
     ))
     
     scheduled_source: DataSourceConfig = field(default_factory=lambda: DataSourceConfig(
         name="scheduled_charges",
         column_mapping=ColumnMapping(
             required_columns=[
-                "SCHEDULED_CHARGES_ID", "PROPERTY_ID", "LEASE_INTERVAL_ID",
-                "AR_CODE_ID", "CHARGE_AMOUNT", "DATE_CHARGE_START",
-                "DATE_CHARGE_END"
+                "ID", "PROPERTY_ID", "LEASE_INTERVAL_ID",
+                "AR_CODE_ID", "AR_CODE_NAME", "CHARGE_AMOUNT", 
+                "CHARGE_START_DATE", "CHARGE_END_DATE"
             ]
         ),
-        detection_keywords=["scheduled", "charge", "transaction"]  # Added "transaction"
+        detection_keywords=["sc_trans", "sc trans"]  # Matches SC_TRANS_1 EXPANDED
     ))
     
     # Reconciliation settings

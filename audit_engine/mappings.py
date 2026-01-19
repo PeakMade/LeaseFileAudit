@@ -36,14 +36,14 @@ class ARSourceColumns:
 
 class ScheduledSourceColumns:
     """Raw column names from Scheduled Charges source."""
-    SCHEDULED_CHARGES_ID = "SCHEDULED_CHARGES_ID"
+    ID = "ID"
     PROPERTY_ID = "PROPERTY_ID"
     LEASE_INTERVAL_ID = "LEASE_INTERVAL_ID"
     AR_CODE_ID = "AR_CODE_ID"
-    AR_CODE = "AR_CODE"
+    AR_CODE_NAME = "AR_CODE_NAME"
     CHARGE_AMOUNT = "CHARGE_AMOUNT"
-    DATE_CHARGE_START = "DATE_CHARGE_START"
-    DATE_CHARGE_END = "DATE_CHARGE_END"
+    CHARGE_START_DATE = "CHARGE_START_DATE"
+    CHARGE_END_DATE = "CHARGE_END_DATE"
 
 
 # ==================== Source Mapping Configuration ====================
@@ -180,19 +180,26 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
 
 def _scheduled_period_start_convert(df: pd.DataFrame) -> pd.Series:
     """
-    Convert DATE_CHARGE_START to datetime (YYYYMMDD integer format).
-    Handles NaN values gracefully by converting them to NaT.
+    Convert CHARGE_START_DATE to datetime.
+    Handles both datetime objects (from Excel date columns) and YYYYMMDD integers.
+    NULL values are converted to NaT.
     
     Args:
         df: SOURCE DataFrame (after row_filter, before column transforms)
     """
-    if ScheduledSourceColumns.DATE_CHARGE_START not in df.columns:
+    if ScheduledSourceColumns.CHARGE_START_DATE not in df.columns:
         raise ValueError(
-            f"DATE_CHARGE_START column not found. "
+            f"CHARGE_START_DATE column not found. "
             f"Available columns: {df.columns.tolist()}"
         )
-    # Handle NaN values - convert only non-null values to int
-    series = df[ScheduledSourceColumns.DATE_CHARGE_START].copy()
+    
+    series = df[ScheduledSourceColumns.CHARGE_START_DATE].copy()
+    
+    # Check if already datetime (pandas reads Excel dates as datetime)
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    
+    # Otherwise, assume integer YYYYMMDD format
     mask = series.notna()
     result = pd.Series(pd.NaT, index=series.index)
     if mask.any():
@@ -202,19 +209,26 @@ def _scheduled_period_start_convert(df: pd.DataFrame) -> pd.Series:
 
 def _scheduled_period_end_convert(df: pd.DataFrame) -> pd.Series:
     """
-    Convert DATE_CHARGE_END to datetime (YYYYMMDD integer format).
-    Handles NaN values gracefully - missing end dates indicate one-time charges.
+    Convert CHARGE_END_DATE to datetime.
+    Handles both datetime objects (from Excel date columns) and YYYYMMDD integers.
+    NULL/NaT values indicate one-time charges (will be handled by expand logic).
     
     Args:
         df: SOURCE DataFrame (after row_filter, before column transforms)
     """
-    if ScheduledSourceColumns.DATE_CHARGE_END not in df.columns:
+    if ScheduledSourceColumns.CHARGE_END_DATE not in df.columns:
         raise ValueError(
-            f"DATE_CHARGE_END column not found. "
+            f"CHARGE_END_DATE column not found. "
             f"Available columns: {df.columns.tolist()}"
         )
-    # Handle NaN values - convert only non-null values to int
-    series = df[ScheduledSourceColumns.DATE_CHARGE_END].copy()
+    
+    series = df[ScheduledSourceColumns.CHARGE_END_DATE].copy()
+    
+    # Check if already datetime (pandas reads Excel dates as datetime)
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    
+    # Otherwise, assume integer YYYYMMDD format
     mask = series.notna()
     result = pd.Series(pd.NaT, index=series.index)
     if mask.any():
@@ -225,17 +239,17 @@ def _scheduled_period_end_convert(df: pd.DataFrame) -> pd.Series:
 SCHEDULED_CHARGES_MAPPING = SourceMapping(
     name="scheduled_charges",
     required_source_columns=[
-        ScheduledSourceColumns.SCHEDULED_CHARGES_ID,
+        ScheduledSourceColumns.ID,
         ScheduledSourceColumns.PROPERTY_ID,
         ScheduledSourceColumns.LEASE_INTERVAL_ID,
         ScheduledSourceColumns.AR_CODE_ID,
-        ScheduledSourceColumns.AR_CODE,
+        ScheduledSourceColumns.AR_CODE_NAME,
         ScheduledSourceColumns.CHARGE_AMOUNT,
-        ScheduledSourceColumns.DATE_CHARGE_START,
-        ScheduledSourceColumns.DATE_CHARGE_END,
+        ScheduledSourceColumns.CHARGE_START_DATE,
+        ScheduledSourceColumns.CHARGE_END_DATE,
     ],
     column_transforms=[
-        ColumnTransform(ScheduledSourceColumns.SCHEDULED_CHARGES_ID, 
+        ColumnTransform(ScheduledSourceColumns.ID, 
                        CanonicalField.SCHEDULED_CHARGES_ID),
         ColumnTransform(ScheduledSourceColumns.PROPERTY_ID, 
                        CanonicalField.PROPERTY_ID),
@@ -243,7 +257,7 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
                        CanonicalField.LEASE_INTERVAL_ID),
         ColumnTransform(ScheduledSourceColumns.AR_CODE_ID, 
                        CanonicalField.AR_CODE_ID),
-        ColumnTransform(ScheduledSourceColumns.AR_CODE, 
+        ColumnTransform(ScheduledSourceColumns.AR_CODE_NAME, 
                        CanonicalField.AR_CODE_NAME),
         ColumnTransform(ScheduledSourceColumns.CHARGE_AMOUNT, 
                        CanonicalField.EXPECTED_AMOUNT),
