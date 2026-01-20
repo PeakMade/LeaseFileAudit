@@ -39,6 +39,9 @@ class CanonicalField(str, Enum):
     CUSTOMER_ID = "CUSTOMER_ID"
     """Unique identifier for a customer account"""
     
+    GUARANTOR_NAME = "GUARANTOR_NAME"
+    """Name of the guarantor for the lease"""
+    
     RESIDENT_ID = "RESIDENT_ID"
     """Unique identifier for a resident"""
     

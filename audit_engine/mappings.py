@@ -33,6 +33,7 @@ class ARSourceColumns:
     IS_DELETED = "IS_DELETED"
     IS_REVERSAL = "IS_REVERSAL"
     ID = "ID"
+    GUARANTOR_NAME = "GUARANTOR_NAME"
 
 
 class ScheduledSourceColumns:
@@ -45,6 +46,7 @@ class ScheduledSourceColumns:
     CHARGE_AMOUNT = "CHARGE_AMOUNT"
     CHARGE_START_DATE = "CHARGE_START_DATE"
     CHARGE_END_DATE = "CHARGE_END_DATE"
+    GUARANTOR_NAME = "GUARANTOR_NAME"
 
 
 # ==================== Source Mapping Configuration ====================
@@ -167,6 +169,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ARSourceColumns.IS_DELETED,
         ARSourceColumns.IS_REVERSAL,
         ARSourceColumns.ID,
+        ARSourceColumns.GUARANTOR_NAME,
     ],
     column_transforms=[
         ColumnTransform(ARSourceColumns.PROPERTY_ID, CanonicalField.PROPERTY_ID),
@@ -181,6 +184,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ColumnTransform(ARSourceColumns.IS_DELETED, CanonicalField.IS_DELETED),
         ColumnTransform(ARSourceColumns.IS_REVERSAL, CanonicalField.IS_REVERSAL),
         ColumnTransform(ARSourceColumns.ID, CanonicalField.AR_TRANSACTION_ID),
+        ColumnTransform(ARSourceColumns.GUARANTOR_NAME, CanonicalField.GUARANTOR_NAME),
     ],
     row_filter=_ar_row_filter,
     derived_fields={
@@ -260,6 +264,7 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
         ScheduledSourceColumns.CHARGE_AMOUNT,
         ScheduledSourceColumns.CHARGE_START_DATE,
         ScheduledSourceColumns.CHARGE_END_DATE,
+        ScheduledSourceColumns.GUARANTOR_NAME,
     ],
     column_transforms=[
         ColumnTransform(ScheduledSourceColumns.ID, 
@@ -274,6 +279,8 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
                        CanonicalField.AR_CODE_NAME),
         ColumnTransform(ScheduledSourceColumns.CHARGE_AMOUNT, 
                        CanonicalField.EXPECTED_AMOUNT),
+        ColumnTransform(ScheduledSourceColumns.GUARANTOR_NAME, 
+                       CanonicalField.GUARANTOR_NAME),
     ],
     row_filter=None,  # No filtering for scheduled charges
     derived_fields={

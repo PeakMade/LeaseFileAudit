@@ -492,7 +492,22 @@ def property_view(property_id: str, run_id: str = None):
         
         # Build comprehensive lease summary (including clean and matched leases)
         lease_summary = []
+        placeholder_names = ["John Doe", "Jane Smith", "John Smith", "Jane Doe", "James Brown", "Mary Johnson"]
+        placeholder_index = 0
         for lease_id in all_lease_ids:
+            # Get guarantor name for this lease
+            guarantor_name = None
+            lease_actual_data = actual_detail[actual_detail[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id]
+            if len(lease_actual_data) > 0 and CanonicalField.GUARANTOR_NAME.value in lease_actual_data.columns:
+                guarantor_value = lease_actual_data[CanonicalField.GUARANTOR_NAME.value].iloc[0]
+                if pd.notna(guarantor_value):
+                    guarantor_name = guarantor_value
+            
+            # Use placeholder if no guarantor name found
+            if not guarantor_name:
+                guarantor_name = placeholder_names[placeholder_index % len(placeholder_names)]
+                placeholder_index += 1
+            
             # Get all buckets for this lease
             lease_all_buckets = all_property_buckets[
                 all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
@@ -504,9 +519,10 @@ def property_view(property_id: str, run_id: str = None):
             if lease_id in lease_groups:
                 # Lease has exceptions
                 exceptions = lease_groups[lease_id]
-                total_variance = sum(abs(e['variance']) for e in exceptions)
+                total_variance = sum(e['variance'] for e in exceptions)
                 lease_summary.append({
                     'lease_interval_id': lease_id,
+                    'guarantor_name': guarantor_name,
                     'has_exceptions': True,
                     'exception_count': len(exceptions),
                     'matched_count': matched_count,
@@ -517,6 +533,7 @@ def property_view(property_id: str, run_id: str = None):
                 # Clean lease - no exceptions
                 lease_summary.append({
                     'lease_interval_id': lease_id,
+                    'guarantor_name': guarantor_name,
                     'has_exceptions': False,
                     'exception_count': 0,
                     'matched_count': matched_count,
@@ -798,11 +815,25 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         if not property_name:
             property_name = PROPERTY_NAME_MAP.get(int(float(property_id)))
         
+        # Get guarantor name
+        guarantor_name = None
+        if len(lease_actual) > 0 and CanonicalField.GUARANTOR_NAME.value in lease_actual.columns:
+            guarantor_value = lease_actual[CanonicalField.GUARANTOR_NAME.value].iloc[0]
+            if pd.notna(guarantor_value):
+                guarantor_name = guarantor_value
+        
+        # Use placeholder if no guarantor name found
+        if not guarantor_name:
+            # Use lease_interval_id to generate consistent placeholder
+            placeholder_names = ["John Doe", "Jane Smith", "John Smith", "Jane Doe", "James Brown", "Mary Johnson"]
+            guarantor_name = placeholder_names[int(float(lease_interval_id)) % len(placeholder_names)]
+        
         return render_template(
             'lease.html',
             run_id=run_id,
             property_id=property_id,
             property_name=property_name,
+            guarantor_name=guarantor_name,
             lease_interval_id=lease_interval_id,
             metadata=run_data["metadata"],
             exceptions=grouped_list,

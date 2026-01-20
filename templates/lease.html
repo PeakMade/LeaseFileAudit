@@ -7,7 +7,11 @@
     <!-- Header -->
     <div class="row mb-4">
         <div class="col">
-            <h2>Lease Interval ID: {{ lease_interval_id|int }}</h2>
+            {% if guarantor_name %}
+                <h2>{{ guarantor_name }} <span style="font-size: 0.7em; color: #6c757d;">(Lease Interval Id: {{ lease_interval_id|int }})</span></h2>
+            {% else %}
+                <h2>Lease Interval ID: {{ lease_interval_id|int }}</h2>
+            {% endif %}
         </div>
         <div class="col-auto">
             <a href="{{ url_for('main.property_view', property_id=property_id, run_id=run_id) }}" class="btn btn-secondary">
@@ -47,7 +51,7 @@
                                     <th>Scheduled Start</th>
                                     <th>Scheduled End</th>
                                     <th>Posted Date(s)</th>
-                                    <th class="text-end">Lease Amount</th>
+                                    <th class="text-end">Scheduled Amount</th>
                                     <th class="text-end">Actual Ledger</th>
                                     <th class="text-end">Difference</th>
                                     <th class="text-center">Details</th>

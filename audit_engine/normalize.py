@@ -37,6 +37,7 @@ def normalize_ar_transactions(df: pd.DataFrame) -> pd.DataFrame:
     # Validate required canonical columns exist
     required_cols = [
         CanonicalField.PROPERTY_ID.value,
+        CanonicalField.PROPERTY_NAME.value,
         CanonicalField.LEASE_INTERVAL_ID.value,
         CanonicalField.AR_CODE_ID.value,
         CanonicalField.AUDIT_MONTH.value,
@@ -44,7 +45,8 @@ def normalize_ar_transactions(df: pd.DataFrame) -> pd.DataFrame:
         CanonicalField.AR_TRANSACTION_ID.value,
         CanonicalField.IS_REVERSAL.value,
         CanonicalField.POST_DATE.value,
-        CanonicalField.AR_CODE_NAME.value
+        CanonicalField.AR_CODE_NAME.value,
+        CanonicalField.GUARANTOR_NAME.value
     ]
     
     missing = [col for col in required_cols if col not in df.columns]
@@ -95,7 +97,8 @@ def normalize_scheduled_charges(df: pd.DataFrame) -> pd.DataFrame:
         CanonicalField.EXPECTED_AMOUNT.value,
         CanonicalField.PERIOD_START.value,
         CanonicalField.PERIOD_END.value,
-        CanonicalField.AR_CODE_NAME.value
+        CanonicalField.AR_CODE_NAME.value,
+        CanonicalField.GUARANTOR_NAME.value
     ]
     
     missing = [col for col in required_cols if col not in df.columns]
