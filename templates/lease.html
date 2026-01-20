@@ -21,14 +21,9 @@
         <div class="col-12">
             <div class="alert alert-light border" role="alert">
                 <div class="row">
-                    <div class="col-md-4">
-                        <strong>Total Undercharge:</strong> <span class="text-danger">${{ "%.2f"|format(total_undercharge) }}</span>
-                    </div>
-                    <div class="col-md-4 text-center">
-                        <strong>Total Overcharge:</strong> <span class="text-warning">${{ "%.2f"|format(total_overcharge) }}</span>
-                    </div>
-                    <div class="col-md-4 text-end">
-                        <strong>Expected Total:</strong> ${{ "%.2f"|format(total_expected) }}
+                    <div class="col-md-6">
+                        <strong>Total Undercharge:</strong> <span class="text-danger">${{ "{:,.0f}".format(total_undercharge) }}</span>
+                        <span class="ms-4"><strong>Total Overcharge:</strong> <span class="text-warning">${{ "{:,.0f}".format(total_overcharge) }}</span></span>
                     </div>
                 </div>
             </div>
@@ -80,11 +75,11 @@
                                     <td class="text-center text-muted">
                                         {{ exc.all_actual_transactions|length }} transaction(s)
                                     </td>
-                                    <td class="text-end"><strong>${{ "%.2f"|format(exc.total_expected) }}</strong></td>
-                                    <td class="text-end"><strong>${{ "%.2f"|format(exc.total_actual) }}</strong></td>
+                                    <td class="text-end"><strong>${{ "{:,.0f}".format(exc.total_expected) }}</strong></td>
+                                    <td class="text-end"><strong>${{ "{:,.0f}".format(exc.total_actual) }}</strong></td>
                                     <td class="text-end">
                                         <strong class="text-{{ 'danger' if exc.total_variance < 0 else 'success' }}">
-                                            ${{ "%.2f"|format(exc.total_variance) }}
+                                            ${{ "{:,.0f}".format(exc.total_variance) }}
                                         </strong>
                                     </td>
                                     <td class="text-center">
@@ -136,7 +131,7 @@
                                                         {% set exp = monthly.expected_transactions[i] %}
                                                         <td>{{ exp.period_start.strftime('%m/%d/%Y') if exp.period_start else '-' }}</td>
                                                         <td>{{ exp.period_end.strftime('%m/%d/%Y') if exp.period_end else '-' }}</td>
-                                                        <td class="text-end">${{ "%.2f"|format(exp.amount) }}</td>
+                                                        <td class="text-end">${{ "{:,.0f}".format(exp.amount) }}</td>
                                                         {% else %}
                                                         <td colspan="3" class="text-muted text-center">
                                                             {% if i == 0 %}No scheduled charges{% endif %}
@@ -148,7 +143,7 @@
                                                         {% set act = monthly.actual_transactions[i] %}
                                                         <td>{{ act.post_date.strftime('%m/%d/%Y') if act.post_date else '-' }}</td>
                                                         <td><small>{{ act.transaction_id|int if act.transaction_id else '-' }}</small></td>
-                                                        <td class="text-end">${{ "%.2f"|format(act.amount) }}</td>
+                                                        <td class="text-end">${{ "{:,.0f}".format(act.amount) }}</td>
                                                         {% else %}
                                                         <td colspan="3" class="text-muted text-center">
                                                             {% if i == 0 %}No actual transactions{% endif %}
@@ -158,7 +153,7 @@
                                                         {% if i == 0 %}
                                                         <td rowspan="{{ max_rows }}" class="align-middle text-end">
                                                             <strong class="text-{{ 'danger' if monthly.variance < 0 else 'success' }}">
-                                                                ${{ "%.2f"|format(monthly.variance) }}
+                                                                ${{ "{:,.0f}".format(monthly.variance) }}
                                                             </strong>
                                                         </td>
                                                         {% endif %}
@@ -170,12 +165,12 @@
                                                     <tr>
                                                         <th>Total</th>
                                                         <th colspan="2" class="text-end">{{ exc.all_expected_transactions|length }} transaction(s)</th>
-                                                        <th class="text-end">${{ "%.2f"|format(exc.total_expected) }}</th>
+                                                        <th class="text-end">${{ "{:,.0f}".format(exc.total_expected) }}</th>
                                                         <th colspan="2" class="text-end">{{ exc.all_actual_transactions|length }} transaction(s)</th>
-                                                        <th class="text-end">${{ "%.2f"|format(exc.total_actual) }}</th>
+                                                        <th class="text-end">${{ "{:,.0f}".format(exc.total_actual) }}</th>
                                                         <th class="text-end">
                                                             <strong class="text-{{ 'danger' if exc.total_variance < 0 else 'success' }}">
-                                                                ${{ "%.2f"|format(exc.total_variance) }}
+                                                                ${{ "{:,.0f}".format(exc.total_variance) }}
                                                             </strong>
                                                         </th>
                                                     </tr>
@@ -203,7 +198,11 @@
     <div class="row mt-3 mb-4">
         <div class="col-12">
             <p class="text-muted small">
-                Property ID: <code>{{ property_id|int }}</code> | Run ID: <code>{{ run_id }}</code>
+                {% if property_name %}
+                    Property: <strong>{{ property_name }}</strong> (ID: {{ property_id|int }})
+                {% else %}
+                    Property ID: <code>{{ property_id|int }}</code>
+                {% endif %}
                 {% if metadata.audit_period %}
                 | <strong>Audit Period: 
                 {% if metadata.audit_period.month %}

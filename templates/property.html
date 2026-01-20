@@ -62,7 +62,7 @@
             <div class="card" style="height: 80px; border: 2px solid #dc3545; border-radius: 8px;">
                 <div class="card-body py-2 px-3 d-flex flex-column justify-content-center">
                     <small class="d-block mb-1 text-muted" style="font-size: 0.75rem;">Total Variance</small>
-                    <h5 class="mb-0 text-danger">${{ "%.2f"|format(kpis.total_variance|abs) }}</h5>
+                    <h5 class="mb-0 text-danger">${{ "{:,.0f}".format(kpis.total_variance|abs) }}</h5>
                 </div>
             </div>
         </div>
@@ -109,9 +109,9 @@
                                     </td>
                                     <td class="text-end" style="padding: 10px 12px; font-family: 'Courier New', monospace; border-right: 1px solid #dee2e6;">
                                         {% if lease.total_variance != 0 %}
-                                            <span class="text-danger">${{ "%.2f"|format(lease.total_variance|abs) }}</span>
+                                            <span class="text-danger">${{ "{:,.0f}".format(lease.total_variance|abs) }}</span>
                                         {% else %}
-                                            <span class="text-muted">$0.00</span>
+                                            <span class="text-muted">$0</span>
                                         {% endif %}
                                     </td>
                                     <td class="text-center" style="padding: 10px 12px;">

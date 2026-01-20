@@ -19,22 +19,22 @@
                     <div class="row text-center">
                         <div class="col-md-3">
                             <h6 class="text-muted mb-2">Current Undercharge</h6>
-                            <h3 class="text-danger mb-0">${{ "%.2f"|format(kpis.current_undercharge) }}</h3>
-                            <small class="text-muted">Historical: ${{ "%.2f"|format(kpis.historical_undercharge) }}</small>
+                            <h3 class="text-danger mb-0">${{ "{:,.0f}".format(kpis.current_undercharge) }}</h3>
+                            <small class="text-muted">Historical: ${{ "{:,.0f}".format(kpis.historical_undercharge) }}</small>
                         </div>
                         <div class="col-md-3">
                             <h6 class="text-muted mb-2">Current Overcharge</h6>
-                            <h3 class="text-success mb-0">${{ "%.2f"|format(kpis.current_overcharge) }}</h3>
-                            <small class="text-muted">Historical: ${{ "%.2f"|format(kpis.historical_overcharge) }}</small>
+                            <h3 class="text-success mb-0">${{ "{:,.0f}".format(kpis.current_overcharge) }}</h3>
+                            <small class="text-muted">Historical: ${{ "{:,.0f}".format(kpis.historical_overcharge) }}</small>
                         </div>
                         <div class="col-md-2">
                             <h6 class="text-muted mb-2">Money Recovered</h6>
-                            <h3 class="text-primary mb-0">${{ "%.2f"|format(kpis.money_recovered) }}</h3>
+                            <h3 class="text-primary mb-0">${{ "{:,.0f}".format(kpis.money_recovered) }}</h3>
                             <small class="text-muted">Exceptions Fixed</small>
                         </div>
                         <div class="col-md-2">
                             <h6 class="text-muted mb-2">Total Variance</h6>
-                            <h3 class="mb-0">${{ "%.2f"|format(kpis.current_variance) }}</h3>
+                            <h3 class="mb-0">${{ "{:,.0f}".format(kpis.current_variance) }}</h3>
                             <small class="text-muted">Current Net</small>
                         </div>
                         <div class="col-md-2">
@@ -85,20 +85,20 @@
                                     </td>
                                     <td class="text-end text-danger">
                                         {% if property.total_undercharge > 0 %}
-                                            ${{ "%.2f"|format(property.total_undercharge) }}
+                                            ${{ "{:,.0f}".format(property.total_undercharge) }}
                                         {% else %}
-                                            $0.00
+                                            $0
                                         {% endif %}
                                     </td>
                                     <td class="text-end text-success">
                                         {% if property.total_overcharge > 0 %}
-                                            ${{ "%.2f"|format(property.total_overcharge) }}
+                                            ${{ "{:,.0f}".format(property.total_overcharge) }}
                                         {% else %}
-                                            $0.00
+                                            $0
                                         {% endif %}
                                     </td>
                                     <td class="text-end">
-                                        <strong>${{ "%.2f"|format(property.total_variance|abs) }}</strong>
+                                        <strong>${{ "{:,.0f}".format(property.total_variance|abs) }}</strong>
                                     </td>
                                     <td class="text-center">
                                         <a href="{{ url_for('main.property_view', property_id=property.property_id, run_id=run_id) }}" 

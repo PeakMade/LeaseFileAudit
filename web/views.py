@@ -787,10 +787,22 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         total_undercharge = max(0, total_expected - total_actual)
         total_overcharge = max(0, total_actual - total_expected)
         
+        # Get property name
+        PROPERTY_NAME_MAP = {
+            1122966: "48 West",
+            100069944: "Bixby Kennesaw"
+        }
+        property_name = None
+        if len(lease_actual) > 0 and CanonicalField.PROPERTY_NAME.value in lease_actual.columns:
+            property_name = lease_actual[CanonicalField.PROPERTY_NAME.value].iloc[0]
+        if not property_name:
+            property_name = PROPERTY_NAME_MAP.get(int(float(property_id)))
+        
         return render_template(
             'lease.html',
             run_id=run_id,
             property_id=property_id,
+            property_name=property_name,
             lease_interval_id=lease_interval_id,
             metadata=run_data["metadata"],
             exceptions=grouped_list,
