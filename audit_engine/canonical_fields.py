@@ -27,6 +27,9 @@ class CanonicalField(str, Enum):
     PROPERTY_ID = "PROPERTY_ID"
     """Unique identifier for a property"""
     
+    PROPERTY_NAME = "PROPERTY_NAME"
+    """Name of the property"""
+    
     LEASE_ID = "LEASE_ID"
     """Unique identifier for a lease (lifetime)"""
     

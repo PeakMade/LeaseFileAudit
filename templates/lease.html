@@ -8,19 +8,6 @@
     <div class="row mb-4">
         <div class="col">
             <h2>Lease Interval ID: {{ lease_interval_id|int }}</h2>
-            <p class="text-muted">
-                Property ID: <code>{{ property_id|int }}</code> | Run ID: <code>{{ run_id }}</code>
-                {% if metadata.audit_period %}
-                <br><strong>Audit Period: 
-                {% if metadata.audit_period.month %}
-                    {{ ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][metadata.audit_period.month] }}
-                {% endif %}
-                {% if metadata.audit_period.year %}
-                    {{ metadata.audit_period.year }}
-                {% endif %}
-                </strong>
-                {% endif %}
-            </p>
         </div>
         <div class="col-auto">
             <a href="{{ url_for('main.property_view', property_id=property_id, run_id=run_id) }}" class="btn btn-secondary">
@@ -34,11 +21,14 @@
         <div class="col-12">
             <div class="alert alert-light border" role="alert">
                 <div class="row">
-                    <div class="col-md-6">
-                        <strong>Total Undercharge:</strong> <span class="text-danger">${{ "%.2f"|format(total_variance|abs) }}</span>
+                    <div class="col-md-4">
+                        <strong>Total Undercharge:</strong> <span class="text-danger">${{ "%.2f"|format(total_undercharge) }}</span>
                     </div>
-                    <div class="col-md-6 text-end">
-                        <strong>Expected Transaction:</strong> ${{ "%.2f"|format(total_expected) }}
+                    <div class="col-md-4 text-center">
+                        <strong>Total Overcharge:</strong> <span class="text-warning">${{ "%.2f"|format(total_overcharge) }}</span>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <strong>Expected Total:</strong> ${{ "%.2f"|format(total_expected) }}
                     </div>
                 </div>
             </div>
@@ -206,6 +196,25 @@
                     {% endif %}
                 </div>
             </div>
+        </div>
+    </div>
+    
+    <!-- Lease Metadata -->
+    <div class="row mt-3 mb-4">
+        <div class="col-12">
+            <p class="text-muted small">
+                Property ID: <code>{{ property_id|int }}</code> | Run ID: <code>{{ run_id }}</code>
+                {% if metadata.audit_period %}
+                | <strong>Audit Period: 
+                {% if metadata.audit_period.month %}
+                    {{ ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][metadata.audit_period.month] }}
+                {% endif %}
+                {% if metadata.audit_period.year %}
+                    {{ metadata.audit_period.year }}
+                {% endif %}
+                </strong>
+                {% endif %}
+            </p>
         </div>
     </div>
 </div>

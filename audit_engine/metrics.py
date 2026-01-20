@@ -82,13 +82,24 @@ def calculate_kpis(
     }
 
 
-def calculate_property_summary(bucket_results: pd.DataFrame, findings: pd.DataFrame) -> pd.DataFrame:
+def calculate_property_summary(bucket_results: pd.DataFrame, findings: pd.DataFrame, actual_detail: pd.DataFrame = None) -> pd.DataFrame:
     """
     Calculate summary KPIs by property.
+    
+    Args:
+        bucket_results: Reconciliation results
+        findings: Generated findings
+        actual_detail: Actual detail data (for property names)
     
     Returns:
         DataFrame with one row per property
     """
+    # Temporary hardcoded property names
+    PROPERTY_NAME_MAP = {
+        1122966: "48 West",
+        100069944: "Bixby Kennesaw"
+    }
+    
     properties = bucket_results[CanonicalField.PROPERTY_ID.value].unique()
     
     summaries = []
@@ -96,12 +107,37 @@ def calculate_property_summary(bucket_results: pd.DataFrame, findings: pd.DataFr
         kpis = calculate_kpis(bucket_results, findings, property_id=prop_id)
         kpis["property_id"] = prop_id
         
-        # Calculate undercharge/overcharge for this property
-        prop_buckets = bucket_results[bucket_results[CanonicalField.PROPERTY_ID.value] == prop_id]
-        undercharge = prop_buckets[prop_buckets[CanonicalField.VARIANCE.value] < 0][CanonicalField.VARIANCE.value].sum()
-        overcharge = prop_buckets[prop_buckets[CanonicalField.VARIANCE.value] > 0][CanonicalField.VARIANCE.value].sum()
+        # Get property name from actual detail if available, otherwise use hardcoded mapping
+        kpis["property_name"] = None
+        if actual_detail is not None and CanonicalField.PROPERTY_NAME.value in actual_detail.columns:
+            prop_data = actual_detail[actual_detail[CanonicalField.PROPERTY_ID.value] == prop_id]
+            if len(prop_data) > 0:
+                kpis["property_name"] = prop_data[CanonicalField.PROPERTY_NAME.value].iloc[0]
         
-        kpis['total_undercharge'] = abs(undercharge)
+        # Fallback to hardcoded names if not found
+        if not kpis["property_name"]:
+            kpis["property_name"] = PROPERTY_NAME_MAP.get(int(float(prop_id)))
+        
+        # Calculate total unique lease intervals for this property
+        prop_buckets = bucket_results[bucket_results[CanonicalField.PROPERTY_ID.value] == prop_id]
+        total_lease_intervals = prop_buckets[CanonicalField.LEASE_INTERVAL_ID.value].nunique()
+        kpis["total_lease_intervals"] = total_lease_intervals
+        
+        # Calculate undercharge/overcharge for this property
+        # Undercharge = expected > actual (billed less than scheduled)
+        # Overcharge = actual > expected (billed more than scheduled)
+        
+        undercharge = prop_buckets.apply(
+            lambda row: max(0, row[CanonicalField.EXPECTED_TOTAL.value] - row[CanonicalField.ACTUAL_TOTAL.value]),
+            axis=1
+        ).sum()
+        
+        overcharge = prop_buckets.apply(
+            lambda row: max(0, row[CanonicalField.ACTUAL_TOTAL.value] - row[CanonicalField.EXPECTED_TOTAL.value]),
+            axis=1
+        ).sum()
+        
+        kpis['total_undercharge'] = undercharge
         kpis['total_overcharge'] = overcharge
         
         summaries.append(kpis)

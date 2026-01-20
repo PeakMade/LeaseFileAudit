@@ -22,6 +22,7 @@ from .canonical_fields import CanonicalField
 class ARSourceColumns:
     """Raw column names from AR Transactions source."""
     PROPERTY_ID = "PROPERTY_ID"
+    PROPERTY_NAME = "PROPERTY_NAME"
     LEASE_INTERVAL_ID = "LEASE_INTERVAL_ID"
     AR_CODE_ID = "AR_CODE_ID"
     AR_CODE_NAME = "AR_CODE_NAME"
@@ -103,11 +104,21 @@ class SourceMapping:
 
 # ==================== V1 Mappings: AR Transactions ====================
 
+# AR codes posted through API - exclude from audit to prevent false exceptions
+API_POSTED_AR_CODES = [157001, 155180, 156669, 155203]
+
 def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter AR transactions: posted and not deleted."""
+    """
+    Filter AR transactions: posted, not deleted, and exclude API-posted codes.
+    
+    API-posted codes (157001, 155180, 156669, 155203) are automatically posted
+    and should not appear in scheduled charges. Excluding them prevents false
+    exceptions from API-generated transactions.
+    """
     return df[
         (df[ARSourceColumns.IS_POSTED] == 1) & 
-        (df[ARSourceColumns.IS_DELETED] == 0)
+        (df[ARSourceColumns.IS_DELETED] == 0) &
+        (~df[ARSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES))
     ].copy()
 
 
@@ -145,6 +156,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
     name="ar_transactions",
     required_source_columns=[
         ARSourceColumns.PROPERTY_ID,
+        ARSourceColumns.PROPERTY_NAME,
         ARSourceColumns.LEASE_INTERVAL_ID,
         ARSourceColumns.AR_CODE_ID,
         ARSourceColumns.AR_CODE_NAME,
@@ -158,6 +170,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
     ],
     column_transforms=[
         ColumnTransform(ARSourceColumns.PROPERTY_ID, CanonicalField.PROPERTY_ID),
+        ColumnTransform(ARSourceColumns.PROPERTY_NAME, CanonicalField.PROPERTY_NAME),
         ColumnTransform(ARSourceColumns.LEASE_INTERVAL_ID, CanonicalField.LEASE_INTERVAL_ID),
         ColumnTransform(ARSourceColumns.AR_CODE_ID, CanonicalField.AR_CODE_ID),
         ColumnTransform(ARSourceColumns.AR_CODE_NAME, CanonicalField.AR_CODE_NAME),

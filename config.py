@@ -30,7 +30,7 @@ class DataSourceConfig:
 @dataclass
 class ReconciliationConfig:
     """Configuration for reconciliation tolerances and rules."""
-    amount_tolerance: float = 0.01
+    amount_tolerance: float = 0.0
     status_matched: str = "MATCHED"
     status_scheduled_not_billed: str = "SCHEDULED_NOT_BILLED"
     status_billed_not_scheduled: str = "BILLED_NOT_SCHEDULED"

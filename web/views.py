@@ -78,13 +78,20 @@ def calculate_cumulative_metrics() -> dict:
         latest_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
     ]
     
-    current_undercharge = abs(current_exceptions[
-        current_exceptions[CanonicalField.VARIANCE.value] < 0
-    ][CanonicalField.VARIANCE.value].sum())
+    # Proper undercharge/overcharge calculation:
+    # Undercharge = expected > actual (we billed/collected less than scheduled)
+    # Overcharge = actual > expected (we billed/collected more than scheduled)
+    # Use MAX(0, difference) to get only positive contributions
     
-    current_overcharge = current_exceptions[
-        current_exceptions[CanonicalField.VARIANCE.value] > 0
-    ][CanonicalField.VARIANCE.value].sum()
+    current_undercharge = current_exceptions.apply(
+        lambda row: max(0, row[CanonicalField.EXPECTED_TOTAL.value] - row[CanonicalField.ACTUAL_TOTAL.value]),
+        axis=1
+    ).sum()
+    
+    current_overcharge = current_exceptions.apply(
+        lambda row: max(0, row[CanonicalField.ACTUAL_TOTAL.value] - row[CanonicalField.EXPECTED_TOTAL.value]),
+        axis=1
+    ).sum()
     
     # Count unique leases audited (not buckets)
     total_leases_audited = latest_buckets[CanonicalField.LEASE_INTERVAL_ID.value].nunique()
@@ -133,6 +140,11 @@ def calculate_cumulative_metrics() -> dict:
     
     # Calculate historical totals (all unique exceptions ever found - deduplicated)
     all_exception_data = list(exception_history.values())
+    
+    # Historical undercharge/overcharge using proper logic
+    # Note: We only have variance in history, need to derive expected/actual
+    # For historical: if variance < 0, it means actual < expected (undercharged)
+    #                 if variance > 0, it means actual > expected (overcharged)
     historical_undercharge = sum(abs(exc['variance']) for exc in all_exception_data if exc['variance'] < 0)
     historical_overcharge = sum(exc['variance'] for exc in all_exception_data if exc['variance'] > 0)
     
@@ -389,7 +401,8 @@ def portfolio(run_id: str = None):
         # Calculate property summary from most recent run
         property_summary = calculate_property_summary(
             run_data["bucket_results"],
-            run_data["findings"]
+            run_data["findings"],
+            run_data["actual_detail"]  # Pass actual_detail to get property names
         )
         
         return render_template(
@@ -427,18 +440,34 @@ def property_view(property_id: str, run_id: str = None):
         
         run_data = storage.load_run(run_id)
         
-        # Get all unique leases for this property from expected_detail
-        expected_detail = run_data["expected_detail"]
-        property_expected = expected_detail[
-            expected_detail[CanonicalField.PROPERTY_ID.value] == float(property_id)
-        ]
-        all_lease_ids = property_expected[CanonicalField.LEASE_INTERVAL_ID.value].unique()
-        
-        # Filter bucket results by property - only exceptions
+        # Get bucket results for this property (all statuses)
         bucket_results = run_data["bucket_results"]
-        property_buckets = bucket_results[
-            (bucket_results[CanonicalField.PROPERTY_ID.value] == float(property_id)) &
-            (bucket_results[CanonicalField.STATUS.value] != config.reconciliation.status_matched)
+        all_property_buckets = bucket_results[
+            bucket_results[CanonicalField.PROPERTY_ID.value] == float(property_id)
+        ]
+        
+        # Get property name from actual detail or use hardcoded mapping
+        PROPERTY_NAME_MAP = {
+            1122966: "48 West",
+            100069944: "Bixby Kennesaw"
+        }
+        
+        property_name = None
+        actual_detail = run_data["actual_detail"]
+        property_actual = actual_detail[actual_detail[CanonicalField.PROPERTY_ID.value] == float(property_id)]
+        if len(property_actual) > 0 and CanonicalField.PROPERTY_NAME.value in property_actual.columns:
+            property_name = property_actual[CanonicalField.PROPERTY_NAME.value].iloc[0]
+        
+        # Fallback to hardcoded names
+        if not property_name:
+            property_name = PROPERTY_NAME_MAP.get(int(float(property_id)))
+        
+        # Get all unique leases for this property
+        all_lease_ids = sorted(all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value].unique())
+        
+        # Filter to only exceptions for grouping
+        property_buckets = all_property_buckets[
+            all_property_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
         ].copy()
         
         # Group exceptions by lease_interval_id
@@ -461,9 +490,17 @@ def property_view(property_id: str, run_id: str = None):
             }
             lease_groups[lease_id].append(exception)
         
-        # Build comprehensive lease summary (including clean leases)
+        # Build comprehensive lease summary (including clean and matched leases)
         lease_summary = []
         for lease_id in all_lease_ids:
+            # Get all buckets for this lease
+            lease_all_buckets = all_property_buckets[
+                all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
+            ]
+            matched_count = len(lease_all_buckets[
+                lease_all_buckets[CanonicalField.STATUS.value] == config.reconciliation.status_matched
+            ])
+            
             if lease_id in lease_groups:
                 # Lease has exceptions
                 exceptions = lease_groups[lease_id]
@@ -472,6 +509,7 @@ def property_view(property_id: str, run_id: str = None):
                     'lease_interval_id': lease_id,
                     'has_exceptions': True,
                     'exception_count': len(exceptions),
+                    'matched_count': matched_count,
                     'total_variance': total_variance,
                     'exceptions': sorted(exceptions, key=lambda x: abs(x['variance']), reverse=True)
                 })
@@ -481,6 +519,7 @@ def property_view(property_id: str, run_id: str = None):
                     'lease_interval_id': lease_id,
                     'has_exceptions': False,
                     'exception_count': 0,
+                    'matched_count': matched_count,
                     'total_variance': 0,
                     'exceptions': []
                 })
@@ -489,9 +528,6 @@ def property_view(property_id: str, run_id: str = None):
         lease_summary = sorted(lease_summary, key=lambda x: (not x['has_exceptions'], -x['total_variance']))
         
         # Calculate property KPIs
-        all_property_buckets = bucket_results[
-            bucket_results[CanonicalField.PROPERTY_ID.value] == float(property_id)
-        ]
         property_kpis = calculate_kpis(
             all_property_buckets,
             run_data["findings"],
@@ -502,6 +538,7 @@ def property_view(property_id: str, run_id: str = None):
             'property.html',
             run_id=run_id,
             property_id=property_id,
+            property_name=property_name,
             metadata=run_data["metadata"],
             kpis=property_kpis,
             lease_summary=lease_summary,
@@ -743,10 +780,12 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         grouped_list = list(grouped_exceptions.values())
         grouped_list = sorted(grouped_list, key=lambda x: abs(x['total_variance']), reverse=True)
         
-        # Calculate lease totals
-        total_variance = sum(abs(g['total_variance']) for g in grouped_list)
+        # Calculate lease totals with proper undercharge/overcharge logic
         total_expected = sum(g['total_expected'] for g in grouped_list)
         total_actual = sum(g['total_actual'] for g in grouped_list)
+        total_variance = total_actual - total_expected
+        total_undercharge = max(0, total_expected - total_actual)
+        total_overcharge = max(0, total_actual - total_expected)
         
         return render_template(
             'lease.html',
@@ -758,7 +797,9 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             exception_count=len(grouped_list),
             total_variance=total_variance,
             total_expected=total_expected,
-            total_actual=total_actual
+            total_actual=total_actual,
+            total_undercharge=total_undercharge,
+            total_overcharge=total_overcharge
         )
     except Exception as e:
         import traceback

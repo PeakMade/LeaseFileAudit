@@ -8,21 +8,6 @@
     <div class="row mb-4">
         <div class="col">
             <h2>PeakMade Portfolio</h2>
-            <p class="text-muted">
-                Most Recent Run: <code>{{ run_id }}</code> | 
-                Executed: {{ metadata.timestamp }}
-                {% if metadata.audit_period %}
-                | <strong>Audit Period: 
-                {% if metadata.audit_period.month %}
-                    {{ ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][metadata.audit_period.month] }}
-                {% endif %}
-                {% if metadata.audit_period.year %}
-                    {{ metadata.audit_period.year }}
-                {% endif %}
-                </strong>
-                {% endif %}
-                <br><small>Cumulative data from {{ total_runs }} audit run(s)</small>
-            </p>
         </div>
     </div>
 
@@ -75,8 +60,9 @@
                         <table class="table table-hover mb-0">
                             <thead class="table-light">
                                 <tr>
+                                    <th>Property Name</th>
                                     <th>Property ID</th>
-                                    <th class="text-center">Total Audits</th>
+                                    <th class="text-center">Total Lease Intervals</th>
                                     <th class="text-center">Exceptions</th>
                                     <th class="text-end">Undercharge</th>
                                     <th class="text-end">Overcharge</th>
@@ -87,13 +73,14 @@
                             <tbody>
                                 {% for property in properties %}
                                 <tr>
-                                    <td><strong>{{ property.property_id|int }}</strong></td>
-                                    <td class="text-center">{{ property.total_buckets }}</td>
+                                    <td><strong>{{ property.property_name if property.property_name else '-' }}</strong></td>
+                                    <td>{{ property.property_id|int }}</td>
+                                    <td class="text-center">{{ property.total_lease_intervals }}</td>
                                     <td class="text-center">
                                         {% if property.exception_buckets > 0 %}
-                                            <span class="badge bg-warning">{{ property.exception_buckets }}</span>
+                                            <i class="fas fa-exclamation-circle text-danger me-1"></i>{{ property.exception_buckets }}
                                         {% else %}
-                                            <span class="badge bg-success">0</span>
+                                            0
                                         {% endif %}
                                     </td>
                                     <td class="text-end text-danger">
@@ -135,6 +122,27 @@
             <a href="{{ url_for('main.index') }}" class="btn btn-secondary">
                 <i class="fas fa-arrow-left"></i> Back to Upload
             </a>
+        </div>
+    </div>
+    
+    <!-- Run Metadata -->
+    <div class="row mt-3 mb-4">
+        <div class="col-12">
+            <p class="text-muted small">
+                Most Recent Run: <code>{{ run_id }}</code> | 
+                Executed: {{ metadata.timestamp }}
+                {% if metadata.audit_period %}
+                | <strong>Audit Period: 
+                {% if metadata.audit_period.month %}
+                    {{ ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][metadata.audit_period.month] }}
+                {% endif %}
+                {% if metadata.audit_period.year %}
+                    {{ metadata.audit_period.year }}
+                {% endif %}
+                </strong>
+                {% endif %}
+                <br>Cumulative data from {{ total_runs }} audit run(s)
+            </p>
         </div>
     </div>
 </div>
