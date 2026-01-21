@@ -198,6 +198,115 @@
         </div>
     </div>
     
+    <!-- Matched Records Table -->
+    {% if matched_records %}
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="fas fa-check-circle"></i> Matched Charges ({{ matched_count }})</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>AR Code</th>
+                                    <th class="text-center">Months</th>
+                                    <th class="text-end">Total Amount</th>
+                                    <th class="text-center">Details</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for match in matched_records %}
+                                <!-- Summary Row -->
+                                <tr class="table-success">
+                                    <td>
+                                        <strong>{{ match.ar_code_id|int }}{% if match.ar_code_name %} - {{ match.ar_code_name }}{% endif %}</strong><br>
+                                        <small class="text-muted">{{ match.month_count }} month(s) matched</small>
+                                    </td>
+                                    <td class="text-center">{{ match.month_count }}</td>
+                                    <td class="text-end"><strong>${{ "{:,.0f}".format(match.total_amount) }}</strong></td>
+                                    <td class="text-center">
+                                        <button class="btn btn-sm btn-outline-success" type="button" data-bs-toggle="collapse" data-bs-target="#match-{{ loop.index }}" aria-expanded="false" title="View Monthly Details">
+                                            <i class="fas fa-chevron-down"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                                <!-- Expandable Monthly Details -->
+                                <tr class="collapse" id="match-{{ loop.index }}">
+                                    <td colspan="4" class="p-0">
+                                        <div class="bg-light p-3">
+                                            <h6 class="mb-3"><i class="fas fa-calendar-check"></i> Monthly Breakdown</h6>
+                                            
+                                            <table class="table table-sm table-bordered bg-white">
+                                                <thead class="table-secondary">
+                                                    <tr>
+                                                        <th rowspan="2" class="align-middle">Month</th>
+                                                        <th colspan="3" class="text-center text-info">Expected</th>
+                                                        <th colspan="3" class="text-center text-success">Actual (Matched)</th>
+                                                    </tr>
+                                                    <tr>
+                                                        <th class="text-info">Period Start</th>
+                                                        <th class="text-info">Period End</th>
+                                                        <th class="text-end text-info">Amount</th>
+                                                        <th class="text-success">Posted Date</th>
+                                                        <th class="text-success">Txn ID</th>
+                                                        <th class="text-end text-success">Amount</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {% for monthly in match.monthly_details %}
+                                                    {% set exp_count = monthly.expected_transactions|length %}
+                                                    {% set act_count = monthly.actual_transactions|length %}
+                                                    {% set max_rows = [exp_count, act_count]|max %}
+                                                    {% set max_rows = max_rows if max_rows > 0 else 1 %}
+                                                    
+                                                    {% for i in range(max_rows) %}
+                                                    <tr>
+                                                        {% if i == 0 %}
+                                                        <td rowspan="{{ max_rows }}" class="align-middle">
+                                                            <strong>{{ monthly.audit_month.strftime('%B %Y') if monthly.audit_month else '-' }}</strong>
+                                                        </td>
+                                                        {% endif %}
+                                                        
+                                                        <!-- Expected columns -->
+                                                        {% if i < exp_count %}
+                                                        {% set exp = monthly.expected_transactions[i] %}
+                                                        <td>{{ exp.period_start.strftime('%m/%d/%Y') if exp.period_start else '-' }}</td>
+                                                        <td>{{ exp.period_end.strftime('%m/%d/%Y') if exp.period_end else '-' }}</td>
+                                                        <td class="text-end">${{ "{:,.0f}".format(exp.amount) }}</td>
+                                                        {% else %}
+                                                        <td colspan="3" class="text-muted text-center">-</td>
+                                                        {% endif %}
+                                                        
+                                                        <!-- Actual columns -->
+                                                        {% if i < act_count %}
+                                                        {% set act = monthly.actual_transactions[i] %}
+                                                        <td>{{ act.post_date.strftime('%m/%d/%Y') if act.post_date else '-' }}</td>
+                                                        <td><small>{{ act.transaction_id|int if act.transaction_id else '-' }}</small></td>
+                                                        <td class="text-end">${{ "{:,.0f}".format(act.amount) }}</td>
+                                                        {% else %}
+                                                        <td colspan="3" class="text-muted text-center">-</td>
+                                                        {% endif %}
+                                                    </tr>
+                                                    {% endfor %}
+                                                    {% endfor %}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
     <!-- Lease Metadata -->
     <div class="row mt-3 mb-4">
         <div class="col-12">

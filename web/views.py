@@ -607,12 +607,19 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         storage = get_storage_service()
         run_data = storage.load_run(run_id)
         
-        # Get all buckets for this lease - only exceptions
+        # Get all buckets for this lease - exceptions and matches separately
         bucket_results = run_data["bucket_results"]
         lease_buckets = bucket_results[
             (bucket_results[CanonicalField.PROPERTY_ID.value] == float(property_id)) &
             (bucket_results[CanonicalField.LEASE_INTERVAL_ID.value] == float(lease_interval_id)) &
             (bucket_results[CanonicalField.STATUS.value] != config.reconciliation.status_matched)
+        ].copy()
+        
+        # Get matched buckets for this lease
+        matched_buckets = bucket_results[
+            (bucket_results[CanonicalField.PROPERTY_ID.value] == float(property_id)) &
+            (bucket_results[CanonicalField.LEASE_INTERVAL_ID.value] == float(lease_interval_id)) &
+            (bucket_results[CanonicalField.STATUS.value] == config.reconciliation.status_matched)
         ].copy()
         
         # Get expected and actual detail for this lease
@@ -837,6 +844,75 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             placeholder_names = ["John Doe", "Jane Smith", "John Smith", "Jane Doe", "James Brown", "Mary Johnson"]
             guarantor_name = placeholder_names[int(float(lease_interval_id)) % len(placeholder_names)]
         
+        # Build matched details grouped by AR code
+        matched_groups = {}
+        for _, bucket in matched_buckets.iterrows():
+            ar_code = bucket[CanonicalField.AR_CODE_ID.value]
+            audit_month = bucket[CanonicalField.AUDIT_MONTH.value]
+            
+            # Get expected and actual records for this match
+            expected_records = lease_expected[
+                (lease_expected[CanonicalField.AR_CODE_ID.value] == ar_code) &
+                (lease_expected[CanonicalField.AUDIT_MONTH.value] == audit_month)
+            ]
+            
+            actual_records = lease_actual[
+                (lease_actual[CanonicalField.AR_CODE_ID.value] == ar_code) &
+                (lease_actual[CanonicalField.AUDIT_MONTH.value] == audit_month)
+            ]
+            
+            # Get AR code name
+            ar_code_name = None
+            if not actual_records.empty and 'AR_CODE_NAME' in actual_records.columns:
+                name_value = actual_records['AR_CODE_NAME'].iloc[0]
+                if pd.notna(name_value):
+                    ar_code_name = name_value
+            if not ar_code_name and not expected_records.empty and 'AR_CODE_NAME' in expected_records.columns:
+                name_value = expected_records['AR_CODE_NAME'].iloc[0]
+                if pd.notna(name_value):
+                    ar_code_name = name_value
+            
+            if ar_code not in matched_groups:
+                matched_groups[ar_code] = {
+                    'ar_code_id': ar_code,
+                    'ar_code_name': ar_code_name,
+                    'total_amount': 0,
+                    'month_count': 0,
+                    'monthly_details': []
+                }
+            
+            # Build transaction details
+            expected_transactions = []
+            actual_transactions = []
+            
+            if not expected_records.empty:
+                for _, exp_rec in expected_records.iterrows():
+                    expected_transactions.append({
+                        'amount': exp_rec.get('expected_amount', 0),
+                        'period_start': exp_rec.get('PERIOD_START') if pd.notna(exp_rec.get('PERIOD_START')) else None,
+                        'period_end': exp_rec.get('PERIOD_END') if pd.notna(exp_rec.get('PERIOD_END')) else None,
+                    })
+            
+            if not actual_records.empty:
+                for _, act_rec in actual_records.iterrows():
+                    actual_transactions.append({
+                        'amount': act_rec.get('actual_amount', 0),
+                        'post_date': act_rec.get('POST_DATE') if pd.notna(act_rec.get('POST_DATE')) else None,
+                        'transaction_id': act_rec.get('AR_TRANSACTION_ID')
+                    })
+            
+            matched_groups[ar_code]['total_amount'] += bucket[CanonicalField.ACTUAL_TOTAL.value]
+            matched_groups[ar_code]['month_count'] += 1
+            matched_groups[ar_code]['monthly_details'].append({
+                'audit_month': audit_month,
+                'amount': bucket[CanonicalField.ACTUAL_TOTAL.value],
+                'expected_transactions': expected_transactions,
+                'actual_transactions': actual_transactions
+            })
+        
+        # Convert to sorted list
+        matched_list = sorted(matched_groups.values(), key=lambda x: x['total_amount'], reverse=True)
+        
         return render_template(
             'lease.html',
             run_id=run_id,
@@ -847,6 +923,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             metadata=run_data["metadata"],
             exceptions=grouped_list,
             exception_count=len(grouped_list),
+            matched_records=matched_list,
+            matched_count=len(matched_list),
             total_variance=total_variance,
             total_expected=total_expected,
             total_actual=total_actual,

@@ -108,7 +108,7 @@ class SourceMapping:
 # ==================== V1 Mappings: AR Transactions ====================
 
 # AR codes posted through API - exclude from audit to prevent false exceptions
-API_POSTED_AR_CODES = [157001, 155180, 156669, 155203]
+API_POSTED_AR_CODES = [156669, 154776, 155217]
 
 def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     """
