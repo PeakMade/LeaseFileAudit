@@ -48,6 +48,13 @@ Thumbs.db
 
 # Database
 *.db
+
+# Azure
+antenv/
+uploads/
+
+# Temporary files
+*.tmp
 *.sqlite
 
 # Excel files (uploaded data)
