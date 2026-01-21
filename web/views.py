@@ -495,13 +495,20 @@ def property_view(property_id: str, run_id: str = None):
         placeholder_names = ["John Doe", "Jane Smith", "John Smith", "Jane Doe", "James Brown", "Mary Johnson"]
         placeholder_index = 0
         for lease_id in all_lease_ids:
-            # Get guarantor name for this lease
+            # Get guarantor name and customer name for this lease
             guarantor_name = None
+            customer_name = None
             lease_actual_data = actual_detail[actual_detail[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id]
-            if len(lease_actual_data) > 0 and CanonicalField.GUARANTOR_NAME.value in lease_actual_data.columns:
-                guarantor_value = lease_actual_data[CanonicalField.GUARANTOR_NAME.value].iloc[0]
-                if pd.notna(guarantor_value):
-                    guarantor_name = guarantor_value
+            if len(lease_actual_data) > 0:
+                if CanonicalField.GUARANTOR_NAME.value in lease_actual_data.columns:
+                    guarantor_value = lease_actual_data[CanonicalField.GUARANTOR_NAME.value].iloc[0]
+                    if pd.notna(guarantor_value):
+                        guarantor_name = guarantor_value
+                
+                if CanonicalField.CUSTOMER_NAME.value in lease_actual_data.columns:
+                    customer_value = lease_actual_data[CanonicalField.CUSTOMER_NAME.value].iloc[0]
+                    if pd.notna(customer_value):
+                        customer_name = customer_value
             
             # Use placeholder if no guarantor name found
             if not guarantor_name:
@@ -522,6 +529,7 @@ def property_view(property_id: str, run_id: str = None):
                 total_variance = sum(e['variance'] for e in exceptions)
                 lease_summary.append({
                     'lease_interval_id': lease_id,
+                    'customer_name': customer_name,
                     'guarantor_name': guarantor_name,
                     'has_exceptions': True,
                     'exception_count': len(exceptions),
@@ -533,6 +541,7 @@ def property_view(property_id: str, run_id: str = None):
                 # Clean lease - no exceptions
                 lease_summary.append({
                     'lease_interval_id': lease_id,
+                    'customer_name': customer_name,
                     'guarantor_name': guarantor_name,
                     'has_exceptions': False,
                     'exception_count': 0,

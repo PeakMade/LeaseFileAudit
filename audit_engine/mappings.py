@@ -33,6 +33,7 @@ class ARSourceColumns:
     IS_DELETED = "IS_DELETED"
     IS_REVERSAL = "IS_REVERSAL"
     ID = "ID"
+    CUSTOMER_NAME = "CUSTOMER_NAME"
     GUARANTOR_NAME = "GUARANTOR_NAME"
 
 
@@ -169,6 +170,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ARSourceColumns.IS_DELETED,
         ARSourceColumns.IS_REVERSAL,
         ARSourceColumns.ID,
+        ARSourceColumns.CUSTOMER_NAME,
         ARSourceColumns.GUARANTOR_NAME,
     ],
     column_transforms=[
@@ -184,6 +186,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ColumnTransform(ARSourceColumns.IS_DELETED, CanonicalField.IS_DELETED),
         ColumnTransform(ARSourceColumns.IS_REVERSAL, CanonicalField.IS_REVERSAL),
         ColumnTransform(ARSourceColumns.ID, CanonicalField.AR_TRANSACTION_ID),
+        ColumnTransform(ARSourceColumns.CUSTOMER_NAME, CanonicalField.CUSTOMER_NAME),
         ColumnTransform(ARSourceColumns.GUARANTOR_NAME, CanonicalField.GUARANTOR_NAME),
     ],
     row_filter=_ar_row_filter,

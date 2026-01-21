@@ -46,6 +46,7 @@ def normalize_ar_transactions(df: pd.DataFrame) -> pd.DataFrame:
         CanonicalField.IS_REVERSAL.value,
         CanonicalField.POST_DATE.value,
         CanonicalField.AR_CODE_NAME.value,
+        CanonicalField.CUSTOMER_NAME.value,
         CanonicalField.GUARANTOR_NAME.value
     ]
     

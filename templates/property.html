@@ -83,7 +83,8 @@
                         <table class="table table-hover table-bordered mb-0" style="border-collapse: collapse;">
                             <thead style="background-color: #f8f9fa; position: sticky; top: 0; z-index: 10;">
                                 <tr style="border-bottom: 2px solid #dee2e6;">
-                                    <th style="width: 250px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Guarantor Name</th>
+                                    <th style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Customer Name</th>
+                                    <th style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Guarantor Name</th>
                                     <th style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease Interval ID</th>
                                     <th class="text-center" style="width: 120px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Matched</th>
                                     <th class="text-center" style="width: 120px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Exceptions</th>
@@ -95,6 +96,9 @@
                                 {% for lease in lease_summary %}
                                 <tr class="lease-row" style="cursor: pointer; transition: background-color 0.15s;" 
                                     onclick="window.location.href='{{ url_for('main.lease_view', run_id=run_id, property_id=property_id, lease_interval_id=lease.lease_interval_id) }}'">
+                                    <td style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
+                                        {{ lease.customer_name if lease.customer_name else '' }}
+                                    </td>
                                     <td style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
                                         {% if lease.guarantor_name %}
                                             {{ lease.guarantor_name }}
