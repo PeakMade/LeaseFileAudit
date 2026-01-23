@@ -31,6 +31,9 @@ class SharePointLogger:
         """
         self.site_url = site_url.rstrip('/')
         self.list_name = list_name
+        logger.debug(f"[SHAREPOINT] Initialized SharePoint logger")
+        logger.debug(f"[SHAREPOINT] Site URL: {self.site_url}")
+        logger.debug(f"[SHAREPOINT] List name: {self.list_name}")
         
     def log_activity(
         self, 
@@ -56,6 +59,12 @@ class SharePointLogger:
             True if log was successful, False otherwise
         """
         try:
+            logger.debug(f"[SHAREPOINT] Attempting to log activity: {activity_type}")
+            logger.debug(f"[SHAREPOINT] User: {user_name} ({user_email})")
+            logger.debug(f"[SHAREPOINT] Access token present: {access_token is not None}")
+            if access_token:
+                logger.debug(f"[SHAREPOINT] Access token length: {len(access_token)}")
+            
             # Prepare the list item data
             item_data = {
                 '__metadata': {'type': f'SP.Data.{self.list_name}ListItem'},
@@ -75,6 +84,7 @@ class SharePointLogger:
             
             # Get the list endpoint
             list_endpoint = f"{self.site_url}/_api/web/lists/getbytitle('{self.list_name}')/items"
+            logger.debug(f"[SHAREPOINT] Endpoint: {list_endpoint}")
             
             # Prepare headers
             headers = {
@@ -82,25 +92,33 @@ class SharePointLogger:
                 'Accept': 'application/json;odata=verbose',
                 'Content-Type': 'application/json;odata=verbose',
             }
+            logger.debug(f"[SHAREPOINT] Request headers prepared (Authorization token masked)")
             
             # Make the request
+            logger.debug(f"[SHAREPOINT] Sending POST request to SharePoint...")
             response = requests.post(
                 list_endpoint,
                 json=item_data,
                 headers=headers,
                 timeout=10
             )
+            logger.debug(f"[SHAREPOINT] Response status code: {response.status_code}")
             
             if response.status_code in [200, 201]:
                 logger.info(f"Logged activity to SharePoint: {activity_type} by {user_name}")
+                logger.debug(f"[SHAREPOINT] Successfully created list item")
                 return True
             else:
                 logger.error(
                     f"Failed to log to SharePoint. Status: {response.status_code}, "
                     f"Response: {response.text}"
                 )
+                logger.debug(f"[SHAREPOINT] Error response body: {response.text[:500]}")
                 return False
                 
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[SHAREPOINT] Network error connecting to SharePoint: {e}", exc_info=True)
+            return False
         except Exception as e:
             logger.error(f"Error logging to SharePoint: {e}", exc_info=True)
             return False
@@ -193,10 +211,15 @@ def log_user_activity(
     Returns:
         True if logging was successful, False otherwise
     """
+    logger.debug(f"[SHAREPOINT] log_user_activity called for activity: {activity_type}")
+    logger.debug(f"[SHAREPOINT] User info present: {user_info is not None}")
+    
     if not user_info or not user_info.get('access_token'):
         logger.warning("Cannot log to SharePoint: No user info or access token")
+        logger.debug(f"[SHAREPOINT] User info keys: {list(user_info.keys()) if user_info else 'None'}")
         return False
     
+    logger.debug(f"[SHAREPOINT] Creating SharePointLogger instance")
     logger_instance = SharePointLogger(site_url, list_name)
     return logger_instance.log_activity(
         access_token=user_info['access_token'],

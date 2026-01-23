@@ -37,17 +37,24 @@ def get_easy_auth_user() -> Optional[Dict[str, Any]]:
     # Get the client principal header
     principal_header = request.headers.get('X-MS-CLIENT-PRINCIPAL')
     
+    logger.debug(f"[AUTH] Checking for X-MS-CLIENT-PRINCIPAL header")
+    logger.debug(f"[AUTH] Header present: {principal_header is not None}")
+    
     if not principal_header:
         logger.debug("No X-MS-CLIENT-PRINCIPAL header found - user not authenticated via Easy Auth")
         return None
     
     try:
+        logger.debug(f"[AUTH] Decoding X-MS-CLIENT-PRINCIPAL header (length: {len(principal_header)})")
         # Decode the base64-encoded JSON
         principal_json = base64.b64decode(principal_header).decode('utf-8')
+        logger.debug(f"[AUTH] Decoded principal JSON: {principal_json[:200]}...")
         principal_data = json.loads(principal_json)
+        logger.debug(f"[AUTH] Principal data keys: {list(principal_data.keys())}")
         
         # Extract user claims
         claims = {}
+        logger.debug(f"[AUTH] Extracting {len(principal_data.get('claims', []))} claims from principal data")
         for claim in principal_data.get('claims', []):
             claim_type = claim.get('typ', '')
             claim_value = claim.get('val', '')
@@ -56,14 +63,27 @@ def get_easy_auth_user() -> Optional[Dict[str, Any]]:
             claim_key = claim_type.split('/')[-1] if '/' in claim_type else claim_type
             claims[claim_key] = claim_value
         
+        logger.debug(f"[AUTH] Extracted claim keys: {list(claims.keys())}")
+        
         # Get access token from separate header
         access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
+        logger.debug(f"[AUTH] Access token present: {access_token is not None}")
+        if access_token:
+            logger.debug(f"[AUTH] Access token length: {len(access_token)}")
         
         # Build user info dictionary
+        extracted_name = claims.get('name', claims.get('displayname', 'Unknown User'))
+        extracted_email = claims.get('emailaddress', claims.get('email', claims.get('upn', '')))
+        
+        logger.debug(f"[AUTH] Extracted name from claims: {extracted_name}")
+        logger.debug(f"[AUTH] Extracted email from claims: {extracted_email}")
+        logger.debug(f"[AUTH] User ID: {principal_data.get('user_id', 'N/A')}")
+        logger.debug(f"[AUTH] Identity provider: {principal_data.get('identity_provider', 'aad')}")
+        
         user_info = {
             'user_id': principal_data.get('user_id', ''),
-            'name': claims.get('name', claims.get('displayname', 'Unknown User')),
-            'email': claims.get('emailaddress', claims.get('email', claims.get('upn', ''))),
+            'name': extracted_name,
+            'email': extracted_email,
             'claims': claims,
             'access_token': access_token,
             'identity_provider': principal_data.get('identity_provider', 'aad')
