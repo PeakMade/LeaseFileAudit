@@ -295,19 +295,35 @@ def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audi
 @optional_auth
 def index():
     """Upload form and recent runs."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     storage = get_storage_service()
     recent_runs = storage.list_runs(limit=10)
     user = get_current_user()
     
     # Log login activity to SharePoint if user is authenticated
+    logger.info(f"[INDEX] User present: {user is not None}")
+    if user:
+        logger.info(f"[INDEX] User keys: {list(user.keys())}")
+        logger.info(f"[INDEX] User has access_token: {user.get('access_token') is not None}")
+        logger.info(f"[INDEX] SharePoint logging enabled: {config.auth.enable_sharepoint_logging}")
+        logger.info(f"[INDEX] Can log to SharePoint: {config.auth.can_log_to_sharepoint()}")
+        logger.info(f"[INDEX] SharePoint site URL: {config.auth.sharepoint_site_url}")
+        logger.info(f"[INDEX] SharePoint list name: {config.auth.sharepoint_list_name}")
+        
     if user and config.auth.can_log_to_sharepoint():
-        log_user_activity(
+        logger.info(f"[INDEX] Attempting to log to SharePoint...")
+        result = log_user_activity(
             user_info=user,
             activity_type='Login',
             site_url=config.auth.sharepoint_site_url,
             list_name=config.auth.sharepoint_list_name,
             details={'page': 'index', 'user_role': 'user'}
         )
+        logger.info(f"[INDEX] SharePoint logging result: {result}")
+    else:
+        logger.warning(f"[INDEX] SharePoint logging skipped - user: {user is not None}, can_log: {config.auth.can_log_to_sharepoint() if user else 'N/A'}")
     
     return render_template('upload.html', recent_runs=recent_runs, user=user)
 

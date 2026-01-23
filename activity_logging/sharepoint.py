@@ -7,6 +7,7 @@ Azure AD access token obtained from Easy Auth headers.
 import logging
 import requests
 import os
+import json
 from datetime import datetime
 from typing import Optional, Dict, Any
 from flask import request
@@ -73,8 +74,13 @@ class SharePointLogger:
                 logger.debug(f"[SHAREPOINT] Access token length: {len(access_token)}")
             
             # Prepare the list item data
+            # For list metadata type, SharePoint uses a specific format:
+            # Remove spaces and special chars, capitalize first letter of each word
+            list_type = ''.join([word.capitalize() for word in self.list_name.replace('-', '').replace('_', '').split()])
+            logger.debug(f"[SHAREPOINT] List type name: SP.Data.{list_type}ListItem")
+            
             item_data = {
-                '__metadata': {'type': f'SP.Data.{self.list_name.replace(" ", "_x0020_")}ListItem'},
+                '__metadata': {'type': f'SP.Data.{list_type}ListItem'},
                 'Title': f'{activity_type} - {user_name}',
                 'UserName': user_name,
                 'UserEmail': user_email,
@@ -86,6 +92,8 @@ class SharePointLogger:
                 'UserAgent': request.headers.get('User-Agent', ''),
             }
             
+            logger.debug(f"[SHAREPOINT] Item data: {item_data}")
+            
             # Add details if provided
             if details:
                 item_data['Details'] = str(details)
@@ -93,6 +101,7 @@ class SharePointLogger:
             # Get the list endpoint
             list_endpoint = f"{self.site_url}/_api/web/lists/getbytitle('{self.list_name}')/items"
             logger.debug(f"[SHAREPOINT] Endpoint: {list_endpoint}")
+            logger.debug(f"[SHAREPOINT] List name used in URL: {self.list_name}")
             
             # Prepare headers
             headers = {
@@ -100,17 +109,26 @@ class SharePointLogger:
                 'Accept': 'application/json;odata=verbose',
                 'Content-Type': 'application/json;odata=verbose',
             }
-            logger.debug(f"[SHAREPOINT] Request headers prepared (Authorization token masked)")
+            logger.debug(f"[SHAREPOINT] Request headers prepared")
+            logger.debug(f"[SHAREPOINT] Authorization header: Bearer {access_token[:20]}...{access_token[-20:] if len(access_token) > 40 else ''}\")")
             
             # Make the request
             logger.debug(f"[SHAREPOINT] Sending POST request to SharePoint...")
-            response = requests.post(
-                list_endpoint,
-                json=item_data,
-                headers=headers,
-                timeout=10
-            )
-            logger.debug(f"[SHAREPOINT] Response status code: {response.status_code}")
+            logger.debug(f"[SHAREPOINT] Full request body: {json.dumps(item_data, indent=2)}")
+            
+            try:
+                response = requests.post(
+                    list_endpoint,
+                    json=item_data,
+                    headers=headers,
+                    timeout=10
+                )
+                logger.debug(f"[SHAREPOINT] Response status code: {response.status_code}")
+                logger.debug(f"[SHAREPOINT] Response headers: {dict(response.headers)}")
+                logger.debug(f"[SHAREPOINT] Response body: {response.text[:1000]}")
+            except Exception as req_error:
+                logger.error(f"[SHAREPOINT] Request exception: {req_error}\", exc_info=True)
+                raise
             
             if response.status_code in [200, 201]:
                 logger.info(f"Logged activity to SharePoint: {activity_type} by {user_name}")
