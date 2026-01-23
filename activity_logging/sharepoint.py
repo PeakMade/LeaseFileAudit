@@ -110,7 +110,7 @@ class SharePointLogger:
                 'Content-Type': 'application/json;odata=verbose',
             }
             logger.debug(f"[SHAREPOINT] Request headers prepared")
-            logger.debug(f"[SHAREPOINT] Authorization header: Bearer {access_token[:20]}...{access_token[-20:] if len(access_token) > 40 else ''}\")")
+            logger.debug(f"[SHAREPOINT] Authorization header: Bearer {access_token[:20]}...{access_token[-20:] if len(access_token) > 40 else ''}")
             
             # Make the request
             logger.debug(f"[SHAREPOINT] Sending POST request to SharePoint...")
@@ -127,7 +127,7 @@ class SharePointLogger:
                 logger.debug(f"[SHAREPOINT] Response headers: {dict(response.headers)}")
                 logger.debug(f"[SHAREPOINT] Response body: {response.text[:1000]}")
             except Exception as req_error:
-                logger.error(f"[SHAREPOINT] Request exception: {req_error}\", exc_info=True)
+                logger.error(f"[SHAREPOINT] Request exception: {req_error}", exc_info=True)
                 raise
             
             if response.status_code in [200, 201]:
