@@ -22,6 +22,8 @@ from audit_engine.canonical_fields import CanonicalField
 from storage.service import StorageService
 from config import config
 from web.auth import require_auth, optional_auth, get_current_user
+from activity_logging.sharepoint import log_user_activity
+import os
 
 bp = Blueprint('main', __name__)
 
@@ -296,6 +298,17 @@ def index():
     storage = get_storage_service()
     recent_runs = storage.list_runs(limit=10)
     user = get_current_user()
+    
+    # Log login activity to SharePoint if user is authenticated
+    if user and config.auth.can_log_to_sharepoint():
+        log_user_activity(
+            user_info=user,
+            activity_type='Login',
+            site_url=config.auth.sharepoint_site_url,
+            list_name=config.auth.sharepoint_list_name,
+            details={'page': 'index', 'user_role': 'user'}
+        )
+    
     return render_template('upload.html', recent_runs=recent_runs, user=user)
 
 
@@ -369,6 +382,24 @@ def upload():
             period_msg = f" (Period: {' '.join(period_parts)})"
         
         flash(f'Audit completed successfully! Run ID: {run_id}{period_msg}', 'success')
+        
+        # Log audit run activity to SharePoint
+        user = get_current_user()
+        if user and config.auth.can_log_to_sharepoint():
+            log_user_activity(
+                user_info=user,
+                activity_type='Run Audit',
+                site_url=config.auth.sharepoint_site_url,
+                list_name=config.auth.sharepoint_list_name,
+                details={
+                    'run_id': run_id,
+                    'file_name': filename,
+                    'audit_year': audit_year,
+                    'audit_month': audit_month,
+                    'user_role': 'user'
+                }
+            )
+        
         return redirect(url_for('main.portfolio', run_id=run_id))
         
     except Exception as e:

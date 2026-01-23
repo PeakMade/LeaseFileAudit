@@ -184,18 +184,105 @@
             }
         }
         
-        /* User info styling */
-        .user-info {
-            position: absolute;
-            top: 100%;
-            right: 20px;
-            margin-top: 10px;
+        /* User badge styling */
+        .user-badge {
             background: white;
-            padding: 10px 15px;
+            border: 1px solid #e0e0e0;
             border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            font-size: 0.9rem;
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+        
+        .user-badge:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+            border-color: #00a8c8;
+        }
+        
+        .user-badge .user-icon {
+            color: #666;
+            font-size: 18px;
+        }
+        
+        .user-badge .user-name {
             color: #333;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        
+        .user-badge .dropdown-arrow {
+            color: #999;
+            font-size: 12px;
+            transition: transform 0.2s ease;
+        }
+        
+        .user-badge:hover .dropdown-arrow {
+            transform: rotate(180deg);
+        }
+        
+        .user-dropdown {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            padding: 12px;
+            min-width: 250px;
+            display: none;
+            z-index: 1000;
+        }
+        
+        .user-badge:hover .user-dropdown {
+            display: block;
+        }
+        
+        .user-dropdown-item {
+            padding: 8px 12px;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 13px;
+        }
+        
+        .user-dropdown-item:last-child {
+            border-bottom: none;
+        }
+        
+        .user-dropdown-item strong {
+            color: #666;
+            display: block;
+            font-size: 11px;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        
+        .user-dropdown-item .value {
+            color: #333;
+            font-weight: 500;
+        }
+        
+        .user-dropdown .logout-link {
+            display: block;
+            text-align: center;
+            padding: 10px;
+            margin-top: 8px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            color: #c20068;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 13px;
+            transition: all 0.2s ease;
+        }
+        
+        .user-dropdown .logout-link:hover {
+            background: #c20068;
+            color: white;
         }
         
         .user-info .user-name {
@@ -334,21 +421,31 @@
                 </h1>
             </div>
             
-            <div style="flex: 1; display: flex; justify-content: flex-end; align-items: center; height: 80px;">
+            <div style="flex: 1; display: flex; justify-content: flex-end; align-items: center; height: 80px; gap: 20px;">
+                {% if user %}
+                <div class="user-badge">
+                    <i class="fas fa-user user-icon"></i>
+                    <span class="user-name">{{ user.name }}</span>
+                    <i class="fas fa-chevron-down dropdown-arrow"></i>
+                    <div class="user-dropdown">
+                        <div class="user-dropdown-item">
+                            <strong>Name</strong>
+                            <div class="value">{{ user.name }}</div>
+                        </div>
+                        <div class="user-dropdown-item">
+                            <strong>Email</strong>
+                            <div class="value">{{ user.email }}</div>
+                        </div>
+                        <a href="/.auth/logout" class="logout-link">
+                            <i class="fas fa-sign-out-alt me-2"></i>Sign Out
+                        </a>
+                    </div>
+                </div>
+                {% endif %}
                 <img src="{{ url_for('static', filename='Redpoint_logo.png') }}" alt="Redpoint Logo" style="height: 32px; width: auto;">
             </div>
             
         </div>
-        
-        {% if user %}
-        <div class="user-info">
-            <i class="fas fa-user me-2"></i>
-            <span class="user-name">{{ user.name or user.email }}</span>
-            <a href="/.auth/logout" class="ms-3 text-decoration-none">
-                <i class="fas fa-sign-out-alt"></i> Logout
-            </a>
-        </div>
-        {% endif %}
     </header>
 
     <!-- Main Content Area -->

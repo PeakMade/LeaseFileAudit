@@ -6,6 +6,7 @@ Azure AD access token obtained from Easy Auth headers.
 """
 import logging
 import requests
+import os
 from datetime import datetime
 from typing import Optional, Dict, Any
 from flask import request
@@ -41,7 +42,8 @@ class SharePointLogger:
         user_name: str,
         user_email: str,
         activity_type: str,
-        app_name: str = 'LeaseFileAudit',
+        app_name: str = None,
+        user_role: str = 'user',
         details: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
@@ -52,13 +54,18 @@ class SharePointLogger:
             user_name: User's display name
             user_email: User's email address
             activity_type: Type of activity (e.g., 'Upload', 'View', 'Export')
-            app_name: Name of the application
+            app_name: Name of the application (defaults to APP_NAME env var)
+            user_role: User's role (default: 'user')
             details: Optional dictionary of additional details
             
         Returns:
             True if log was successful, False otherwise
         """
         try:
+            # Get app name from environment if not provided
+            if app_name is None:
+                app_name = os.getenv('APP_NAME', 'LeaseFileAudit')
+            
             logger.debug(f"[SHAREPOINT] Attempting to log activity: {activity_type}")
             logger.debug(f"[SHAREPOINT] User: {user_name} ({user_email})")
             logger.debug(f"[SHAREPOINT] Access token present: {access_token is not None}")
@@ -67,13 +74,14 @@ class SharePointLogger:
             
             # Prepare the list item data
             item_data = {
-                '__metadata': {'type': f'SP.Data.{self.list_name}ListItem'},
+                '__metadata': {'type': f'SP.Data.{self.list_name.replace(" ", "_x0020_")}ListItem'},
                 'Title': f'{activity_type} - {user_name}',
                 'UserName': user_name,
                 'UserEmail': user_email,
                 'ActivityType': activity_type,
-                'AppName': app_name,
-                'Timestamp': datetime.utcnow().isoformat() + 'Z',
+                'Application': app_name,
+                'UserRole': user_role,
+                'LoginTimestamp': datetime.utcnow().isoformat() + 'Z',
                 'IPAddress': self._get_client_ip(),
                 'UserAgent': request.headers.get('User-Agent', ''),
             }
@@ -221,10 +229,17 @@ def log_user_activity(
     
     logger.debug(f"[SHAREPOINT] Creating SharePointLogger instance")
     logger_instance = SharePointLogger(site_url, list_name)
+    
+    # Extract user_role from details if present
+    user_role = 'user'  # default
+    if details and 'user_role' in details:
+        user_role = details.pop('user_role')  # Remove from details to avoid duplication
+    
     return logger_instance.log_activity(
         access_token=user_info['access_token'],
         user_name=user_info['name'],
         user_email=user_info['email'],
         activity_type=activity_type,
+        user_role=user_role,
         details=details
     )
