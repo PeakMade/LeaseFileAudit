@@ -235,7 +235,7 @@ User information is automatically available in all templates:
 ```python
 from config import config
 from web.auth import get_current_user
-from logging.sharepoint import log_user_activity
+from activity_logging.sharepoint import log_user_activity
 
 @bp.route('/upload', methods=['POST'])
 @require_auth

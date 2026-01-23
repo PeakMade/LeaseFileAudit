@@ -8,7 +8,7 @@ into your Flask application routes.
 from flask import Blueprint, request, redirect, url_for, flash
 from web.auth import require_auth, get_current_user
 from config import config
-from logging.sharepoint import log_user_activity
+from activity_logging.sharepoint import log_user_activity
 
 bp = Blueprint('example', __name__)
 
@@ -163,7 +163,7 @@ def example_delete(item_id):
 
 
 # Example: Using SharePointLogger class directly for more control
-from logging.sharepoint import SharePointLogger
+from activity_logging.sharepoint import SharePointLogger
 
 
 @bp.route('/example-batch-operation', methods=['POST'])
