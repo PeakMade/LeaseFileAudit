@@ -76,7 +76,7 @@ class AuthConfig:
     require_auth: bool = field(default_factory=lambda: os.getenv('REQUIRE_AUTH', 'true').lower() == 'true')
     
     # SharePoint logging settings
-    enable_sharepoint_logging: bool = field(default_factory=lambda: os.getenv('ENABLE_SHAREPOINT_LOGGING', 'false').lower() == 'true')
+    enable_sharepoint_logging: bool = field(default_factory=lambda: os.getenv('ENABLE_SHAREPOINT_LOGGING', 'true').lower() == 'true')
     sharepoint_site_url: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_SITE_URL'))
     sharepoint_list_name: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_LIST_NAME', 'AuditLog'))
     
