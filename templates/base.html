@@ -344,7 +344,7 @@
         <div class="user-info">
             <i class="fas fa-user me-2"></i>
             <span class="user-name">{{ user.name or user.email }}</span>
-            <a href="{{ url_for('logout') }}" class="ms-3 text-decoration-none">
+            <a href="/.auth/logout" class="ms-3 text-decoration-none">
                 <i class="fas fa-sign-out-alt"></i> Logout
             </a>
         </div>
