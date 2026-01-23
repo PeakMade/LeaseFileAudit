@@ -42,27 +42,27 @@
 
     <div class="row mb-4">
         <div class="col-md-4">
-            <div class="card" style="height: 80px; border: 2px solid #198754; border-radius: 8px;">
+            <div class="card" style="height: 80px; border: 2px solid #00a8c8; border-radius: 8px;">
                 <div class="card-body py-2 px-3 d-flex flex-column justify-content-center">
                     <small class="d-block mb-1 text-muted" style="font-size: 0.75rem;">Matched</small>
-                    <h5 class="mb-0 text-success">{{ kpis.matched_buckets }}</h5>
+                    <h5 class="mb-0" style="color: #00a8c8;">{{ kpis.matched_buckets }}</h5>
                     <small class="text-muted" style="font-size: 0.7rem;">{{ "%.1f"|format(kpis.match_rate) }}% rate</small>
                 </div>
             </div>
         </div>
         <div class="col-md-4">
-            <div class="card" style="height: 80px; border: 2px solid #ffc107; border-radius: 8px;">
+            <div class="card" style="height: 80px; border: 2px solid #ff6600; border-radius: 8px;">
                 <div class="card-body py-2 px-3 d-flex flex-column justify-content-center">
                     <small class="d-block mb-1 text-muted" style="font-size: 0.75rem;">Exceptions</small>
-                    <h5 class="mb-0 text-warning">{{ exception_count }}</h5>
+                    <h5 class="mb-0" style="color: #ff6600;">{{ exception_count }}</h5>
                 </div>
             </div>
         </div>
         <div class="col-md-4">
-            <div class="card" style="height: 80px; border: 2px solid #dc3545; border-radius: 8px;">
+            <div class="card" style="height: 80px; border: 2px solid #c20068; border-radius: 8px;">
                 <div class="card-body py-2 px-3 d-flex flex-column justify-content-center">
                     <small class="d-block mb-1 text-muted" style="font-size: 0.75rem;">Total Variance</small>
-                    <h5 class="mb-0 text-danger">${{ "{:,.0f}".format(kpis.total_variance|abs) }}</h5>
+                    <h5 class="mb-0" style="color: #c20068;">${{ "{:,.0f}".format(kpis.total_variance|abs) }}</h5>
                 </div>
             </div>
         </div>
@@ -110,25 +110,25 @@
                                         <i class="fas fa-file-contract me-2" style="color: #6c757d;"></i>{{ lease.lease_interval_id|int }}
                                     </td>
                                     <td class="text-center" style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
-                                        <span style="color: #198754;">{{ lease.matched_count }}</span>
+                                        <span style="color: #00a8c8;">{{ lease.matched_count }}</span>
                                     </td>
                                     <td class="text-center" style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
                                         {% if lease.exception_count > 0 %}
-                                            <span style="color: #ffc107;">{{ lease.exception_count }}</span>
+                                            <span style="color: #ff6600;">{{ lease.exception_count }}</span>
                                         {% else %}
                                             <span class="text-muted">0</span>
                                         {% endif %}
                                     </td>
                                     <td class="text-end" style="padding: 10px 12px; font-family: 'Courier New', monospace; border-right: 1px solid #dee2e6;">
                                         {% if lease.total_variance != 0 %}
-                                            <span class="text-danger">${{ "{:,.0f}".format(lease.total_variance|abs) }}</span>
+                                            <span style="color: #c20068;">${{ "{:,.0f}".format(lease.total_variance|abs) }}</span>
                                         {% else %}
                                             <span class="text-muted">$0</span>
                                         {% endif %}
                                     </td>
                                     <td class="text-center" style="padding: 10px 12px;">
                                         {% if not lease.has_exceptions %}
-                                            <span class="badge bg-success"><i class="fas fa-check-circle"></i> Clean</span>
+                                            <span class="badge" style="background-color: #00a8c8;"><i class="fas fa-check-circle"></i> Clean</span>
                                         {% else %}
                                             <i class="fas fa-arrow-right" style="color: #6c757d;"></i>
                                         {% endif %}
@@ -151,7 +151,7 @@
 
 <style>
 .lease-row:hover {
-    background-color: #e7f3ff !important;
+    background-color: #e6f7fb !important;
 }
 
 .table-bordered td,

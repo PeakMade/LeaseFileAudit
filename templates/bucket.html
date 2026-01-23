@@ -44,16 +44,16 @@
             </div>
             <div class="col-md-3">
                 <strong>Variance:</strong> 
-                <span class="{% if bucket_info.variance != 0 %}text-danger{% endif %}">
+                <span class="{% if bucket_info.variance != 0 %}{% endif %}" style="color: {% if bucket_info.variance != 0 %}#c20068{% else %}#000{% endif%};">
                     ${{ "%.2f"|format(bucket_info.variance) }}
                 </span>
             </div>
             <div class="col-md-3">
                 <strong>Status:</strong>
                 {% if bucket_info.status == 'MATCHED' %}
-                    <span class="badge bg-success">{{ bucket_info.status }}</span>
+                    <span class="badge" style="background-color: #00a8c8;">{{ bucket_info.status }}</span>
                 {% else %}
-                    <span class="badge bg-danger">{{ bucket_info.status }}</span>
+                    <span class="badge" style="background-color: #c20068;">{{ bucket_info.status }}</span>
                 {% endif %}
             </div>
         </div>
@@ -68,14 +68,14 @@
     </div>
     <div class="card-body">
         {% for finding in findings %}
-        <div class="alert alert-{{ 'danger' if finding.severity == 'high' else 'warning' }} mb-2">
+        <div class="alert mb-2" style="background-color: {% if finding.severity == 'high' %}#ffe6f2{% else %}#fff3e6{% endif %}; border: 1px solid {% if finding.severity == 'high' %}#c20068{% else %}#ff6600{% endif %}; color: #231f20;">
             <div class="row">
                 <div class="col">
                     <strong>{{ finding.title }}</strong>
                     <p class="mb-0">{{ finding.description }}</p>
                 </div>
                 <div class="col-auto">
-                    <span class="badge bg-{{ 'danger' if finding.severity == 'high' else 'warning' }}">
+                    <span class="badge" style="background-color: {% if finding.severity == 'high' %}#c20068{% else %}#ff6600{% endif%};">
                         {{ finding.severity|upper }}
                     </span>
                 </div>

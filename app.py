@@ -1,8 +1,16 @@
 """
 Flask application factory for Lease File Audit.
 """
-from flask import Flask
+from flask import Flask, g
 from pathlib import Path
+import logging
+import os
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 
 def create_app(config_name='default'):
@@ -18,7 +26,7 @@ def create_app(config_name='default'):
     app = Flask(__name__)
     
     # App configuration
-    app.config['SECRET_KEY'] = 'dev-secret-key-change-in-production'
+    app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
     app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
     app.config['UPLOAD_FOLDER'] = Path('instance/runs')
     
@@ -29,6 +37,25 @@ def create_app(config_name='default'):
     # Register blueprints
     from web.views import bp as main_bp
     app.register_blueprint(main_bp)
+    
+    # Register authentication context processor
+    from web.auth import get_current_user
+    
+    @app.context_processor
+    def inject_user():
+        """Make user info available in all templates."""
+        return {'user': get_current_user()}
+    
+    @app.before_request
+    def log_request_info():
+        """Log request information for debugging."""
+        from web.auth import get_easy_auth_user
+        user = get_easy_auth_user()
+        if user:
+            app.logger.info(
+                f"Request: {user['name']} ({user['email']}) -> "
+                f"{os.environ.get('REQUEST_METHOD', 'GET')} {os.environ.get('PATH_INFO', '/')}"
+            )
     
     return app
 

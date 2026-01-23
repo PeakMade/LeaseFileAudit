@@ -3,8 +3,9 @@ Centralized configuration for Lease File Audit application.
 All mappings, tolerances, and detection rules are defined here.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 from pathlib import Path
+import os
 
 
 @dataclass
@@ -64,6 +65,35 @@ class StorageConfig:
 
 
 @dataclass
+class AuthConfig:
+    """Azure App Service Authentication configuration."""
+    # Azure AD settings (loaded from environment variables)
+    client_id: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_CLIENT_ID'))
+    tenant_id: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_TENANT_ID'))
+    client_secret: Optional[str] = field(default_factory=lambda: os.getenv('MICROSOFT_PROVIDER_AUTHENTICATION_SECRET'))
+    
+    # Authentication settings
+    require_auth: bool = field(default_factory=lambda: os.getenv('REQUIRE_AUTH', 'true').lower() == 'true')
+    
+    # SharePoint logging settings
+    enable_sharepoint_logging: bool = field(default_factory=lambda: os.getenv('ENABLE_SHAREPOINT_LOGGING', 'false').lower() == 'true')
+    sharepoint_site_url: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_SITE_URL'))
+    sharepoint_list_name: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_LIST_NAME', 'AuditLog'))
+    
+    def is_configured(self) -> bool:
+        """Check if Azure AD authentication is properly configured."""
+        return bool(self.client_id and self.tenant_id)
+    
+    def can_log_to_sharepoint(self) -> bool:
+        """Check if SharePoint logging is enabled and configured."""
+        return (
+            self.enable_sharepoint_logging and 
+            self.is_configured() and 
+            bool(self.sharepoint_site_url)
+        )
+
+
+@dataclass
 class AuditConfig:
     """Main audit configuration container."""
     # Data sources
@@ -99,6 +129,9 @@ class AuditConfig:
     
     # Storage settings
     storage: StorageConfig = field(default_factory=StorageConfig)
+    
+    # Authentication settings
+    auth: AuthConfig = field(default_factory=AuthConfig)
     
     # Bucket key columns (canonical audit grain)
     bucket_key_columns: List[str] = field(default_factory=lambda: [

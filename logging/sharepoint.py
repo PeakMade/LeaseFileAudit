@@ -1,0 +1,207 @@
+"""
+SharePoint logging module for Azure App Service Easy Auth.
+
+This module logs user activity to a SharePoint list using the user's
+Azure AD access token obtained from Easy Auth headers.
+"""
+import logging
+import requests
+from datetime import datetime
+from typing import Optional, Dict, Any
+from flask import request
+
+logger = logging.getLogger(__name__)
+
+
+class SharePointLogger:
+    """
+    Log user activity to SharePoint using Azure AD access tokens.
+    
+    This class uses the Office 365 REST API to write audit logs to a
+    SharePoint list. The access token from Easy Auth is used for authentication.
+    """
+    
+    def __init__(self, site_url: str, list_name: str = 'AuditLog'):
+        """
+        Initialize SharePoint logger.
+        
+        Args:
+            site_url: Full SharePoint site URL (e.g., https://contoso.sharepoint.com/sites/audit)
+            list_name: Name of the SharePoint list to log to
+        """
+        self.site_url = site_url.rstrip('/')
+        self.list_name = list_name
+        
+    def log_activity(
+        self, 
+        access_token: str,
+        user_name: str,
+        user_email: str,
+        activity_type: str,
+        app_name: str = 'LeaseFileAudit',
+        details: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Log a user activity to SharePoint.
+        
+        Args:
+            access_token: Azure AD access token from Easy Auth
+            user_name: User's display name
+            user_email: User's email address
+            activity_type: Type of activity (e.g., 'Upload', 'View', 'Export')
+            app_name: Name of the application
+            details: Optional dictionary of additional details
+            
+        Returns:
+            True if log was successful, False otherwise
+        """
+        try:
+            # Prepare the list item data
+            item_data = {
+                '__metadata': {'type': f'SP.Data.{self.list_name}ListItem'},
+                'Title': f'{activity_type} - {user_name}',
+                'UserName': user_name,
+                'UserEmail': user_email,
+                'ActivityType': activity_type,
+                'AppName': app_name,
+                'Timestamp': datetime.utcnow().isoformat() + 'Z',
+                'IPAddress': self._get_client_ip(),
+                'UserAgent': request.headers.get('User-Agent', ''),
+            }
+            
+            # Add details if provided
+            if details:
+                item_data['Details'] = str(details)
+            
+            # Get the list endpoint
+            list_endpoint = f"{self.site_url}/_api/web/lists/getbytitle('{self.list_name}')/items"
+            
+            # Prepare headers
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Accept': 'application/json;odata=verbose',
+                'Content-Type': 'application/json;odata=verbose',
+            }
+            
+            # Make the request
+            response = requests.post(
+                list_endpoint,
+                json=item_data,
+                headers=headers,
+                timeout=10
+            )
+            
+            if response.status_code in [200, 201]:
+                logger.info(f"Logged activity to SharePoint: {activity_type} by {user_name}")
+                return True
+            else:
+                logger.error(
+                    f"Failed to log to SharePoint. Status: {response.status_code}, "
+                    f"Response: {response.text}"
+                )
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error logging to SharePoint: {e}", exc_info=True)
+            return False
+    
+    def _get_client_ip(self) -> str:
+        """
+        Get the client's IP address, accounting for proxies.
+        
+        Returns:
+            Client IP address
+        """
+        # Check for forwarded IP (common in Azure App Service)
+        forwarded_for = request.headers.get('X-Forwarded-For')
+        if forwarded_for:
+            # X-Forwarded-For can contain multiple IPs, take the first one
+            return forwarded_for.split(',')[0].strip()
+        
+        # Check for client IP header (Azure App Service)
+        client_ip = request.headers.get('X-Client-IP')
+        if client_ip:
+            return client_ip
+        
+        # Fall back to remote_addr
+        return request.remote_addr or 'Unknown'
+    
+    def ensure_list_exists(self, access_token: str) -> bool:
+        """
+        Check if the SharePoint list exists and create it if needed.
+        
+        Args:
+            access_token: Azure AD access token from Easy Auth
+            
+        Returns:
+            True if list exists or was created, False otherwise
+        """
+        try:
+            # Check if list exists
+            list_endpoint = f"{self.site_url}/_api/web/lists/getbytitle('{self.list_name}')"
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Accept': 'application/json;odata=verbose',
+            }
+            
+            response = requests.get(list_endpoint, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                logger.info(f"SharePoint list '{self.list_name}' exists")
+                return True
+            elif response.status_code == 404:
+                logger.warning(
+                    f"SharePoint list '{self.list_name}' not found. "
+                    "Please create the list manually with the following columns:\n"
+                    "- Title (Single line of text)\n"
+                    "- UserName (Single line of text)\n"
+                    "- UserEmail (Single line of text)\n"
+                    "- ActivityType (Single line of text)\n"
+                    "- AppName (Single line of text)\n"
+                    "- Timestamp (Date and Time)\n"
+                    "- IPAddress (Single line of text)\n"
+                    "- UserAgent (Multiple lines of text)\n"
+                    "- Details (Multiple lines of text)"
+                )
+                return False
+            else:
+                logger.error(f"Error checking SharePoint list: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error checking SharePoint list: {e}", exc_info=True)
+            return False
+
+
+def log_user_activity(
+    user_info: Dict[str, Any],
+    activity_type: str,
+    site_url: str,
+    list_name: str = 'AuditLog',
+    details: Optional[Dict[str, Any]] = None
+) -> bool:
+    """
+    Convenience function to log user activity to SharePoint.
+    
+    Args:
+        user_info: User info dictionary from get_easy_auth_user()
+        activity_type: Type of activity (e.g., 'Upload', 'View', 'Export')
+        site_url: SharePoint site URL
+        list_name: Name of the SharePoint list
+        details: Optional additional details
+        
+    Returns:
+        True if logging was successful, False otherwise
+    """
+    if not user_info or not user_info.get('access_token'):
+        logger.warning("Cannot log to SharePoint: No user info or access token")
+        return False
+    
+    logger_instance = SharePointLogger(site_url, list_name)
+    return logger_instance.log_activity(
+        access_token=user_info['access_token'],
+        user_name=user_info['name'],
+        user_email=user_info['email'],
+        activity_type=activity_type,
+        details=details
+    )

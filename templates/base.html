@@ -11,7 +11,48 @@
     <!-- Font Awesome -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     
+    <!-- Google Fonts - Montserrat -->
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
+    
     <style>
+        /* Brand Color Variables */
+        :root {
+            --color-primary: #00a8c8;
+            --color-secondary: #231f20;
+            --color-accent: #ff6600;
+            --color-danger: #c20068;
+            --color-light: #f4f4f4;
+            --font-headline: 'Montserrat', sans-serif;
+            --font-body: 'Montserrat', sans-serif;
+        }
+        
+        /* Typography */
+        body, p, .form-text, .text-muted, .card-body, .table {
+            font-family: 'Montserrat', sans-serif;
+            font-weight: 400;
+        }
+        
+        h1, h2, h3, h4, h5, h6, .card-title, .card-header, .btn, .badge, th {
+            font-family: 'Montserrat', sans-serif;
+            font-weight: 700;
+        }
+        
+        .card-subtitle, .small, small {
+            font-family: 'Montserrat', sans-serif;
+            font-weight: 400;
+        }
+        
+        /* Custom Color Classes */
+        .text-brand-primary { color: #00a8c8 !important; }
+        .text-brand-accent { color: #ff6600 !important; }
+        .text-brand-danger { color: #c20068 !important; }
+        .bg-brand-primary { background-color: #00a8c8 !important; }
+        .bg-brand-accent { background-color: #ff6600 !important; }
+        .bg-brand-danger { background-color: #c20068 !important; }
+        .border-brand-primary { border-color: #00a8c8 !important; }
+        .border-brand-accent { border-color: #ff6600 !important; }
+        .border-brand-danger { border-color: #c20068 !important; }
+        
         .user-info {
             position: absolute;
             top: 100%;
@@ -22,7 +63,7 @@
             border-radius: 8px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             font-size: 0.9rem;
-            color: #333;
+            color: #231f20;
         }
         
         .user-info .user-name {
@@ -35,7 +76,7 @@
             padding: 0;
             margin: 0;
             min-height: calc(100vh - 90px);
-            background-color: #f8f9fa;
+            background-color: #f4f4f4;
         }
         
         .content-wrapper {
@@ -54,7 +95,7 @@
         }
         
         .card-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #00a8c8 0%, #0088a8 100%);
             color: white;
             border-radius: 12px 12px 0 0 !important;
             border: none;
@@ -68,7 +109,7 @@
         
         /* Button styling */
         .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #ff6600 0%, #ff8833 100%);
             border: none;
             border-radius: 8px;
             padding: 10px 25px;
@@ -78,11 +119,12 @@
         
         .btn-primary:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 8px 25px rgba(255, 102, 0, 0.4);
+            background: linear-gradient(135deg, #ff7700 0%, #ff9944 100%);
         }
         
         .btn-success {
-            background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+            background: linear-gradient(135deg, #00a8c8 0%, #33bdd8 100%);
             border: none;
             border-radius: 8px;
             padding: 10px 25px;
@@ -90,10 +132,39 @@
         }
         
         .btn-danger {
-            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+            background: linear-gradient(135deg, #c20068 0%, #d42080 100%);
             border: none;
             border-radius: 8px;
             padding: 10px 25px;
+            font-weight: 500;
+        }
+        
+        .btn-secondary {
+            background: linear-gradient(135deg, #231f20 0%, #3d3a3b 100%);
+            border: none;
+            border-radius: 8px;
+            padding: 10px 25px;
+            font-weight: 500;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: linear-gradient(135deg, #3d3a3b 0%, #231f20 100%);
+            color: white;
+        }
+        
+        .btn-info {
+            background: linear-gradient(135deg, #00a8c8 0%, #33bdd8 100%);
+            border: none;
+            border-radius: 8px;
+            padding: 10px 25px;
+            font-weight: 500;
+            color: white;
+        }
+        
+        /* Badge styling */
+        .badge {
+            padding: 0.35em 0.65em;
             font-weight: 500;
         }
         
@@ -129,7 +200,7 @@
         
         .user-info .user-name {
             font-weight: 600;
-            color: #1a73e8;
+            color: #00a8c8;
         }
         
         /* File upload styling */
@@ -143,13 +214,13 @@
         }
         
         .file-upload-area:hover {
-            border-color: #667eea;
-            background: #f0f0ff;
+            border-color: #00a8c8;
+            background: #e6f7fb;
         }
         
         .file-upload-area.dragover {
-            border-color: #667eea;
-            background: #e8f2ff;
+            border-color: #00a8c8;
+            background: #d4f1f7;
         }
         
         /* Alert styling */
@@ -160,20 +231,85 @@
         }
         
         .alert-success {
-            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
-            color: #155724;
+            background: linear-gradient(135deg, #d4f7f2 0%, #b8f3e9 100%);
+            color: #006b5a;
             padding: 7px 18px;
             font-size: 1rem;
+            border-left: 4px solid #00a8c8;
         }
         
         .alert-danger {
-            background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
-            color: #721c24;
+            background: linear-gradient(135deg, #ffe6f2 0%, #ffd4e9 100%);
+            color: #8a0048;
+            border-left: 4px solid #c20068;
         }
         
         .alert-info {
-            background: linear-gradient(135deg, #cce8ff 0%, #b3d9ff 100%);
-            color: #004085;
+            background: linear-gradient(135deg, #e6f7fb 0%, #d4f1f7 100%);
+            color: #006b7a;
+            border-left: 4px solid #00a8c8;
+        }
+        
+        .alert-warning {
+            background: linear-gradient(135deg, #fff3e6 0%, #ffe6cc 100%);
+            color: #994d00;
+            border-left: 4px solid #ff6600;
+        }
+        
+        /* Form Controls */
+        .form-control:focus, .form-select:focus {
+            border-color: #00a8c8;
+            box-shadow: 0 0 0 0.2rem rgba(0, 168, 200, 0.25);
+        }
+        
+        /* Links */
+        a {
+            color: #00a8c8;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        
+        a:hover {
+            color: #ff6600;
+        }
+        
+        /* Tables */
+        .table-hover tbody tr:hover {
+            background-color: #e6f7fb !important;
+        }
+        
+        /* Card hover effects */
+        .card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 168, 200, 0.15) !important;
+        }
+        
+        /* Smooth scrolling */
+        html {
+            scroll-behavior: smooth;
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #f4f4f4;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #00a8c8;
+            border-radius: 5px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #ff6600;
         }
     </style>
     
@@ -193,7 +329,7 @@
             </div>
             
             <div style="flex: 1; display: flex; justify-content: center; align-items: center; height: 80px;">
-                <h1 style="font-size: 28px; font-family: 'Open Sans', Arial, sans-serif; font-weight: 700; color: #fff; margin: 0; letter-spacing: 2px; text-shadow: 0 2px 6px rgba(0,0,0,0.12); line-height: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                <h1 style="font-size: 28px; font-family: 'Montserrat', sans-serif; font-weight: 700; color: #fff; margin: 0; letter-spacing: 2px; text-shadow: 0 2px 6px rgba(0,0,0,0.12); line-height: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                     {% block app_title %}Lease File Audit{% endblock %}
                 </h1>
             </div>

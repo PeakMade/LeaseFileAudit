@@ -5,14 +5,15 @@
 }
 
 body {
-    font-family: Arial, sans-serif;
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 400;
     line-height: 1.6;
-    color: #333;
+    color: #231f20;
     background-color: #f4f4f4;
 }
 
 nav {
-    background-color: #333;
+    background-color: #231f20;
     color: #fff;
     padding: 1rem;
 }
@@ -24,11 +25,14 @@ nav ul {
 }
 
 nav a {
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 700;
     color: #fff;
     text-decoration: none;
 }
 
 nav a:hover {
+    color: #00a8c8;
     text-decoration: underline;
 }
 
@@ -41,12 +45,16 @@ main {
     box-shadow: 0 2px 5px rgba(0,0,0,0.1);
 }
 
-h1 {
-    color: #333;
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 700;
+    color: #231f20;
     margin-bottom: 1rem;
 }
 
 p {
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 400;
     margin-bottom: 1rem;
 }
 
@@ -80,6 +88,7 @@ p {
 
 .info-tooltip i {
     font-size: 0.85rem;
+    color: #00a8c8;
     opacity: 0.7;
     transition: opacity 0.2s;
 }
@@ -94,7 +103,7 @@ p {
     bottom: 150%;
     left: 50%;
     transform: translateX(-50%);
-    background-color: #333;
+    background-color: #231f20;
     color: #fff;
     padding: 0.5rem 0.75rem;
     border-radius: 4px;
@@ -113,7 +122,7 @@ p {
     left: 50%;
     transform: translateX(-50%);
     border: 5px solid transparent;
-    border-top-color: #333;
+    border-top-color: #231f20;
 }
 
 .info-tooltip:hover .tooltip-text {

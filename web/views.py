@@ -21,6 +21,7 @@ from audit_engine.rules import default_registry
 from audit_engine.canonical_fields import CanonicalField
 from storage.service import StorageService
 from config import config
+from web.auth import require_auth, optional_auth, get_current_user
 
 bp = Blueprint('main', __name__)
 
@@ -289,14 +290,17 @@ def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audi
 
 
 @bp.route('/')
+@optional_auth
 def index():
     """Upload form and recent runs."""
     storage = get_storage_service()
     recent_runs = storage.list_runs(limit=10)
-    return render_template('upload.html', recent_runs=recent_runs)
+    user = get_current_user()
+    return render_template('upload.html', recent_runs=recent_runs, user=user)
 
 
 @bp.route('/upload', methods=['POST'])
+@require_auth
 def upload():
     """Handle file upload and execute audit."""
     if 'file' not in request.files:
@@ -379,6 +383,7 @@ def upload():
 
 @bp.route('/portfolio')
 @bp.route('/portfolio/<run_id>')
+@require_auth
 def portfolio(run_id: str = None):
     """Portfolio view - Cumulative KPIs across all runs."""
     try:
@@ -423,6 +428,7 @@ def portfolio(run_id: str = None):
 
 @bp.route('/property/<property_id>')
 @bp.route('/property/<property_id>/<run_id>')
+@require_auth
 def property_view(property_id: str, run_id: str = None):
     """Property view - exceptions grouped by lease with run selector."""
     try:
@@ -591,16 +597,17 @@ def _get_status_label(status: str) -> str:
 
 
 def _get_status_color(status: str) -> str:
-    """Get Bootstrap color class for status."""
+    """Get brand color class for status."""
     colors = {
-        "SCHEDULED_NOT_BILLED": "danger",
-        "BILLED_NOT_SCHEDULED": "warning",
-        "AMOUNT_MISMATCH": "info"
+        "SCHEDULED_NOT_BILLED": "brand-danger",  # magenta
+        "BILLED_NOT_SCHEDULED": "brand-accent",  # orange
+        "AMOUNT_MISMATCH": "brand-primary"  # cyan
     }
     return colors.get(status, "secondary")
 
 
 @bp.route('/lease/<run_id>/<property_id>/<lease_interval_id>')
+@require_auth
 def lease_view(run_id: str, property_id: str, lease_interval_id: str):
     """Lease view - detailed exceptions for a specific lease."""
     try:
@@ -940,6 +947,7 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
 
 
 @bp.route('/bucket/<run_id>/<property_id>/<lease_interval_id>/<ar_code_id>/<audit_month>')
+@require_auth
 def bucket_drilldown(run_id: str, property_id: str, lease_interval_id: str, 
                       ar_code_id: str, audit_month: str):
     """Bucket drilldown - expected vs actual detail and findings."""
