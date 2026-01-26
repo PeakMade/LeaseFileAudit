@@ -49,6 +49,20 @@ def create_app(config_name='default'):
     @app.context_processor
     def inject_user():
         """Make user info available in all templates."""
+        # Check if authentication is required
+        require_auth_enabled = os.getenv('REQUIRE_AUTH', 'true').lower() == 'true'
+        
+        if not require_auth_enabled:
+            # Local development mode - inject mock user if not already set
+            from flask import g
+            if not hasattr(g, 'user') or g.user is None:
+                g.user = {
+                    'user_id': 'local-dev-user',
+                    'name': 'Local Developer',
+                    'email': 'dev@localhost',
+                    'identity_provider': 'local'
+                }
+        
         return {'user': get_current_user()}
     
     @app.before_request

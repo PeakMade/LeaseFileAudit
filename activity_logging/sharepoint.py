@@ -1,8 +1,9 @@
 """
 SharePoint logging module for Azure App Service Easy Auth.
 
-This module logs user activity to a SharePoint list using Microsoft Graph API
-with the user's Azure AD access token obtained from Easy Auth headers.
+This module logs user activity to a SharePoint list using Microsoft Graph API.
+- Production: Uses delegated token from Easy Auth (user context)
+- Local dev: Uses client credentials token (app-only context)
 """
 import logging
 import requests
@@ -13,6 +14,47 @@ from typing import Optional, Dict, Any
 from flask import request
 
 logger = logging.getLogger(__name__)
+
+
+def _get_app_only_token() -> Optional[str]:
+    """
+    Get an app-only access token using client credentials flow.
+    Used for local development when EasyAuth isn't available.
+    
+    Returns:
+        Access token string or None if acquisition fails
+    """
+    try:
+        tenant_id = os.getenv('SHAREPOINT_TENANT_ID')
+        client_id = os.getenv('SHAREPOINT_CLIENT_ID')
+        client_secret = os.getenv('MICROSOFT_PROVIDER_AUTHENTICATION_SECRET')
+        
+        if not all([tenant_id, client_id, client_secret]):
+            logger.error("[SHAREPOINT] Missing credentials for app-only token")
+            return None
+        
+        token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+        data = {
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'scope': 'https://graph.microsoft.com/.default',
+            'grant_type': 'client_credentials'
+        }
+        
+        logger.debug("[SHAREPOINT] Requesting app-only token via client credentials")
+        response = requests.post(token_url, data=data, timeout=10)
+        
+        if response.status_code == 200:
+            token = response.json().get('access_token')
+            logger.debug("[SHAREPOINT] Successfully obtained app-only token")
+            return token
+        else:
+            logger.error(f"[SHAREPOINT] Failed to get app-only token: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"[SHAREPOINT] Error getting app-only token: {e}", exc_info=True)
+        return None
 
 
 class SharePointLogger:
@@ -313,8 +355,10 @@ def log_user_activity(
     """
     Convenience function to log user activity to SharePoint.
     
+    Supports both production (delegated token) and local dev (app-only token) modes.
+    
     Args:
-        user_info: User info dictionary from get_easy_auth_user()
+        user_info: User info dictionary from get_easy_auth_user() or mock user
         activity_type: Type of activity (e.g., 'Upload', 'View', 'Export')
         site_url: SharePoint site URL
         list_name: Name of the SharePoint list
@@ -326,23 +370,43 @@ def log_user_activity(
     logger.debug(f"[SHAREPOINT] log_user_activity called for activity: {activity_type}")
     logger.debug(f"[SHAREPOINT] User info present: {user_info is not None}")
     
-    if not user_info or not user_info.get('access_token'):
-        logger.warning("Cannot log to SharePoint: No user info or access token")
-        logger.debug(f"[SHAREPOINT] User info keys: {list(user_info.keys()) if user_info else 'None'}")
+    if not user_info:
+        logger.warning("Cannot log to SharePoint: No user info")
+        return False
+    
+    # Determine if we're in local dev mode
+    require_auth = os.getenv('REQUIRE_AUTH', 'true').lower() == 'true'
+    is_local_dev = not require_auth
+    
+    # Get access token - delegated from user or app-only for local dev
+    access_token = user_info.get('access_token')
+    
+    if not access_token and is_local_dev:
+        logger.debug("[SHAREPOINT] Local dev mode detected, acquiring app-only token")
+        access_token = _get_app_only_token()
+    
+    if not access_token:
+        logger.warning("Cannot log to SharePoint: No access token available")
+        logger.debug(f"[SHAREPOINT] User info keys: {list(user_info.keys())}")
+        logger.debug(f"[SHAREPOINT] is_local_dev: {is_local_dev}")
         return False
     
     logger.debug(f"[SHAREPOINT] Creating SharePointLogger instance")
     logger_instance = SharePointLogger(site_url, list_name)
     
-    # Extract user_role from details if present
-    user_role = 'user'  # default
+    # Get user details - use local dev overrides if available
+    user_name = os.getenv('LOCAL_DEV_USER_NAME', user_info.get('name', 'Unknown User'))
+    user_email = os.getenv('LOCAL_DEV_USER_EMAIL', user_info.get('email', 'unknown@localhost'))
+    
+    # Extract user_role from details or set to 'dev_user' for local dev
+    user_role = 'dev_user' if is_local_dev else 'user'
     if details and 'user_role' in details:
         user_role = details.pop('user_role')  # Remove from details to avoid duplication
     
     return logger_instance.log_activity(
-        access_token=user_info['access_token'],
-        user_name=user_info['name'],
-        user_email=user_info['email'],
+        access_token=access_token,
+        user_name=user_name,
+        user_email=user_email,
         activity_type=activity_type,
         user_role=user_role,
         details=details

@@ -7,6 +7,7 @@ Azure App Service built-in authentication headers when deployed to Azure.
 import base64
 import json
 import logging
+import os
 from functools import wraps
 from typing import Optional, Dict, Any
 from flask import request, jsonify, g
@@ -141,6 +142,21 @@ def require_auth(f):
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Check if authentication is required
+        require_auth_enabled = os.getenv('REQUIRE_AUTH', 'true').lower() == 'true'
+        
+        if not require_auth_enabled:
+            # Local development mode - use mock user
+            logger.debug("[AUTH] REQUIRE_AUTH=false, using mock user")
+            g.user = {
+                'user_id': 'local-dev-user',
+                'name': 'Local Developer',
+                'email': 'dev@localhost',
+                'identity_provider': 'local'
+            }
+            return f(*args, **kwargs)
+        
+        # Production mode - require Easy Auth
         user = get_easy_auth_user()
         
         if user is None:
@@ -176,8 +192,23 @@ def optional_auth(f):
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        user = get_easy_auth_user()
-        g.user = user  # Will be None if not authenticated
+        # Check if authentication is required
+        require_auth_enabled = os.getenv('REQUIRE_AUTH', 'true').lower() == 'true'
+        
+        if not require_auth_enabled:
+            # Local development mode - use mock user
+            logger.debug("[AUTH] REQUIRE_AUTH=false, using mock user")
+            g.user = {
+                'user_id': 'local-dev-user',
+                'name': 'Local Developer',
+                'email': 'dev@localhost',
+                'identity_provider': 'local'
+            }
+        else:
+            # Production mode - try to get Easy Auth user
+            user = get_easy_auth_user()
+            g.user = user  # Will be None if not authenticated
+        
         return f(*args, **kwargs)
     
     return decorated_function

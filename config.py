@@ -78,7 +78,7 @@ class AuthConfig:
     # SharePoint logging settings
     enable_sharepoint_logging: bool = field(default_factory=lambda: os.getenv('ENABLE_SHAREPOINT_LOGGING', 'true').lower() == 'true')
     sharepoint_site_url: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_SITE_URL'))
-    sharepoint_list_name: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_LIST_NAME', 'AuditLog'))
+    sharepoint_list_name: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_LIST_NAME', 'Innovation Use Log'))
     
     def is_configured(self) -> bool:
         """Check if Azure AD authentication is properly configured."""
