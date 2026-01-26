@@ -75,14 +75,14 @@
         .main-content {
             padding: 0;
             margin: 0;
-            min-height: calc(100vh - 90px);
+            min-height: calc(100vh - 80px);
             background-color: #f4f4f4;
         }
         
         .content-wrapper {
             width: 100%;
             max-width: none;
-            padding: 15px 40px;
+            padding: 0;
             margin: 0;
         }
         
@@ -422,31 +422,33 @@
             </div>
             
             <div style="flex: 1; display: flex; justify-content: flex-end; align-items: center; height: 80px; gap: 20px;">
-                {% if user %}
-                <div class="user-badge">
-                    <i class="fas fa-user user-icon"></i>
-                    <span class="user-name">{{ user.name }}</span>
-                    <i class="fas fa-chevron-down dropdown-arrow"></i>
-                    <div class="user-dropdown">
-                        <div class="user-dropdown-item">
-                            <strong>Name</strong>
-                            <div class="value">{{ user.name }}</div>
-                        </div>
-                        <div class="user-dropdown-item">
-                            <strong>Email</strong>
-                            <div class="value">{{ user.email }}</div>
-                        </div>
-                        <a href="/.auth/logout" class="logout-link">
-                            <i class="fas fa-sign-out-alt me-2"></i>Sign Out
-                        </a>
-                    </div>
-                </div>
-                {% endif %}
                 <img src="{{ url_for('static', filename='Redpoint_logo.png') }}" alt="Redpoint Logo" style="height: 32px; width: auto;">
             </div>
             
         </div>
     </header>
+
+    <!-- User Badge (positioned below header) -->
+    {% if user %}
+    <div class="user-badge">
+        <i class="fas fa-user user-icon"></i>
+        <span class="user-name">{{ user.name }}</span>
+        <i class="fas fa-chevron-down dropdown-arrow"></i>
+        <div class="user-dropdown">
+            <div class="user-dropdown-item">
+                <strong>Name</strong>
+                <div class="value">{{ user.name }}</div>
+            </div>
+            <div class="user-dropdown-item">
+                <strong>Email</strong>
+                <div class="value">{{ user.email }}</div>
+            </div>
+            <a href="/.auth/logout" class="logout-link">
+                <i class="fas fa-sign-out-alt me-2"></i>Sign Out
+            </a>
+        </div>
+    </div>
+    {% endif %}
 
     <!-- Main Content Area -->
     <main class="main-content">
