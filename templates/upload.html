@@ -3,6 +3,28 @@
 {% block title %}Upload File - Lease File Audit{% endblock %}
 
 {% block content %}
+<style>
+    .info-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background-color: #6c757d;
+        color: white;
+        font-size: 12px;
+        font-weight: bold;
+        cursor: help;
+        margin-left: 8px;
+        user-select: none;
+    }
+    
+    .info-icon:hover {
+        background-color: #5a6268;
+    }
+</style>
+
 <div style="width: 100%; padding: 20px 40px;">
         <div class="card" style="max-width: 1200px; margin: 0 auto;">
             <div class="card-header">
@@ -11,21 +33,23 @@
             <div class="card-body">
                 <form method="POST" action="{{ url_for('main.upload') }}" enctype="multipart/form-data">
                     <div class="mb-3">
-                        <label for="file" class="form-label fw-bold">Select Excel File (.xlsx)</label>
+                        <label for="file" class="form-label fw-bold">
+                            Select Excel File (.xlsx)
+                            <span class="info-icon" 
+                                  data-bs-toggle="tooltip" 
+                                  data-bs-html="true"
+                                  data-bs-placement="right"
+                                  title="<strong>Required sheets:</strong><br>
+                                         • <strong>AR Transactions</strong>: PROPERTY_ID, LEASE_INTERVAL_ID, AR_CODE_ID, TRANSACTION_AMOUNT, POST_MONTH_DATE, IS_POSTED, IS_DELETED, IS_REVERSAL, ID<br>
+                                         • <strong>Scheduled Charges</strong>: SCHEDULED_CHARGES_ID, PROPERTY_ID, LEASE_INTERVAL_ID, AR_CODE_ID, CHARGE_AMOUNT, DATE_CHARGE_START, DATE_CHARGE_END">ⓘ</span>
+                        </label>
                         <input type="file" class="form-control" id="file" name="file" accept=".xlsx" required>
-                        <div class="form-text">
-                            File must contain two sheets:
-                            <ul class="mb-0 mt-2">
-                                <li>AR Transactions (required columns: PROPERTY_ID, LEASE_INTERVAL_ID, AR_CODE_ID, TRANSACTION_AMOUNT, POST_MONTH_DATE, IS_POSTED, IS_DELETED, IS_REVERSAL, ID)</li>
-                                <li>Scheduled Charges (required columns: SCHEDULED_CHARGES_ID, PROPERTY_ID, LEASE_INTERVAL_ID, AR_CODE_ID, CHARGE_AMOUNT, DATE_CHARGE_START, DATE_CHARGE_END)</li>
-                            </ul>
-                        </div>
                     </div>
                     
                     <div class="card mb-3" style="border: 2px solid #00a8c8; background-color: #f8fcfd;">
                         <div class="card-body">
-                            <h6 class="card-title" style="color: #00a8c8;"><i class="fas fa-calendar-check me-2"></i>Audit Period (Optional)</h6>
-                            <p class="text-muted small">Filter audit to specific year/month. Leave blank to audit all periods in file.</p>
+                            <h6 class="card-title" style="color: #00a8c8;"><i class="fas fa-calendar-check me-2"></i>Audit Period</h6>
+                            <p class="text-muted small">Filter audit to specific year/month.</p>
                             <div class="row">
                                 <div class="col-md-6">
                                     <label for="audit_year" class="form-label">Year</label>
@@ -101,4 +125,16 @@
         </div>
         {% endif %}
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Initialize Bootstrap tooltips
+    document.addEventListener('DOMContentLoaded', function() {
+        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+            return new bootstrap.Tooltip(tooltipTriggerEl);
+        });
+    });
+</script>
 {% endblock %}
