@@ -100,10 +100,6 @@ class SharePointLogger:
                 }
             }
             
-            # Add details if provided
-            if details:
-                item_data['fields']['Details'] = str(details)
-            
             logger.debug(f"[SHAREPOINT] Item data: {item_data}")
             
             # Get the Microsoft Graph list endpoint
