@@ -97,8 +97,6 @@ class SharePointLogger:
                     'Application': app_name,
                     'UserRole': user_role,
                     'LoginTimestamp': datetime.utcnow().isoformat() + 'Z',
-                    'IPAddress': self._get_client_ip(),
-                    'UserAgent': request.headers.get('User-Agent', ''),
                 }
             }
             
@@ -300,10 +298,7 @@ class SharePointLogger:
                     "- ActivityType (Single line of text)\n"
                     "- Application (Single line of text)\n"
                     "- UserRole (Single line of text)\n"
-                    "- LoginTimestamp (Date and Time)\n"
-                    "- IPAddress (Single line of text)\n"
-                    "- UserAgent (Multiple lines of text)\n"
-                    "- Details (Multiple lines of text)"
+                    "- LoginTimestamp (Date and Time)"
                 )
                 return False
                 
