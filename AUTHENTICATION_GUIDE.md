@@ -1,303 +1,367 @@
-# Azure App Service Easy Auth - Setup Guide
+# Azure App Service Easy Auth + Microsoft Graph - Implementation Guide
 
-Complete guide for configuring Azure App Service built-in authentication (Easy Auth) with Microsoft Entra ID.
+Guide for implementing Azure App Service authentication with Microsoft Graph API for SharePoint logging.
 
-## Quick Start
+## Prerequisites
 
-**What you need:**
-- Azure subscription
-- Azure AD tenant
-- App Service (Basic tier or higher)
-- 30 minutes setup time
+- Azure subscription with App Service (Basic tier or higher)
+- Azure AD tenant access
+- SharePoint site for logging (optional)
 
-## Table of Contents
-1. [What Was Implemented](#what-was-implemented)
-2. [Azure AD Configuration](#azure-ad-configuration)
-3. [App Service Configuration](#app-service-configuration)
-4. [Code Usage](#code-usage)
-5. [SharePoint Logging (Optional)](#sharepoint-logging-optional)
-6. [Testing](#testing)
-7. [Troubleshooting](#troubleshooting)
+---
 
-## What Was Implemented
+## 1. Azure AD App Registration & Authentication Setup
 
-### Files Created
-- **`web/auth.py`**: Authentication helpers and decorators
-- **`logging/sharepoint.py`**: Optional SharePoint activity logging
-- **`.env.example`**: Environment variables template
+### Option A: Let Azure Create Registration (Easiest)
 
-### Files Modified  
-- **`config.py`**: Added `AuthConfig` class
-- **`app.py`**: Added user context injection
-- **`web/views.py`**: Protected routes with `@require_auth` decorator
-- **`requirements.txt`**: Added `requests` library
+1. **App Service** → **Authentication** → **Add identity provider** → **Microsoft**
+2. Choose **Create new app registration**
+3. Azure automatically creates and configures the app registration
+4. Note the **Client ID** and **Tenant ID** shown after creation
 
-### Key Features
-- ✅ User authentication via Microsoft Entra ID
-- ✅ Auto-extract user info from Easy Auth headers
-- ✅ Route protection with decorators
-- ✅ Optional SharePoint activity logging
-- ✅ User context available in all templates
+### Option B: Use Existing Registration
 
-## Azure AD Configuration
+If you already have an app registration:
 
-### Step 1: Create Azure App Registration
+1. **App Service** → **Authentication** → **Add identity provider** → **Microsoft**
+2. Choose **Provide details of an existing registration**
+3. Enter your **Client ID**, **Client secret**, and **Tenant ID**
 
-1. Go to **Azure Portal** → **Azure Active Directory** → **App registrations**
-2. Click **"New registration"**
-3. Configure:
-   - **Name**: LeaseFileAudit
-   - **Supported account types**: Single tenant (your organization only)
-   - **Redirect URI**: Web - `https://your-app.azurewebsites.net/.auth/login/aad/callback`
-4. Click **Register**
+### Required: Configure API Permissions
 
-5. Note the following values (you'll need them):
-   - **Application (client) ID** → `SHAREPOINT_CLIENT_ID`
-   - **Directory (tenant) ID** → `SHAREPOINT_TENANT_ID`
+**Regardless of which option**, you must add Microsoft Graph permissions:
 
-### Step 2: Create Client Secret
+1. **Azure Portal** → **Azure Active Directory** → **App registrations** → Your app
+2. **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions**
 
-1. In your App Registration → **Certificates & secrets**
-2. Click **"New client secret"**
-3. Add description and expiration
-4. Copy the **Value** (not the ID) → `MICROSOFT_PROVIDER_AUTHENTICATION_SECRET`
-5. **Important**: Save this immediately; you can't retrieve it later
-
-### Step 3: Configure API Permissions
-
-1. In App Registration → **API permissions**
-2. Click **"Add a permission"**
-3. Add the following permissions:
-
-#### Microsoft Graph (Delegated)
+**Add these permissions:**
 - `User.Read` - Read user profile
-- `email` - Read user email address
-- `openid` - OpenID Connect sign-in
-- `profile` - Read user profile
+- `email` - Read email
+- `openid` - Sign-in
+- `profile` - Read profile
+- `Sites.ReadWrite.All` - Write to SharePoint (for logging)
 
-#### SharePoint (Optional - only if using SharePoint logging)
-- `AllSites.Write` - Write to SharePoint sites
-- OR configure specific site permissions
+3. Click **Grant admin consent for [your organization]**
 
-4. Click **"Grant admin consent"** for your organization
+---
 
-### Step 4: Configure Token Claims
+## 2. App Service Authentication Configuration
 
-1. In App Registration → **Token configuration**
-2. Click **"Add optional claim"**
-3. Select **ID** token type
-4. Add the following claims:
-   - `email`
-   - `family_name`
-   - `given_name`
-   - `upn` (User Principal Name)
-5. Click **Add**
+1. **App Service** → **Authentication** → Configure your Microsoft identity provider
 
-### Step 5: Enable Easy Auth in App Service
-
-1. Go to **Azure Portal** → **App Services** → Your App
-2. In the left menu, click **Authentication**
-3. Click **"Add identity provider"**
-4. Configure:
-   - **Identity provider**: Microsoft
-   - **App registration type**: Provide details of an existing registration
-   - **Application (client) ID**: Your `SHAREPOINT_CLIENT_ID`
-   - **Client secret**: Your `MICROSOFT_PROVIDER_AUTHENTICATION_SECRET`
-   - **Issuer URL**: `https://login.microsoftonline.com/{TENANT_ID}/v2.0`
+2. **Key Settings:**
    - **Restrict access**: Require authentication
-   - **Unauthenticated requests**: HTTP 302 redirect (recommended for websites)
-   - **Token store**: Enabled (default)
-5. Click **Add**
+   - **Unauthenticated requests**: HTTP 302 Found redirect
+   - **Token store**: Enabled (checked)
 
-### Step 6: Configure Environment Variables
+3. **Advanced settings** (if using existing registration):
+   - **Issuer URL**: `https://login.microsoftonline.com/{TENANT_ID}/v2.0`
+   - **Allowed token audiences**: Leave default or add `https://graph.microsoft.com`
 
-1. In App Service → **Configuration** → **Application settings**
-2. Add the following:
+### Environment Variables
 
-```
-SHAREPOINT_CLIENT_ID = <your-client-id>
-SHAREPOINT_TENANT_ID = <your-tenant-id>
-MICROSOFT_PROVIDER_AUTHENTICATION_SECRET = <your-client-secret>
-REQUIRE_AUTH = true
-SECRET_KEY = <generate-a-strong-random-key>
-```
-
-Optional (for SharePoint logging):
-```
-ENABLE_SHAREPOINT_LOGGING = true
-SHAREPOINT_SITE_URL = https://yourtenant.sharepoint.com/sites/yoursite
-SHAREPOINT_LIST_NAME = AuditLog
-```
-
-3. Click **Save**
-4. App will restart automatically
-
-## Application Integration
-
-### Authentication Decorators
-
-#### `@require_auth`
-Requires authentication. Returns 401 if user not authenticated.
-
-```python
-from web.auth import require_auth, get_current_user
-
-@bp.route('/protected')
-@require_auth
-def protected_route():
-    user = get_current_user()
-    return f"Hello {user['name']}"
-```
-
-#### `@optional_auth`
-Extracts user info if available, but doesn't require it.
-
-```python
-from web.auth import optional_auth, get_current_user
-
-@bp.route('/public')
-@optional_auth
-def public_route():
-    user = get_current_user()
-    if user:
-        return f"Hello {user['name']}"
-    return "Hello anonymous user"
-```
-
-### Helper Functions
-
-```python
-from web.auth import (
-    get_easy_auth_user,      # Get user info from headers
-    get_current_user,        # Get user from Flask g object
-    get_access_token,        # Get access token
-    is_authenticated,        # Check if authenticated
-    get_user_display_name,   # Get display name or 'Anonymous'
-    get_user_email          # Get email or empty string
-)
-```
-
-### User Information Structure
-
-```python
-user = get_current_user()
-# Returns:
-{
-    'user_id': 'unique-user-id',
-    'name': 'John Doe',
-    'email': 'john.doe@company.com',
-    'claims': {
-        'name': 'John Doe',
-        'emailaddress': 'john.doe@company.com',
-        'upn': 'john.doe@company.com',
-        # ... other claims
-    },
-    'access_token': 'eyJ0eXAiOiJKV1QiLCJhbGc...',
-    'identity_provider': 'aad'
-}
-```
-
-### Template Usage
-
-User information is automatically available in all templates:
-
-```html
-{% if user %}
-    <p>Welcome, {{ user.name }}!</p>
-    <p>Email: {{ user.email }}</p>
-{% else %}
-    <p>Please log in</p>
-{% endif %}
-```
-
-## SharePoint Logging
-
-### Setup SharePoint List
-
-1. Go to your SharePoint site
-2. Create a new list named **"AuditLog"** (or your configured name)
-3. Add the following columns:
-
-| Column Name | Type | Required |
-|------------|------|----------|
-| Title | Single line of text | Yes (auto-created) |
-| UserName | Single line of text | No |
-| UserEmail | Single line of text | No |
-| ActivityType | Single line of text | No |
-| AppName | Single line of text | No |
-| Timestamp | Date and Time | No |
-| IPAddress | Single line of text | No |
-| UserAgent | Multiple lines of text | No |
-| Details | Multiple lines of text | No |
-
-### Usage in Code
-
-```python
-from config import config
-from web.auth import get_current_user
-from activity_logging.sharepoint import log_user_activity
-
-@bp.route('/upload', methods=['POST'])
-@require_auth
-def upload():
-    user = get_current_user()
-    
-    # ... upload processing ...
-    
-    # Log the activity
-    if config.auth.can_log_to_sharepoint():
-        log_user_activity(
-            user_info=user,
-            activity_type='File Upload',
-            site_url=config.auth.sharepoint_site_url,
-            list_name=config.auth.sharepoint_list_name,
-            details={'filename': filename, 'size': file_size}
-        )
-    
-    return redirect(url_for('main.index'))
-```
-
-## Testing
-
-### Local Development Without Easy Auth
-
-For local development, set in your environment:
+Add in **Configuration** → **Application settings**:
 
 ```bash
-REQUIRE_AUTH=false
+# Required
+SECRET_KEY=<random-strong-key>
+SHAREPOINT_CLIENT_ID=<your-client-id>
+SHAREPOINT_TENANT_ID=<your-tenant-id>
+MICROSOFT_PROVIDER_AUTHENTICATION_SECRET=<your-secret>
+REQUIRE_AUTH=true
+
+# SharePoint Logging (optional)
+ENABLE_SHAREPOINT_LOGGING=true
+SHAREPOINT_SITE_URL=https://tenant.sharepoint.com/sites/yoursite
+SHAREPOINT_LIST_NAME=YourListName
+APP_NAME=YourAppName
 ```
 
-This allows the app to run without Easy Auth headers.
+---
 
-### Testing with Mock Headers
+## 3. Understanding Access Tokens & Delegated Permissions
 
-You can test authentication locally using mock headers:
+### How It Works
+
+1. User authenticates via Azure AD
+2. Easy Auth injects headers into every request:
+   - `X-MS-CLIENT-PRINCIPAL`: Base64 JSON with user info and claims
+   - `X-MS-TOKEN-AAD-ACCESS-TOKEN`: Access token for Microsoft Graph
+3. Your app extracts user info and uses token to call Microsoft Graph API
+
+### Delegated Permissions
+
+- **Delegated** = actions performed on behalf of the signed-in user
+- Token contains user's identity and permissions
+- User must have access to SharePoint sites your app writes to
+
+### Why Microsoft Graph API?
+
+**Use Microsoft Graph API:**
+- Easy Auth tokens work with Graph out of the box
+- Token audience is `https://graph.microsoft.com`
+- Single API for SharePoint, OneDrive, Teams, etc.
+- Modern, well-documented, actively maintained
+
+---
+
+## 4. Code Implementation
+
+### Authentication Module (web/auth.py)
 
 ```python
 import base64
 import json
+from flask import request, g
+from functools import wraps
 
-# Create mock principal
-mock_principal = {
-    "user_id": "test-123",
-    "identity_provider": "aad",
-    "claims": [
-        {"typ": "name", "val": "Test User"},
-        {"typ": "emailaddress", "val": "test@example.com"}
-    ]
-}
+def get_easy_auth_user():
+    """Extract user from Easy Auth headers."""
+    principal_header = request.headers.get('X-MS-CLIENT-PRINCIPAL')
+    if not principal_header:
+        return None
+    
+    # Decode base64 JSON
+    principal_json = base64.b64decode(principal_header).decode('utf-8')
+    principal_data = json.loads(principal_json)
+    
+    # Extract claims
+    claims = {}
+    for claim in principal_data.get('claims', []):
+        claim_type = claim.get('typ', '')
+        claim_value = claim.get('val', '')
+        claim_key = claim_type.split('/')[-1] if '/' in claim_type else claim_type
+        claims[claim_key] = claim_value
+    
+    # Get access token
+    access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
+    
+    return {
+        'user_id': principal_data.get('user_id', ''),
+        'name': claims.get('name', claims.get('displayname', 'Unknown')),
+        'email': claims.get('emailaddress', claims.get('email', claims.get('upn', ''))),
+        'claims': claims,
+        'access_token': access_token,
+        'identity_provider': principal_data.get('identity_provider', 'aad')
+    }
 
-# Encode
-encoded = base64.b64encode(json.dumps(mock_principal).encode()).decode()
+def require_auth(f):
+    """Decorator requiring authentication."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        user = get_easy_auth_user()
+        if not user:
+            return jsonify({'error': 'Authentication required'}), 401
+        g.user = user
+        return f(*args, **kwargs)
+    return decorated
 
-# Use in request (e.g., with curl or Postman)
-# X-MS-CLIENT-PRINCIPAL: {encoded}
+def get_current_user():
+    """Get current user from Flask g."""
+    return getattr(g, 'user', None)
 ```
 
-### Testing Routes
+### SharePoint Logger via Microsoft Graph (activity_logging/sharepoint.py)
 
-```bash
-# Test without auth (should redirect or return 401)
+```python
+import requests
+from urllib.parse import urlparse
+
+class SharePointLogger:
+    def __init__(self, site_url: str, list_name: str):
+        self.site_url = site_url.rstrip('/')
+        self.list_name = list_name
+        self._site_id = None
+        self._list_id = None
+    
+    def _get_site_id(self, access_token: str):
+        """Resolve SharePoint site URL to Graph API site ID."""
+        if self._site_id:
+            return self._site_id
+        
+        parsed = urlparse(self.site_url)
+        hostname = parsed.hostname  # e.g., tenant.sharepoint.com
+        site_path = parsed.path     # e.g., /sites/MySite
+        
+        endpoint = f"https://graph.microsoft.com/v1.0/sites/{hostname}:{site_path}"
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Accept': 'application/json'
+        }
+        
+        response = requests.get(endpoint, headers=headers, timeout=10)
+        if response.status_code == 200:
+            self._site_id = response.json().get('id')
+        return self._site_id
+    
+    def _get_list_id(self, access_token: str, site_id: str):
+        """Get list ID by display name."""
+        if self._list_id:
+            return self._list_id
+        
+        endpoint = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists"
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Accept': 'application/json'
+        }
+        
+        response = requests.get(endpoint, headers=headers, timeout=10)
+        if response.status_code == 200:
+            for item in response.json().get('value', []):
+                if item.get('displayName') == self.list_name:
+                    self._list_id = item.get('id')
+                    return self._list_id
+        return None
+    
+    def log_activity(self, access_token: str, user_name: str, 
+                     user_email: str, activity_type: str, **fields):
+        """Log activity to SharePoint list."""
+        site_id = self._get_site_id(access_token)
+        if not site_id:
+            return False
+        
+        list_id = self._get_list_id(access_token, site_id)
+        if not list_id:
+            return False
+        
+        # Build item data - Graph uses simple format
+        item_data = {
+            'fields': {
+                'Title': f'{activity_type} - {user_name}',
+                'UserName': user_name,
+                'UserEmail': user_email,
+                'ActivityType': activity_type,
+                **fields  # Additional columns
+            }
+        }
+        
+        endpoint = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+        
+        response = requests.post(endpoint, json=item_data, headers=headers, timeout=10)
+        return response.status_code in [200, 201]
+```
+
+### Usage Example
+
+```python
+from web.auth import require_auth, get_current_user
+from activity_logging.sharepoint import SharePointLogger
+import os
+
+@app.route('/protected')
+@require_auth
+def protected_route():
+    user = get_current_user()
+    
+    # Log activity
+    if os.getenv('ENABLE_SHAREPOINT_LOGGING') == 'true':
+        logger = SharePointLogger(
+            site_url=os.getenv('SHAREPOINT_SITE_URL'),
+            list_name=os.getenv('SHAREPOINT_LIST_NAME')
+        )
+        logger.log_activity(
+            access_token=user['access_token'],
+            user_name=user['name'],
+            user_email=user['email'],
+            activity_type='Page View',
+            Application=os.getenv('APP_NAME', 'MyApp'),
+            UserRole='user'
+        )
+    
+    return f"Hello {user['name']}"
+```
+
+---
+
+## 5. SharePoint List Setup
+
+Create a SharePoint list with these columns (names must match exactly):
+
+| Column Name | Type |
+|------------|------|
+| Title | Single line of text |
+| UserName | Single line of text |
+| UserEmail | Single line of text |
+| ActivityType | Single line of text |
+| Application | Single line of text |
+| UserRole | Single line of text |
+| LoginTimestamp | Date and Time |
+
+**Column names in your code must match the SharePoint column names exactly.**
+
+---
+
+## 6. Testing & Troubleshooting
+
+### Local Development
+
+Set `REQUIRE_AUTH=false` in `.env` to bypass authentication locally.
+
+### Verify Token
+
+Decode token at [jwt.ms](https://jwt.ms):
+- `aud` claim should be `https://graph.microsoft.com`
+- `scp` claim should include your permissions
+
+### Common Issues
+
+**"Access denied":**
+- Missing API permissions in Azure AD
+- Admin consent not granted
+- User doesn't have SharePoint site access
+
+**"List not found":**
+- List `displayName` in SharePoint doesn't match `SHAREPOINT_LIST_NAME` env variable
+
+**"Column doesn't exist":**
+- Field name in code doesn't match SharePoint column name exactly
+
+**Authentication not working:**
+- `REQUIRE_AUTH` not set to `true`
+- Easy Auth not enabled in App Service
+- Redirect URI mismatch in app registration
+
+---
+
+## 7. Key Points
+
+1. **Use Microsoft Graph API** for all SharePoint operations
+2. **Delegated permissions** = actions performed on behalf of signed-in user
+3. **Easy Auth handles token acquisition and refresh** automatically
+4. **Always grant admin consent** after adding API permissions
+5. **Column names in code must match SharePoint columns exactly**
+6. **Azure can auto-create app registrations** when enabling auth
+
+---
+
+## Additional Resources
+
+- [Microsoft Graph API](https://learn.microsoft.com/en-us/graph/)
+- [App Service Easy Auth](https://learn.microsoft.com/en-us/azure/app-service/overview-authentication-authorization)
+- [SharePoint Lists via Graph](https://learn.microsoft.com/en-us/graph/api/resources/list)
+
+---
+
+## Additional Resources
+
+- [Microsoft Graph API Documentation](https://learn.microsoft.com/en-us/graph/)
+- [App Service Easy Auth](https://learn.microsoft.com/en-us/azure/app-service/overview-authentication-authorization)
+- [SharePoint List API](https://learn.microsoft.com/en-us/graph/api/resources/list)
+
+---
+
+## Additional Resources
+
+- [Microsoft Graph API Documentation](https://learn.microsoft.com/en-us/graph/)
+- [App Service Easy Auth](https://learn.microsoft.com/en-us/azure/app-service/overview-authentication-authorization)
+- [SharePoint List API](https://learn.microsoft.com/en-us/graph/api/resources/list)
+
+
 curl https://your-app.azurewebsites.net/portfolio
 
 # Test with mock header (local dev)
