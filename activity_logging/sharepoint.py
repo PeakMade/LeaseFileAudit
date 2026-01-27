@@ -395,9 +395,11 @@ def log_user_activity(
         access_token = _get_app_only_token()
     else:
         # Production: Fetch delegated token per-request from EasyAuth headers
-        logger.debug("[SHAREPOINT] Production mode, fetching delegated token from request headers")
-        access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
-        logger.debug(f"[SHAREPOINT] Token fetched from headers: {access_token is not None}")
+        # Import here to avoid circular imports
+        from web.auth import get_access_token
+        logger.debug("[SHAREPOINT] Production mode, fetching delegated token from EasyAuth")
+        access_token = get_access_token()  # This will log JWT expiry info
+        logger.debug(f"[SHAREPOINT] Token fetched from get_access_token(): {access_token is not None}")
     
     if not access_token:
         logger.warning("Cannot log to SharePoint: No access token available")
