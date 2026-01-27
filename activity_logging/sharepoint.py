@@ -361,6 +361,10 @@ def log_user_activity(
     
     Supports both production (delegated token) and local dev (app-only token) modes.
     
+    IMPORTANT: In production, this function fetches the access token per-request
+    from EasyAuth headers via request.headers, NOT from the user_info dict.
+    This prevents token expiry issues.
+    
     Args:
         user_info: User info dictionary from get_easy_auth_user() or mock user
         activity_type: Type of activity (e.g., 'Upload', 'View', 'Export')
@@ -382,16 +386,21 @@ def log_user_activity(
     require_auth = os.getenv('REQUIRE_AUTH', 'true').lower() == 'true'
     is_local_dev = not require_auth
     
-    # Get access token - delegated from user or app-only for local dev
-    access_token = user_info.get('access_token')
+    # Get access token per-request from EasyAuth headers (production)
+    # or use app-only token (local dev)
+    access_token = None
     
-    if not access_token and is_local_dev:
+    if is_local_dev:
         logger.debug("[SHAREPOINT] Local dev mode detected, acquiring app-only token")
         access_token = _get_app_only_token()
+    else:
+        # Production: Fetch delegated token per-request from EasyAuth headers
+        logger.debug("[SHAREPOINT] Production mode, fetching delegated token from request headers")
+        access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
+        logger.debug(f"[SHAREPOINT] Token fetched from headers: {access_token is not None}")
     
     if not access_token:
         logger.warning("Cannot log to SharePoint: No access token available")
-        logger.debug(f"[SHAREPOINT] User info keys: {list(user_info.keys())}")
         logger.debug(f"[SHAREPOINT] is_local_dev: {is_local_dev}")
         return False
     

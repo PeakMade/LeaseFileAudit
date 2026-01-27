@@ -6,8 +6,10 @@ Azure App Service built-in authentication headers when deployed to Azure.
 """
 import base64
 import json
+import jwt
 import logging
 import os
+from datetime import datetime
 from functools import wraps
 from typing import Optional, Dict, Any
 from flask import request, jsonify, g
@@ -66,12 +68,6 @@ def get_easy_auth_user() -> Optional[Dict[str, Any]]:
         
         logger.debug(f"[AUTH] Extracted claim keys: {list(claims.keys())}")
         
-        # Get access token from separate header
-        access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
-        logger.debug(f"[AUTH] Access token present: {access_token is not None}")
-        if access_token:
-            logger.debug(f"[AUTH] Access token length: {len(access_token)}")
-        
         # Build user info dictionary
         extracted_name = claims.get('name', claims.get('displayname', 'Unknown User'))
         extracted_email = claims.get('emailaddress', claims.get('email', claims.get('upn', '')))
@@ -81,12 +77,13 @@ def get_easy_auth_user() -> Optional[Dict[str, Any]]:
         logger.debug(f"[AUTH] User ID: {principal_data.get('user_id', 'N/A')}")
         logger.debug(f"[AUTH] Identity provider: {principal_data.get('identity_provider', 'aad')}")
         
+        # DO NOT store access_token in user dict - it should be fetched per-request
+        # This prevents token expiry issues in production
         user_info = {
             'user_id': principal_data.get('user_id', ''),
             'name': extracted_name,
             'email': extracted_email,
             'claims': claims,
-            'access_token': access_token,
             'identity_provider': principal_data.get('identity_provider', 'aad')
         }
         
@@ -105,10 +102,36 @@ def get_access_token() -> Optional[str]:
     This token can be used to authenticate to other Azure services
     like SharePoint, Graph API, etc.
     
+    IMPORTANT: This fetches the token per-request from EasyAuth headers.
+    Do NOT store this token long-term - always call this function when needed.
+    
     Returns:
         Access token string or None if not available
     """
-    return request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
+    access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
+    
+    if access_token:
+        try:
+            # Decode JWT without verification to check expiry
+            decoded = jwt.decode(access_token, options={"verify_signature": False})
+            exp_timestamp = decoded.get('exp')
+            
+            if exp_timestamp:
+                exp_datetime = datetime.fromtimestamp(exp_timestamp)
+                now = datetime.now()
+                time_until_expiry = exp_datetime - now
+                
+                logger.info(f"[AUTH] Access token expires at: {exp_datetime.isoformat()}")
+                logger.info(f"[AUTH] Time until expiry: {time_until_expiry}")
+                
+                if exp_datetime < now:
+                    logger.warning(f"[AUTH] Access token is EXPIRED (expired {now - exp_datetime} ago)")
+                elif time_until_expiry.total_seconds() < 300:  # Less than 5 minutes
+                    logger.warning(f"[AUTH] Access token expires soon: {time_until_expiry}")
+        except Exception as e:
+            logger.debug(f"[AUTH] Could not decode JWT for expiry check: {e}")
+    
+    return access_token
 
 
 def get_current_user() -> Optional[Dict[str, Any]]:

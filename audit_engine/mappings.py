@@ -48,6 +48,7 @@ class ScheduledSourceColumns:
     CHARGE_START_DATE = "CHARGE_START_DATE"
     CHARGE_END_DATE = "CHARGE_END_DATE"
     GUARANTOR_NAME = "GUARANTOR_NAME"
+    DELETED_ON = "DELETED_ON"
 
 
 # ==================== Source Mapping Configuration ====================
@@ -198,6 +199,20 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
 
 # ==================== V1 Mappings: Scheduled Charges ====================
 
+def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filter scheduled charges: exclude deleted records.
+    
+    Deleted scheduled charges (DELETED_ON is not null) should not be included
+    in the audit expectations to prevent false mismatches.
+    """
+    if ScheduledSourceColumns.DELETED_ON in df.columns:
+        return df[df[ScheduledSourceColumns.DELETED_ON].isna()].copy()
+    else:
+        # If DELETED_ON column doesn't exist, return all rows
+        return df.copy()
+
+
 def _scheduled_period_start_convert(df: pd.DataFrame) -> pd.Series:
     """
     Convert CHARGE_START_DATE to datetime.
@@ -285,7 +300,7 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
         ColumnTransform(ScheduledSourceColumns.GUARANTOR_NAME, 
                        CanonicalField.GUARANTOR_NAME),
     ],
-    row_filter=None,  # No filtering for scheduled charges
+    row_filter=_scheduled_row_filter,  # Filter out deleted scheduled charges
     derived_fields={
         CanonicalField.PERIOD_START: _scheduled_period_start_convert,
         CanonicalField.PERIOD_END: _scheduled_period_end_convert,

@@ -306,7 +306,6 @@ def index():
     logger.info(f"[INDEX] User present: {user is not None}")
     if user:
         logger.info(f"[INDEX] User keys: {list(user.keys())}")
-        logger.info(f"[INDEX] User has access_token: {user.get('access_token') is not None}")
         logger.info(f"[INDEX] SharePoint logging enabled: {config.auth.enable_sharepoint_logging}")
         logger.info(f"[INDEX] Can log to SharePoint: {config.auth.can_log_to_sharepoint()}")
         logger.info(f"[INDEX] SharePoint site URL: {config.auth.sharepoint_site_url}")
