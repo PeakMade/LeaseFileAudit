@@ -405,7 +405,29 @@
     
     {% block extra_css %}{% endblock %}
 </head>
-<body>
+<body style="margin: 0; padding: 0; overflow-x: hidden; position: relative;">
+    <!-- User Badge (fixed position at top right) -->
+    {% if user %}
+    <div class="user-badge">
+        <i class="fas fa-user user-icon"></i>
+        <span class="user-name">{{ user.name }}</span>
+        <i class="fas fa-chevron-down dropdown-arrow"></i>
+        <div class="user-dropdown">
+            <div class="user-dropdown-item">
+                <strong>Name</strong>
+                <div class="value">{{ user.name }}</div>
+            </div>
+            <div class="user-dropdown-item">
+                <strong>Email</strong>
+                <div class="value">{{ user.email }}</div>
+            </div>
+            <a href="/.auth/logout" class="logout-link">
+                <i class="fas fa-sign-out-alt me-2"></i>Sign Out
+            </a>
+        </div>
+    </div>
+    {% endif %}
+    
     <!-- Standard PeakMade Header -->
     <header style="background: linear-gradient(90deg, #ffb6b6 0%, #1f51ff 50%, #90eeff 100%);
                    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
@@ -430,28 +452,6 @@
             
         </div>
     </header>
-
-    <!-- User Badge (positioned below header on right side) -->
-    {% if user %}
-    <div class="user-badge">
-        <i class="fas fa-user user-icon"></i>
-        <span class="user-name">{{ user.name }}</span>
-        <i class="fas fa-chevron-down dropdown-arrow"></i>
-        <div class="user-dropdown">
-            <div class="user-dropdown-item">
-                <strong>Name</strong>
-                <div class="value">{{ user.name }}</div>
-            </div>
-            <div class="user-dropdown-item">
-                <strong>Email</strong>
-                <div class="value">{{ user.email }}</div>
-            </div>
-            <a href="/.auth/logout" class="logout-link">
-                <i class="fas fa-sign-out-alt me-2"></i>Sign Out
-            </a>
-        </div>
-    </div>
-    {% endif %}
 
     <!-- Main Content Area -->
     <main class="main-content">

@@ -130,6 +130,9 @@ class SharePointLogger:
             
             # Prepare the list item data for Microsoft Graph API
             # Graph API uses a simpler format with fields nested under 'fields' key
+            env_value = os.getenv('APP_ENVIRONMENT', 'Local')
+            logger.info(f"[SHAREPOINT] APP_ENVIRONMENT value: '{env_value}'")
+            
             item_data = {
                 'fields': {
                     'Title': f'{activity_type} - {user_name}',
@@ -138,11 +141,12 @@ class SharePointLogger:
                     'ActivityType': activity_type,
                     'Application': app_name,
                     'UserRole': user_role,
+                    'Env': env_value,
                     'LoginTimestamp': datetime.utcnow().isoformat() + 'Z',
                 }
             }
             
-            logger.debug(f"[SHAREPOINT] Item data: {item_data}")
+            logger.info(f"[SHAREPOINT] Sending Env field with value: '{env_value}'")
             
             # Get the Microsoft Graph list endpoint
             list_endpoint = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"

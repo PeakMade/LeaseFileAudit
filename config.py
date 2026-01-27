@@ -72,6 +72,9 @@ class AuthConfig:
     tenant_id: Optional[str] = field(default_factory=lambda: os.getenv('SHAREPOINT_TENANT_ID'))
     client_secret: Optional[str] = field(default_factory=lambda: os.getenv('MICROSOFT_PROVIDER_AUTHENTICATION_SECRET'))
     
+    # Environment detection
+    environment: str = field(default_factory=lambda: os.getenv('APP_ENVIRONMENT', 'Local'))
+    
     # Authentication settings
     require_auth: bool = field(default_factory=lambda: os.getenv('REQUIRE_AUTH', 'true').lower() == 'true')
     

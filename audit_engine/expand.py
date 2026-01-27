@@ -87,6 +87,7 @@ def expand_scheduled_to_months(df: pd.DataFrame) -> pd.DataFrame:
     result = pd.DataFrame(expanded_rows)
     
     # Reorder columns to put AUDIT_MONTH with bucket keys
+    # Include name fields for UI display
     cols = [
         CanonicalField.SCHEDULED_CHARGES_ID.value,
         CanonicalField.PROPERTY_ID.value,
@@ -97,5 +98,15 @@ def expand_scheduled_to_months(df: pd.DataFrame) -> pd.DataFrame:
         CanonicalField.PERIOD_START.value,
         CanonicalField.PERIOD_END.value
     ]
+    
+    # Add optional name columns if they exist
+    optional_cols = [
+        CanonicalField.GUARANTOR_NAME.value,
+        CanonicalField.CUSTOMER_NAME.value,
+        CanonicalField.AR_CODE_NAME.value
+    ]
+    for col in optional_cols:
+        if col in result.columns:
+            cols.append(col)
     
     return result[cols].reset_index(drop=True)

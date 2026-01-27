@@ -316,7 +316,7 @@ def index():
         logger.info(f"[INDEX] Attempting to log to SharePoint...")
         result = log_user_activity(
             user_info=user,
-            activity_type='Login',
+            activity_type='Start Session',
             site_url=config.auth.sharepoint_site_url,
             list_name=config.auth.sharepoint_list_name,
             details={'page': 'index', 'user_role': 'user'}
@@ -399,12 +399,12 @@ def upload():
         
         flash(f'Audit completed successfully! Run ID: {run_id}{period_msg}', 'success')
         
-        # Log audit run activity to SharePoint
+        # Log successful audit completion to SharePoint
         user = get_current_user()
         if user and config.auth.can_log_to_sharepoint():
             log_user_activity(
                 user_info=user,
-                activity_type='Run Audit',
+                activity_type='Successful Analysis',
                 site_url=config.auth.sharepoint_site_url,
                 list_name=config.auth.sharepoint_list_name,
                 details={
@@ -424,6 +424,22 @@ def upload():
         error_trace = traceback.format_exc()
         print(f"\n[ERROR IN UPLOAD] {error_msg}")
         print(f"[ERROR TRACEBACK]\n{error_trace}")
+        
+        # Log failed analysis to SharePoint
+        user = get_current_user()
+        if user and config.auth.can_log_to_sharepoint():
+            log_user_activity(
+                user_info=user,
+                activity_type='Failed Analysis',
+                site_url=config.auth.sharepoint_site_url,
+                list_name=config.auth.sharepoint_list_name,
+                details={
+                    'file_name': filename if 'filename' in locals() else 'unknown',
+                    'error': error_msg,
+                    'user_role': 'user'
+                }
+            )
+        
         flash(f'Error processing file: {error_msg}', 'danger')
         return redirect(url_for('main.index'))
 
@@ -507,6 +523,7 @@ def property_view(property_id: str, run_id: str = None):
         
         property_name = None
         actual_detail = run_data["actual_detail"]
+        expected_detail = run_data["expected_detail"]
         property_actual = actual_detail[actual_detail[CanonicalField.PROPERTY_ID.value] == float(property_id)]
         if len(property_actual) > 0 and CanonicalField.PROPERTY_NAME.value in property_actual.columns:
             property_name = property_actual[CanonicalField.PROPERTY_NAME.value].iloc[0]
@@ -545,12 +562,12 @@ def property_view(property_id: str, run_id: str = None):
         
         # Build comprehensive lease summary (including clean and matched leases)
         lease_summary = []
-        placeholder_names = ["John Doe", "Jane Smith", "John Smith", "Jane Doe", "James Brown", "Mary Johnson"]
-        placeholder_index = 0
         for lease_id in all_lease_ids:
             # Get guarantor name and customer name for this lease
             guarantor_name = None
             customer_name = None
+            
+            # First check actual_detail (posted transactions)
             lease_actual_data = actual_detail[actual_detail[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id]
             if len(lease_actual_data) > 0:
                 if CanonicalField.GUARANTOR_NAME.value in lease_actual_data.columns:
@@ -563,10 +580,19 @@ def property_view(property_id: str, run_id: str = None):
                     if pd.notna(customer_value):
                         customer_name = customer_value
             
-            # Use placeholder if no guarantor name found
-            if not guarantor_name:
-                guarantor_name = placeholder_names[placeholder_index % len(placeholder_names)]
-                placeholder_index += 1
+            # If not found in actual, check expected_detail (scheduled charges)
+            if not guarantor_name or not customer_name:
+                lease_expected_data = expected_detail[expected_detail[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id]
+                if len(lease_expected_data) > 0:
+                    if not guarantor_name and CanonicalField.GUARANTOR_NAME.value in lease_expected_data.columns:
+                        guarantor_value = lease_expected_data[CanonicalField.GUARANTOR_NAME.value].iloc[0]
+                        if pd.notna(guarantor_value):
+                            guarantor_name = guarantor_value
+                    
+                    if not customer_name and CanonicalField.CUSTOMER_NAME.value in lease_expected_data.columns:
+                        customer_value = lease_expected_data[CanonicalField.CUSTOMER_NAME.value].iloc[0]
+                        if pd.notna(customer_value):
+                            customer_name = customer_value
             
             # Get all buckets for this lease
             lease_all_buckets = all_property_buckets[
@@ -885,18 +911,19 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         if not property_name:
             property_name = PROPERTY_NAME_MAP.get(int(float(property_id)))
         
-        # Get guarantor name
+        # Get guarantor name from actual records
         guarantor_name = None
         if len(lease_actual) > 0 and CanonicalField.GUARANTOR_NAME.value in lease_actual.columns:
             guarantor_value = lease_actual[CanonicalField.GUARANTOR_NAME.value].iloc[0]
             if pd.notna(guarantor_value):
                 guarantor_name = guarantor_value
         
-        # Use placeholder if no guarantor name found
+        # If not found in actual, check expected records (scheduled charges)
         if not guarantor_name:
-            # Use lease_interval_id to generate consistent placeholder
-            placeholder_names = ["John Doe", "Jane Smith", "John Smith", "Jane Doe", "James Brown", "Mary Johnson"]
-            guarantor_name = placeholder_names[int(float(lease_interval_id)) % len(placeholder_names)]
+            if len(lease_expected) > 0 and CanonicalField.GUARANTOR_NAME.value in lease_expected.columns:
+                guarantor_value = lease_expected[CanonicalField.GUARANTOR_NAME.value].iloc[0]
+                if pd.notna(guarantor_value):
+                    guarantor_name = guarantor_value
         
         # Build matched details grouped by AR code
         matched_groups = {}
