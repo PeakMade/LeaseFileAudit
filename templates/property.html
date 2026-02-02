@@ -84,30 +84,7 @@
                             <thead style="background-color: #f8f9fa; position: sticky; top: 0; z-index: 10;">
                                 <tr style="border-bottom: 2px solid #dee2e6;">
                                     <th class="sortable" data-sort="customer_name" style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">
-                                        <div class="d-flex align-items-center gap-2">
-                                            <span onclick="event.stopPropagation(); sortByCustomer();" style="cursor: pointer;">
-                                                Customer Name <i class="fas fa-sort-up" id="customerSortIcon"></i>
-                                            </span>
-                                            <div class="input-group input-group-sm" style="max-width: 180px;" onclick="event.stopPropagation();">
-                                                <input type="text" 
-                                                       class="form-control form-control-sm" 
-                                                       id="customerSearch" 
-                                                       list="customerNames"
-                                                       placeholder="Filter..."
-                                                       autocomplete="off"
-                                                       style="font-size: 0.875rem;">
-                                                <datalist id="customerNames">
-                                                    {% for lease in lease_summary %}
-                                                    {% if lease.customer_name %}
-                                                    <option value="{{ lease.customer_name }}">
-                                                    {% endif %}
-                                                    {% endfor %}
-                                                </datalist>
-                                                <button class="btn btn-outline-secondary btn-sm" type="button" id="clearCustomerSearch" style="padding: 0.25rem 0.5rem;">
-                                                    <i class="fas fa-times"></i>
-                                                </button>
-                                            </div>
-                                        </div>
+                                        Customer Name <span id="customerSortIcon" style="font-size: 1em; color: #000;">↓</span>
                                     </th>
                                     <th style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Guarantor Name</th>
                                     <th style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease Interval ID</th>
@@ -194,61 +171,46 @@
 
     // Auto-sort alphabetically by customer name on page load
     document.addEventListener('DOMContentLoaded', function() {
-        sortByCustomer();
-    });
-
-    // Sort by customer name
-    function sortByCustomer() {
         const table = document.getElementById('leasesTable');
         const tbody = table.querySelector('tbody');
-        const rows = Array.from(tbody.querySelectorAll('tr'));
         const icon = document.getElementById('customerSortIcon');
         
-        // Toggle sort order
-        currentSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+        let currentSortOrder = 'desc';
         
-        rows.sort((a, b) => {
-            const nameA = a.cells[0].textContent.trim().toLowerCase();
-            const nameB = b.cells[0].textContent.trim().toLowerCase();
+        // Sort by customer name
+        function sortByCustomer() {
+            const rows = Array.from(tbody.querySelectorAll('tr'));
             
-            if (currentSortOrder === 'asc') {
-                return nameA.localeCompare(nameB);
-            } else {
-                return nameB.localeCompare(nameA);
-            }
-        });
-        
-        // Update icon
-        icon.className = currentSortOrder === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down';
-        
-        // Re-append sorted rows
-        rows.forEach(row => tbody.appendChild(row));
-    }
+            // Toggle sort order
+            currentSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+            
+            rows.sort((a, b) => {
+                const nameA = a.cells[0].textContent.trim().toLowerCase();
+                const nameB = b.cells[0].textContent.trim().toLowerCase();
+                
+                if (currentSortOrder === 'asc') {
+                    return nameA.localeCompare(nameB);
+                } else {
+                    return nameB.localeCompare(nameA);
+                }
+            });
+            
+            // Update icon
+            icon.textContent = currentSortOrder === 'asc' ? '↑' : '↓';
+            icon.style.color = '#000';
+            
+            // Re-append sorted rows
+            rows.forEach(row => tbody.appendChild(row));
+        }
 
-    // Filter table by customer name
-    document.getElementById('customerSearch').addEventListener('input', function() {
-        filterTable();
+        // Add click handler to customer name header for sorting
+        const customerHeader = table.querySelector('.sortable[data-sort="customer_name"]');
+        if (customerHeader) {
+            customerHeader.addEventListener('click', sortByCustomer);
+        }
+        
+        // Initial sort
+        sortByCustomer();
     });
-
-    // Clear search filter
-    document.getElementById('clearCustomerSearch').addEventListener('click', function() {
-        document.getElementById('customerSearch').value = '';
-        filterTable();
-    });
-
-    function filterTable() {
-        const searchValue = document.getElementById('customerSearch').value.toLowerCase();
-        const table = document.getElementById('leasesTable');
-        const rows = table.querySelectorAll('tbody tr');
-        
-        rows.forEach(row => {
-            const customerName = row.cells[0].textContent.toLowerCase();
-            if (customerName.includes(searchValue)) {
-                row.style.display = '';
-            } else {
-                row.style.display = 'none';
-            }
-        });
-    }
 </script>
 {% endblock %}

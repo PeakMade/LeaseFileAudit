@@ -60,34 +60,13 @@
                         <table class="table table-hover mb-0" id="propertiesTable">
                             <thead class="table-light">
                                 <tr>
-                                    <th class="sortable" data-sort="property_name" style="cursor: pointer; min-width: 300px;">
-                                        <div class="d-flex align-items-center gap-2">
-                                            <span onclick="event.stopPropagation(); sortByPropertyName();" style="cursor: pointer;">
-                                                Property Name <i class="fas fa-sort-up text-muted" id="propertyNameSortIcon"></i>
-                                            </span>
-                                            <div class="input-group input-group-sm" style="max-width: 200px;" onclick="event.stopPropagation();">
-                                                <input type="text" 
-                                                       class="form-control form-control-sm" 
-                                                       id="propertySearch" 
-                                                       list="propertyNames"
-                                                       placeholder="Filter..."
-                                                       autocomplete="off"
-                                                       style="font-size: 0.875rem;">
-                                                <datalist id="propertyNames">
-                                                    {% for property in properties %}
-                                                    <option value="{{ property.property_name if property.property_name else '-' }}">
-                                                    {% endfor %}
-                                                </datalist>
-                                                <button class="btn btn-outline-secondary btn-sm" type="button" id="clearSearch" style="padding: 0.25rem 0.5rem;">
-                                                    <i class="fas fa-times"></i>
-                                                </button>
-                                            </div>
-                                        </div>
+                                    <th class="sortable" data-sort="property_name" style="cursor: pointer;">
+                                        Property Name <span id="propertyNameSortIcon" style="font-size: 1em; color: #999;">↕</span>
                                     </th>
                                     <th>Property ID</th>
                                     <th class="text-center">Total Lease Intervals</th>
                                     <th class="text-center sortable" data-sort="exceptions" style="cursor: pointer;">
-                                        Exceptions <i class="fas fa-sort-down"></i>
+                                        Exceptions <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span>
                                     </th>
                                     <th class="text-end">Undercharge</th>
                                     <th class="text-end">Overcharge</th>
@@ -177,8 +156,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const table = document.getElementById('propertiesTable');
     const tbody = table.querySelector('tbody');
     const rows = Array.from(tbody.querySelectorAll('tr'));
-    const searchInput = document.getElementById('propertySearch');
-    const clearButton = document.getElementById('clearSearch');
     
     let currentSort = {
         column: 'exceptions',
@@ -191,20 +168,6 @@ document.addEventListener('DOMContentLoaded', function() {
         row.dataset.propertyName = cells[0].textContent.trim();
         row.dataset.exceptions = parseInt(cells[3].textContent.replace(/\D/g, '') || '0');
     });
-    
-    // Filter function
-    function filterTable() {
-        const filterValue = searchInput.value.toLowerCase().trim();
-        
-        rows.forEach(row => {
-            const propertyName = row.dataset.propertyName.toLowerCase();
-            if (filterValue === '' || propertyName.includes(filterValue)) {
-                row.style.display = '';
-            } else {
-                row.style.display = 'none';
-            }
-        });
-    }
     
     // Sort function
     function sortTable(column, direction) {
@@ -231,42 +194,23 @@ document.addEventListener('DOMContentLoaded', function() {
         tbody.innerHTML = '';
         sortedRows.forEach(row => tbody.appendChild(row));
         
-        // Reapply filter after sorting
-        filterTable();
-        
         // Update sort icons
-        table.querySelectorAll('.sortable i').forEach(icon => {
-            icon.className = 'fas fa-sort-up text-muted';
+        table.querySelectorAll('.sortable span').forEach(icon => {
+            icon.textContent = '↕';
+            icon.style.color = '#999';
         });
         
-        const activeHeader = table.querySelector(`.sortable[data-sort="${column}"] i`);
+        const activeHeader = table.querySelector(`.sortable[data-sort="${column}"] span`);
         if (activeHeader) {
-            activeHeader.className = direction === 'asc' 
-                ? 'fas fa-sort-up'
-                : 'fas fa-sort-down';
+            activeHeader.textContent = direction === 'asc' ? '↑' : '↓';
+            activeHeader.style.color = '#000';
         }
         
         currentSort = { column, direction };
     }
     
-    // Function to sort by property name (called from onclick)
-    window.sortByPropertyName = function() {
-        const direction = currentSort.column === 'property_name' && currentSort.direction === 'desc' 
-            ? 'asc' 
-            : 'desc';
-        sortTable('property_name', direction);
-        
-        // Update the property name sort icon specifically
-        const icon = document.getElementById('propertyNameSortIcon');
-        if (icon) {
-            icon.className = direction === 'asc' 
-                ? 'fas fa-sort-up'
-                : 'fas fa-sort-down';
-        }
-    };
-    
-    // Add click handlers to other sortable headers (exceptions)
-    table.querySelectorAll('.sortable[data-sort="exceptions"]').forEach(header => {
+    // Add click handlers to sortable headers
+    table.querySelectorAll('.sortable').forEach(header => {
         header.addEventListener('click', function() {
             const column = this.dataset.sort;
             const direction = currentSort.column === column && currentSort.direction === 'desc' 
@@ -275,20 +219,6 @@ document.addEventListener('DOMContentLoaded', function() {
             sortTable(column, direction);
         });
     });
-    
-    // Search input event listener
-    searchInput.addEventListener('input', filterTable);
-    
-    // Clear button event listener
-    clearButton.addEventListener('click', function(e) {
-        e.stopPropagation();
-        searchInput.value = '';
-        filterTable();
-        searchInput.focus();
-    });
-    
-    // Handle datalist selection
-    searchInput.addEventListener('change', filterTable);
     
     // Initial sort by exceptions (descending)
     sortTable('exceptions', 'desc');
