@@ -73,7 +73,7 @@
                                             Multiple months
                                         {% else %}
                                             {% set detail = exc.monthly_details[0] %}
-                                            {{ detail.charge_start.strftime('%m/%d/%Y') if detail.charge_start else '-' }} to {{ detail.charge_end.strftime('%m/%d/%Y') if detail.charge_end else '-' }}
+                                            {{ detail.charge_start|safe_strftime('%m/%d/%Y') }} to {{ detail.charge_end|safe_strftime('%m/%d/%Y') }}
                                         {% endif %}
                                     </td>
                                     <td class="text-center text-muted">
@@ -126,15 +126,15 @@
                                                     <tr>
                                                         {% if i == 0 %}
                                                         <td rowspan="{{ max_rows }}" class="align-middle">
-                                                            <strong>{{ monthly.audit_month.strftime('%B %Y') if monthly.audit_month else '-' }}</strong>
+                                                            <strong>{{ monthly.audit_month|safe_strftime('%B %Y') }}</strong>
                                                         </td>
                                                         {% endif %}
                                                         
                                                         <!-- Expected columns -->
                                                         {% if i < exp_count %}
                                                         {% set exp = monthly.expected_transactions[i] %}
-                                                        <td>{{ exp.period_start.strftime('%m/%d/%Y') if exp.period_start else '-' }}</td>
-                                                        <td>{{ exp.period_end.strftime('%m/%d/%Y') if exp.period_end else '-' }}</td>
+                                                        <td>{{ exp.period_start|safe_strftime('%m/%d/%Y') }}</td>
+                                                        <td>{{ exp.period_end|safe_strftime('%m/%d/%Y') }}</td>
                                                         <td class="text-end">${{ "{:,.0f}".format(exp.amount) }}</td>
                                                         {% else %}
                                                         <td colspan="3" class="text-muted text-center">
@@ -145,7 +145,7 @@
                                                         <!-- Actual columns -->
                                                         {% if i < act_count %}
                                                         {% set act = monthly.actual_transactions[i] %}
-                                                        <td>{{ act.post_date.strftime('%m/%d/%Y') if act.post_date else '-' }}</td>
+                                                        <td>{{ act.post_date|safe_strftime('%m/%d/%Y') }}</td>
                                                         <td><small>{{ act.transaction_id|int if act.transaction_id else '-' }}</small></td>
                                                         <td class="text-end">${{ "{:,.0f}".format(act.amount) }}</td>
                                                         {% else %}
@@ -266,15 +266,15 @@
                                                     <tr>
                                                         {% if i == 0 %}
                                                         <td rowspan="{{ max_rows }}" class="align-middle">
-                                                            <strong>{{ monthly.audit_month.strftime('%B %Y') if monthly.audit_month else '-' }}</strong>
+                                                            <strong>{{ monthly.audit_month|safe_strftime('%B %Y') }}</strong>
                                                         </td>
                                                         {% endif %}
                                                         
                                                         <!-- Expected columns -->
                                                         {% if i < exp_count %}
                                                         {% set exp = monthly.expected_transactions[i] %}
-                                                        <td>{{ exp.period_start.strftime('%m/%d/%Y') if exp.period_start else '-' }}</td>
-                                                        <td>{{ exp.period_end.strftime('%m/%d/%Y') if exp.period_end else '-' }}</td>
+                                                        <td>{{ exp.period_start|safe_strftime('%m/%d/%Y') }}</td>
+                                                        <td>{{ exp.period_end|safe_strftime('%m/%d/%Y') }}</td>
                                                         <td class="text-end">${{ "{:,.0f}".format(exp.amount) }}</td>
                                                         {% else %}
                                                         <td colspan="3" class="text-muted text-center">-</td>
@@ -283,7 +283,7 @@
                                                         <!-- Actual columns -->
                                                         {% if i < act_count %}
                                                         {% set act = monthly.actual_transactions[i] %}
-                                                        <td>{{ act.post_date.strftime('%m/%d/%Y') if act.post_date else '-' }}</td>
+                                                        <td>{{ act.post_date|safe_strftime('%m/%d/%Y') }}</td>
                                                         <td><small>{{ act.transaction_id|int if act.transaction_id else '-' }}</small></td>
                                                         <td class="text-end">${{ "{:,.0f}".format(act.amount) }}</td>
                                                         {% else %}

@@ -17,6 +17,7 @@ from audit_engine import (
     calculate_kpis,
     calculate_property_summary
 )
+from audit_engine.reconcile import reconcile_detail
 from audit_engine.rules import default_registry
 from audit_engine.canonical_fields import CanonicalField
 from storage.service import StorageService
@@ -269,7 +270,65 @@ def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audi
         
         print(f"[AUDIT PERIOD FILTER] After filter - Expected: {len(expected_detail)}, Actual: {len(actual_detail)}")
     
-    # Reconcile
+    # Filter out API/timed/external charges from actual_detail
+    # These codes are expected to be billed without schedule and should not appear in audit
+    from audit_engine.mappings import API_POSTED_AR_CODES
+    if not actual_detail.empty and CanonicalField.AR_CODE_ID.value in actual_detail.columns:
+        original_count = len(actual_detail)
+        
+        print(f"\n[API CODE FILTER] ========== FILTERING API CODES ==========")
+        print(f"[API CODE FILTER] API codes to filter: {API_POSTED_AR_CODES}")
+        print(f"[API CODE FILTER] Total AR transactions before filter: {original_count}")
+        print(f"[API CODE FILTER] AR_CODE_ID column dtype: {actual_detail[CanonicalField.AR_CODE_ID.value].dtype}")
+        print(f"[API CODE FILTER] Sample AR_CODE_ID values: {actual_detail[CanonicalField.AR_CODE_ID.value].unique()[:20].tolist()}")
+        
+        # Check which API codes are present
+        ar_code_col = actual_detail[CanonicalField.AR_CODE_ID.value]
+        api_codes_present = actual_detail[ar_code_col.isin(API_POSTED_AR_CODES)]
+        
+        if not api_codes_present.empty:
+            print(f"[API CODE FILTER] Found {len(api_codes_present)} API code transactions to filter:")
+            for code in API_POSTED_AR_CODES:
+                count = (ar_code_col == code).sum()
+                if count > 0:
+                    print(f"[API CODE FILTER]   - Code {code}: {count} transactions")
+        else:
+            print(f"[API CODE FILTER] No API codes found in data (checking data type match...)")
+            # Try with type conversion
+            try:
+                ar_code_int = ar_code_col.astype(int)
+                matches = ar_code_int.isin(API_POSTED_AR_CODES).sum()
+                print(f"[API CODE FILTER] After int conversion: {matches} matches found")
+            except:
+                pass
+        
+        # Apply filter
+        actual_detail = actual_detail[~ar_code_col.isin(API_POSTED_AR_CODES)].copy()
+        
+        filtered_count = original_count - len(actual_detail)
+        print(f"[API CODE FILTER] Filtered out: {filtered_count} transactions")
+        print(f"[API CODE FILTER] Remaining AR transactions: {len(actual_detail)}")
+        print(f"[API CODE FILTER] ==========================================\n")
+    
+    # Reconcile (detailed row-level with PRIMARY/SECONDARY/TERTIARY matching) - DO THIS FIRST
+    # This identifies date mismatches via TERTIARY matching
+    # Note: Use the normalized (not expanded) versions for detailed reconciliation
+    variance_detail, recon_stats = reconcile_detail(
+        scheduled_normalized,  # Use non-expanded scheduled charges
+        actual_detail,         # Use normalized AR transactions
+        config.reconciliation
+    )
+    
+    print(f"\n[RECONCILIATION STATS]")
+    print(f"  Primary matches: {recon_stats['primary_matched_ar']}")
+    print(f"  Secondary matches: {recon_stats['secondary_matched_ar']}")
+    print(f"  Tertiary matches: {recon_stats['tertiary_matched_ar']}")
+    print(f"  Unmatched AR: {recon_stats['unmatched_ar']}")
+    print(f"  Unmatched scheduled: {recon_stats['unmatched_scheduled']}")
+    print(f"  Total variances: {recon_stats['variances']}")
+    
+    # Reconcile (bucket-level aggregation)
+    # Note: DATE_MISMATCH variances from variance_detail will be displayed separately in lease view
     bucket_results = reconcile_buckets(expected_detail, actual_detail, config.reconciliation)
     
     # Execute rules
@@ -287,6 +346,8 @@ def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audi
         "expected_detail": expected_detail,
         "actual_detail": actual_detail,
         "bucket_results": bucket_results,
+        "variance_detail": variance_detail,
+        "recon_stats": recon_stats,
         "findings": findings
     }
 
@@ -325,6 +386,30 @@ def index():
         logger.warning(f"[INDEX] SharePoint logging skipped - user: {user is not None}, can_log: {config.auth.can_log_to_sharepoint() if user else 'N/A'}")
     
     return render_template('upload.html', recent_runs=recent_runs, user=user)
+
+
+@bp.route('/end-session')
+@require_auth
+def end_session():
+    """End the user's session and log activity to SharePoint."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    user = get_current_user()
+    
+    # Log session end activity to SharePoint if user is authenticated
+    if user and config.auth.can_log_to_sharepoint():
+        logger.info(f"[END_SESSION] Logging session end for user: {user.get('name', 'Unknown')}")
+        result = log_user_activity(
+            user_info=user,
+            activity_type='End Session',
+            site_url=config.auth.sharepoint_site_url,
+            list_name=config.auth.sharepoint_list_name,
+            details={'page': 'end_session', 'user_role': 'user'}
+        )
+        logger.info(f"[END_SESSION] SharePoint logging result: {result}")
+    
+    return render_template('session_ended.html', user=user)
 
 
 @bp.route('/upload', methods=['POST'])
@@ -381,7 +466,8 @@ def upload():
             results["actual_detail"],
             results["bucket_results"],
             results["findings"],
-            metadata
+            metadata,
+            results.get("variance_detail")
         )
         
         # Create success message with period info
@@ -403,7 +489,7 @@ def upload():
         if user and config.auth.can_log_to_sharepoint():
             log_user_activity(
                 user_info=user,
-                activity_type='Successful Analysis',
+                activity_type='Successful Audit',
                 site_url=config.auth.sharepoint_site_url,
                 list_name=config.auth.sharepoint_list_name,
                 details={
@@ -424,12 +510,12 @@ def upload():
         print(f"\n[ERROR IN UPLOAD] {error_msg}")
         print(f"[ERROR TRACEBACK]\n{error_trace}")
         
-        # Log failed analysis to SharePoint
+        # Log failed audit to SharePoint
         user = get_current_user()
         if user and config.auth.can_log_to_sharepoint():
             log_user_activity(
                 user_info=user,
-                activity_type='Failed Analysis',
+                activity_type='Failed Audit',
                 site_url=config.auth.sharepoint_site_url,
                 list_name=config.auth.sharepoint_list_name,
                 details={
@@ -663,7 +749,8 @@ def _get_status_label(status: str) -> str:
     labels = {
         "SCHEDULED_NOT_BILLED": "Scheduled Not Billed",
         "BILLED_NOT_SCHEDULED": "Billed Without Schedule",
-        "AMOUNT_MISMATCH": "Amount Mismatch"
+        "AMOUNT_MISMATCH": "Amount Mismatch",
+        "DATE_MISMATCH": "Date Mismatch"
     }
     return labels.get(status, status)
 
@@ -673,7 +760,8 @@ def _get_status_color(status: str) -> str:
     colors = {
         "SCHEDULED_NOT_BILLED": "brand-danger",  # magenta
         "BILLED_NOT_SCHEDULED": "brand-accent",  # orange
-        "AMOUNT_MISMATCH": "brand-primary"  # cyan
+        "AMOUNT_MISMATCH": "brand-primary",  # cyan
+        "DATE_MISMATCH": "brand-warning"  # yellow/warning
     }
     return colors.get(status, "secondary")
 
@@ -839,6 +927,45 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 exception['description'] += f" ⚠️ DATA QUALITY ISSUE: {'; '.join(set(missing_dates_warning))}."
             
             exceptions.append(exception)
+        
+        # Add DATE_MISMATCH variances from variance_detail if available
+        if "variance_detail" in run_data and run_data["variance_detail"] is not None:
+            variance_df = run_data["variance_detail"]
+            date_mismatches = variance_df[
+                (variance_df['VARIANCE_TYPE'] == 'DATE_MISMATCH') &
+                (variance_df['LEASE_INTERVAL_ID'] == float(lease_interval_id))
+            ]
+            
+            for _, var_row in date_mismatches.iterrows():
+                exceptions.append({
+                    'ar_code_id': var_row['AR_CODE_ID'],
+                    'ar_code_name': var_row.get('AR_CODE_NAME'),
+                    'audit_month': None,  # Not bucket-level
+                    'charge_start': var_row.get('PERIOD_START'),
+                    'charge_end': var_row.get('PERIOD_END'),
+                    'post_dates': [var_row.get('POST_DATE')] if pd.notna(var_row.get('POST_DATE')) else [],
+                    'status': 'DATE_MISMATCH',
+                    'status_label': 'Date Mismatch',
+                    'status_color': 'brand-warning',
+                    'expected_total': var_row.get('EXPECTED_AMOUNT', 0),
+                    'actual_total': var_row.get('ACTUAL_AMOUNT', 0),
+                    'variance': var_row.get('VARIANCE', 0),
+                    'expected_transactions': [{
+                        'amount': var_row.get('EXPECTED_AMOUNT', 0),
+                        'period_start': var_row.get('PERIOD_START'),
+                        'period_end': var_row.get('PERIOD_END'),
+                        'ar_code_name': var_row.get('AR_CODE_NAME')
+                    }],
+                    'actual_transactions': [{
+                        'amount': var_row.get('ACTUAL_AMOUNT', 0),
+                        'post_date': var_row.get('POST_DATE'),
+                        'ar_code_name': var_row.get('AR_CODE_NAME'),
+                        'transaction_id': var_row.get('AR_TRANSACTION_ID')
+                    }],
+                    'missing_dates_warning': [],
+                    'description': var_row.get('DESCRIPTION', 'Charge billed on incorrect date'),
+                    'recommendation': 'Review scheduled charge dates and actual billing dates. Adjust schedule or investigate billing timing issue.'
+                })
         
         # Group exceptions by AR code and status
         grouped_exceptions = {}

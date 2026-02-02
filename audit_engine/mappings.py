@@ -35,6 +35,9 @@ class ARSourceColumns:
     ID = "ID"
     CUSTOMER_NAME = "CUSTOMER_NAME"
     GUARANTOR_NAME = "GUARANTOR_NAME"
+    FLAG_ACTIVE_LEASE_INTERVAL = "FLAG_ACTIVE_LEASE_INTERVAL"
+    # Critical reconciliation linking field
+    SCHEDULED_CHARGE_ID = "SCHEDULED_CHARGE_ID"
 
 
 class ScheduledSourceColumns:
@@ -49,6 +52,16 @@ class ScheduledSourceColumns:
     CHARGE_END_DATE = "CHARGE_END_DATE"
     GUARANTOR_NAME = "GUARANTOR_NAME"
     DELETED_ON = "DELETED_ON"
+    FLAG_ACTIVE_LEASE_INTERVAL = "FLAG_ACTIVE_LEASE_INTERVAL"
+    # Critical reconciliation filter fields
+    IS_UNSELECTED_QUOTE = "IS_UNSELECTED_QUOTE"
+    IS_CACHED_TO_LEASE = "IS_CACHED_TO_LEASE"
+    POSTED_THROUGH_DATE = "POSTED_THROUGH_DATE"
+    LAST_POSTED_ON = "LAST_POSTED_ON"
+    # Billing frequency fields
+    AR_CASCADE_ID = "AR_CASCADE_ID"
+    AR_TRIGGER_ID = "AR_TRIGGER_ID"
+    SCHEDULED_CHARGE_TYPE_ID = "SCHEDULED_CHARGE_TYPE_ID"
 
 
 # ==================== Source Mapping Configuration ====================
@@ -108,22 +121,57 @@ class SourceMapping:
 
 # ==================== V1 Mappings: AR Transactions ====================
 
-# AR codes posted through API - exclude from audit to prevent false exceptions
-API_POSTED_AR_CODES = [156669, 154776, 155217]
+# AR codes posted through API or timed/external charges - exclude from audit to prevent false exceptions
+# These codes should NOT appear in scheduled charges; if they do, they're flagged as "TIMED_OR_EXTERNAL_CHARGE"
+API_POSTED_AR_CODES = [
+    155023, 154776, 155217, 154777, 155018, 156669, 
+    155099, 155022, 154785, 155049, 155040, 155015, 
+    155017, 155176
+]
 
 def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Filter AR transactions: posted, not deleted, and exclude API-posted codes.
+    Filter AR transactions: posted, exclude API-posted codes, and only active lease intervals.
+    
+    IMPORTANT: We now KEEP deleted/reversed transactions so they can be matched to scheduled charges.
+    They will be flagged as special variance types during reconciliation (REVERSED_BILLING).
+    This prevents false "SCHEDULED_NOT_BILLED" flags when a charge was billed but then reversed.
     
     API-posted codes (157001, 155180, 156669, 155203) are automatically posted
     and should not appear in scheduled charges. Excluding them prevents false
     exceptions from API-generated transactions.
+    
+    FLAG_ACTIVE_LEASE_INTERVAL = 1 indicates an active lease interval.
+    Only active lease intervals should be audited.
     """
-    return df[
-        (df[ARSourceColumns.IS_POSTED] == 1) & 
-        (df[ARSourceColumns.IS_DELETED] == 0) &
-        (~df[ARSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES))
-    ].copy()
+    # DEBUG: Check data types and values
+    print(f"\n[AR FILTER DEBUG] Total AR transactions: {len(df)}")
+    print(f"[AR FILTER DEBUG] IS_POSTED type: {df[ARSourceColumns.IS_POSTED].dtype}, unique: {df[ARSourceColumns.IS_POSTED].unique()}")
+    print(f"[AR FILTER DEBUG] IS_DELETED type: {df[ARSourceColumns.IS_DELETED].dtype}, unique: {df[ARSourceColumns.IS_DELETED].unique()}")
+    print(f"[AR FILTER DEBUG] IS_REVERSAL type: {df[ARSourceColumns.IS_REVERSAL].dtype}, unique: {df[ARSourceColumns.IS_REVERSAL].unique()}")
+    
+    # Count how many have each flag
+    posted_count = (df[ARSourceColumns.IS_POSTED].astype(float) == 1).sum()
+    deleted_count = (df[ARSourceColumns.IS_DELETED].astype(float) == 1).sum()
+    reversal_count = (df[ARSourceColumns.IS_REVERSAL].astype(float) == 1).sum()
+    
+    print(f"[AR FILTER DEBUG] IS_POSTED == 1: {posted_count}/{len(df)}")
+    print(f"[AR FILTER DEBUG] IS_DELETED == 1: {deleted_count}/{len(df)} (KEEPING for reconciliation)")
+    print(f"[AR FILTER DEBUG] IS_REVERSAL == 1: {reversal_count}/{len(df)} (KEEPING for reconciliation)")
+    
+    # Handle potential data type mismatches (sometimes Excel reads as float or string)
+    # ONLY filter by IS_POSTED - KEEP deleted/reversed for matching, KEEP API codes (they're real billings)
+    mask = (df[ARSourceColumns.IS_POSTED].astype(float) == 1)
+    
+    # Only include active lease intervals (FLAG_ACTIVE_LEASE_INTERVAL = 1)
+    if ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL in df.columns:
+        mask = mask & (df[ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL].astype(float) == 1)
+    
+    result = df[mask].copy()
+    print(f"[AR FILTER DEBUG] After filtering: {len(result)}/{len(df)} rows ({len(df) - len(result)} filtered out)")
+    print(f"[AR FILTER DEBUG] Deleted/reversed transactions KEPT for reconciliation: {deleted_count + reversal_count}")
+    
+    return result
 
 
 def _ar_audit_month_calc(df: pd.DataFrame) -> pd.Series:
@@ -173,6 +221,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ARSourceColumns.ID,
         ARSourceColumns.CUSTOMER_NAME,
         ARSourceColumns.GUARANTOR_NAME,
+        # SCHEDULED_CHARGE_ID is optional - not all AR transactions link to scheduled charges
     ],
     column_transforms=[
         ColumnTransform(ARSourceColumns.PROPERTY_ID, CanonicalField.PROPERTY_ID),
@@ -189,6 +238,8 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ColumnTransform(ARSourceColumns.ID, CanonicalField.AR_TRANSACTION_ID),
         ColumnTransform(ARSourceColumns.CUSTOMER_NAME, CanonicalField.CUSTOMER_NAME),
         ColumnTransform(ARSourceColumns.GUARANTOR_NAME, CanonicalField.GUARANTOR_NAME),
+        # Add SCHEDULED_CHARGE_ID link if column exists (optional, conditional transform handled in apply_source_mapping)
+        ColumnTransform(ARSourceColumns.SCHEDULED_CHARGE_ID, CanonicalField.SCHEDULED_CHARGE_ID_LINK),
     ],
     row_filter=_ar_row_filter,
     derived_fields={
@@ -201,16 +252,52 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
 
 def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Filter scheduled charges: exclude deleted records.
+    Filter scheduled charges to identify ACTIVE records that should generate billings.
     
-    Deleted scheduled charges (DELETED_ON is not null) should not be included
-    in the audit expectations to prevent false mismatches.
+    STEP 1 of Reconciliation Framework: Filter Active Records
+    ---------------------------------------------------------
+    Include scheduled charges WHERE:
+      - IS_UNSELECTED_QUOTE != 1 (exclude unselected quotes - they should never bill)
+      - DELETED_ON IS NULL (exclude deleted charges)
+      - IS_CACHED_TO_LEASE = 1 (only active charges cached to lease)
+      - FLAG_ACTIVE_LEASE_INTERVAL = 1 (only active lease intervals)
+    
+    This ensures we only compare billings against charges that SHOULD have been billed.
     """
+    mask = pd.Series(True, index=df.index)
+    
+    # CRITICAL: Exclude unselected quotes (IS_UNSELECTED_QUOTE = 1)
+    # These are from quotes the tenant didn't select, so they should never appear in AR
+    if ScheduledSourceColumns.IS_UNSELECTED_QUOTE in df.columns:
+        mask = mask & (df[ScheduledSourceColumns.IS_UNSELECTED_QUOTE] != 1)
+        filtered_quotes = (~(df[ScheduledSourceColumns.IS_UNSELECTED_QUOTE] != 1)).sum()
+        if filtered_quotes > 0:
+            print(f"[FILTER] Excluded {filtered_quotes} unselected quote records")
+    
+    # Exclude deleted scheduled charges (DELETED_ON is not null)
     if ScheduledSourceColumns.DELETED_ON in df.columns:
-        return df[df[ScheduledSourceColumns.DELETED_ON].isna()].copy()
-    else:
-        # If DELETED_ON column doesn't exist, return all rows
-        return df.copy()
+        mask = mask & df[ScheduledSourceColumns.DELETED_ON].isna()
+        filtered_deleted = (~df[ScheduledSourceColumns.DELETED_ON].isna()).sum()
+        if filtered_deleted > 0:
+            print(f"[FILTER] Excluded {filtered_deleted} deleted scheduled charge records")
+    
+    # Only include charges cached to lease (IS_CACHED_TO_LEASE = 1)
+    if ScheduledSourceColumns.IS_CACHED_TO_LEASE in df.columns:
+        mask = mask & (df[ScheduledSourceColumns.IS_CACHED_TO_LEASE] == 1)
+        filtered_not_cached = (~(df[ScheduledSourceColumns.IS_CACHED_TO_LEASE] == 1)).sum()
+        if filtered_not_cached > 0:
+            print(f"[FILTER] Excluded {filtered_not_cached} not-cached-to-lease records")
+    
+    # Only include active lease intervals (FLAG_ACTIVE_LEASE_INTERVAL = 1)
+    if ScheduledSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL in df.columns:
+        mask = mask & (df[ScheduledSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL] == 1)
+        filtered_inactive = (~(df[ScheduledSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL] == 1)).sum()
+        if filtered_inactive > 0:
+            print(f"[FILTER] Excluded {filtered_inactive} inactive lease interval records")
+    
+    result = df[mask].copy()
+    print(f"[FILTER] Scheduled charges: {len(df)} total -> {len(result)} active (filtered {len(df) - len(result)})")
+    return result
 
 
 def _scheduled_period_start_convert(df: pd.DataFrame) -> pd.Series:
@@ -299,6 +386,21 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
                        CanonicalField.EXPECTED_AMOUNT),
         ColumnTransform(ScheduledSourceColumns.GUARANTOR_NAME, 
                        CanonicalField.GUARANTOR_NAME),
+        # Reconciliation filtering and matching fields
+        ColumnTransform(ScheduledSourceColumns.IS_UNSELECTED_QUOTE, 
+                       CanonicalField.IS_UNSELECTED_QUOTE),
+        ColumnTransform(ScheduledSourceColumns.IS_CACHED_TO_LEASE, 
+                       CanonicalField.IS_CACHED_TO_LEASE),
+        ColumnTransform(ScheduledSourceColumns.POSTED_THROUGH_DATE, 
+                       CanonicalField.POSTED_THROUGH_DATE),
+        ColumnTransform(ScheduledSourceColumns.LAST_POSTED_ON, 
+                       CanonicalField.LAST_POSTED_ON),
+        ColumnTransform(ScheduledSourceColumns.AR_CASCADE_ID, 
+                       CanonicalField.AR_CASCADE_ID),
+        ColumnTransform(ScheduledSourceColumns.AR_TRIGGER_ID, 
+                       CanonicalField.AR_TRIGGER_ID),
+        ColumnTransform(ScheduledSourceColumns.SCHEDULED_CHARGE_TYPE_ID, 
+                       CanonicalField.SCHEDULED_CHARGE_TYPE_ID),
     ],
     row_filter=_scheduled_row_filter,  # Filter out deleted scheduled charges
     derived_fields={

@@ -45,6 +45,19 @@ def create_app(config_name='default'):
     
     # Register authentication context processor
     from web.auth import get_current_user
+    import pandas as pd
+    
+    @app.template_filter('safe_strftime')
+    def safe_strftime(date_value, format_string='%Y-%m-%d'):
+        """Safely format datetime, handling NaT and None values."""
+        if date_value is None:
+            return '-'
+        if pd.isna(date_value):
+            return '-'
+        try:
+            return date_value.strftime(format_string)
+        except (AttributeError, ValueError):
+            return '-'
     
     @app.context_processor
     def inject_user():

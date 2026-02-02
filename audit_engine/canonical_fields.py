@@ -159,6 +159,32 @@ class CanonicalField(str, Enum):
     IS_VOID = "IS_VOID"
     """Flag indicating if record is void"""
     
+    IS_UNSELECTED_QUOTE = "IS_UNSELECTED_QUOTE"
+    """Flag indicating if scheduled charge is from an unselected quote (should not bill)"""
+    
+    IS_CACHED_TO_LEASE = "IS_CACHED_TO_LEASE"
+    """Flag indicating if scheduled charge is cached/active on lease"""
+    
+    # ==================== Reconciliation Linking Fields ====================
+    SCHEDULED_CHARGE_ID_LINK = "SCHEDULED_CHARGE_ID_LINK"
+    """Link from AR transaction to scheduled charge (foreign key to SCHEDULED_CHARGES_ID)"""
+    
+    POSTED_THROUGH_DATE = "POSTED_THROUGH_DATE"
+    """Last date through which scheduled charge has been posted"""
+    
+    LAST_POSTED_ON = "LAST_POSTED_ON"
+    """Last timestamp when scheduled charge was posted"""
+    
+    # ==================== Billing Frequency Fields ====================
+    AR_CASCADE_ID = "AR_CASCADE_ID"
+    """Billing frequency indicator (1=one-time, 4=monthly, etc.)"""
+    
+    AR_TRIGGER_ID = "AR_TRIGGER_ID"
+    """Billing trigger indicator (307=move-in, 601=recurring, etc.)"""
+    
+    SCHEDULED_CHARGE_TYPE_ID = "SCHEDULED_CHARGE_TYPE_ID"
+    """Type of scheduled charge (1=recurring, 3=one-time, etc.)"""
+    
     # ==================== Findings Detail ====================
     TITLE = "title"
     """Finding title/summary"""

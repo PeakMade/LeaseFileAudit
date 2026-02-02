@@ -31,7 +31,7 @@
                 <strong>AR Code:</strong> {{ bucket_info.AR_CODE_ID|int }}
             </div>
             <div class="col-md-3">
-                <strong>Audit Month:</strong> {{ bucket_info.AUDIT_MONTH.strftime('%Y-%m-%d') if bucket_info.AUDIT_MONTH else 'N/A' }}
+                <strong>Audit Month:</strong> {{ bucket_info.AUDIT_MONTH|safe_strftime('%Y-%m-%d') }}
             </div>
         </div>
         <hr>
@@ -110,8 +110,8 @@
                         <td>{{ record.SCHEDULED_CHARGES_ID }}</td>
                         <td>${{ "%.2f"|format(record.expected_amount) }}</td>
                         <td>${{ "%.2f"|format(record.expected_amount) }}</td>
-                        <td>{{ record.DATE_CHARGE_START.strftime('%Y-%m-%d') if record.DATE_CHARGE_START else 'N/A' }}</td>
-                        <td>{{ record.DATE_CHARGE_END.strftime('%Y-%m-%d') if record.DATE_CHARGE_END else 'N/A' }}</td>
+                        <td>{{ record.DATE_CHARGE_START|safe_strftime('%Y-%m-%d') }}</td>
+                        <td>{{ record.DATE_CHARGE_END|safe_strftime('%Y-%m-%d') }}</td>
                     </tr>
                     {% endfor %}
                     <tr class="table-info">
@@ -152,7 +152,7 @@
                         <td>{{ record.ID }}</td>
                         <td>${{ "%.2f"|format(record.actual_amount) }}</td>
                         <td>${{ "%.2f"|format(record.TRANSACTION_AMOUNT) }}</td>
-                        <td>{{ record.POST_MONTH_DATE.strftime('%Y-%m-%d') if record.POST_MONTH_DATE else 'N/A' }}</td>
+                        <td>{{ record.POST_MONTH_DATE|safe_strftime('%Y-%m-%d') }}</td>
                         <td>
                             {% if record.IS_REVERSAL == 1 %}
                                 <span class="badge bg-warning">Yes</span>

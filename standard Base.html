@@ -235,8 +235,8 @@
         <div class="user-info">
             <i class="fas fa-user me-2"></i>
             <span class="user-name">{{ user.name or user.email }}</span>
-            <a href="{{ url_for('logout') }}" class="ms-3 text-decoration-none">
-                <i class="fas fa-sign-out-alt"></i> Logout
+            <a href="{{ url_for('main.end_session') }}" class="ms-3 text-decoration-none">
+                <i class="fas fa-sign-out-alt"></i> End Session
             </a>
         </div>
         {% endif %}

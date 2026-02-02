@@ -421,8 +421,8 @@
                 <strong>Email</strong>
                 <div class="value">{{ user.email }}</div>
             </div>
-            <a href="/.auth/logout" class="logout-link">
-                <i class="fas fa-sign-out-alt me-2"></i>Sign Out
+            <a href="{{ url_for('main.end_session') }}" class="logout-link">
+                <i class="fas fa-sign-out-alt me-2"></i>End Session
             </a>
         </div>
     </div>

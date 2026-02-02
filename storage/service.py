@@ -45,7 +45,8 @@ class StorageService:
         actual_detail: pd.DataFrame,
         bucket_results: pd.DataFrame,
         findings: pd.DataFrame,
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
+        variance_detail: Optional[pd.DataFrame] = None
     ):
         """Save complete audit run to disk."""
         run_dir = self.create_run_dir(run_id)
@@ -57,6 +58,10 @@ class StorageService:
         # Save outputs (using CSV instead of Parquet)
         bucket_results.to_csv(run_dir / "outputs" / "bucket_results.csv", index=False)
         findings.to_csv(run_dir / "outputs" / "findings.csv", index=False)
+        
+        # Save variance detail if provided
+        if variance_detail is not None and len(variance_detail) > 0:
+            variance_detail.to_csv(run_dir / "outputs" / "variance_detail.csv", index=False)
         
         # Save metadata
         with open(run_dir / "run_meta.json", "w") as f:
@@ -75,6 +80,12 @@ class StorageService:
         bucket_results = pd.read_csv(run_dir / "outputs" / "bucket_results.csv")
         findings = pd.read_csv(run_dir / "outputs" / "findings.csv")
         
+        # Load variance_detail if it exists
+        variance_detail = None
+        variance_path = run_dir / "outputs" / "variance_detail.csv"
+        if variance_path.exists():
+            variance_detail = pd.read_csv(variance_path)
+        
         # Convert date columns to datetime
         date_columns = ['AUDIT_MONTH', 'PERIOD_START', 'PERIOD_END', 'POST_DATE', 'audit_month']
         for df in [expected_detail, actual_detail, bucket_results, findings]:
@@ -82,11 +93,18 @@ class StorageService:
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors='coerce')
         
+        # Also convert dates in variance_detail if loaded
+        if variance_detail is not None:
+            for col in date_columns:
+                if col in variance_detail.columns:
+                    variance_detail[col] = pd.to_datetime(variance_detail[col], errors='coerce')
+        
         return {
             "expected_detail": expected_detail,
             "actual_detail": actual_detail,
             "bucket_results": bucket_results,
             "findings": findings,
+            "variance_detail": variance_detail,
             "metadata": self.load_metadata(run_id)
         }
     
