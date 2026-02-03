@@ -456,7 +456,16 @@ def upload():
         run_dir = storage.create_run_dir(run_id)
         
         filename = secure_filename(file.filename)
-        file_path = run_dir / filename
+        
+        # For SharePoint, run_dir might not be a real directory - use temp or ensure it exists
+        if storage.use_sharepoint:
+            # Create a temporary local directory for processing
+            import tempfile
+            temp_dir = Path(tempfile.mkdtemp())
+            file_path = temp_dir / filename
+        else:
+            file_path = run_dir / filename
+        
         file.save(str(file_path))
         
         # Execute audit with period filter
@@ -481,6 +490,15 @@ def upload():
             results.get("variance_detail"),
             file_path  # Pass the original Excel file path
         )
+        
+        # Clean up temp file if using SharePoint
+        if storage.use_sharepoint:
+            import shutil
+            try:
+                shutil.rmtree(file_path.parent)  # Remove temp directory
+            except Exception as e:
+                import logging
+                logging.warning(f"Failed to cleanup temp directory: {e}")
         
         # Create success message with period info
         period_msg = ""
