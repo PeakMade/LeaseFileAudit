@@ -476,6 +476,38 @@
     <!-- Bootstrap JS (place before closing </body> tag) -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     
+    <!-- Easy Auth Token Refresh Handler -->
+    <script>
+        // Auto-refresh Easy Auth tokens when they expire
+        // Pattern: When we see errors related to expired tokens, call /.auth/refresh
+        
+        // Check if we should refresh tokens on page load
+        // This happens when user has been idle and token expired
+        (function() {
+            // Add a global error handler for fetch/AJAX calls
+            const originalFetch = window.fetch;
+            window.fetch = function(...args) {
+                return originalFetch.apply(this, args).then(response => {
+                    // If we get 401 Unauthorized, try to refresh the token
+                    if (response.status === 401) {
+                        console.log('[AUTH] Got 401 - refreshing token and reloading');
+                        // Call Easy Auth refresh endpoint, then reload
+                        fetch('/.auth/refresh', { method: 'GET' })
+                            .then(() => {
+                                console.log('[AUTH] Token refreshed, reloading page');
+                                window.location.reload();
+                            })
+                            .catch(err => {
+                                console.error('[AUTH] Refresh failed, redirecting to login', err);
+                                window.location.href = '/.auth/login/aad?post_login_redirect_uri=' + encodeURIComponent(window.location.href);
+                            });
+                    }
+                    return response;
+                });
+            };
+        })();
+    </script>
+    
     {% block extra_js %}{% endblock %}
 </body>
 </html>

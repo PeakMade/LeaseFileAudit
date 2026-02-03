@@ -102,8 +102,8 @@ def get_access_token() -> Optional[str]:
     This token can be used to authenticate to other Azure services
     like SharePoint, Graph API, etc.
     
-    IMPORTANT: This fetches the token per-request from EasyAuth headers.
-    Do NOT store this token long-term - always call this function when needed.
+    NOTE: Easy Auth does NOT auto-refresh this token. If it's expired,
+    client-side JavaScript will call /.auth/refresh and reload the page.
     
     Returns:
         Access token string or None if not available
@@ -112,7 +112,7 @@ def get_access_token() -> Optional[str]:
     
     if access_token:
         try:
-            # Decode JWT without verification to check expiry
+            # Decode JWT without verification to check expiry (for logging only)
             decoded = jwt.decode(access_token, options={"verify_signature": False})
             exp_timestamp = decoded.get('exp')
             
@@ -121,13 +121,9 @@ def get_access_token() -> Optional[str]:
                 now = datetime.now()
                 time_until_expiry = exp_datetime - now
                 
-                logger.info(f"[AUTH] Access token expires at: {exp_datetime.isoformat()}")
-                logger.info(f"[AUTH] Time until expiry: {time_until_expiry}")
-                
-                if exp_datetime < now:
-                    logger.warning(f"[AUTH] Access token is EXPIRED (expired {now - exp_datetime} ago)")
-                elif time_until_expiry.total_seconds() < 300:  # Less than 5 minutes
-                    logger.warning(f"[AUTH] Access token expires soon: {time_until_expiry}")
+                # Only log debug info, not warnings - client JS will handle refresh
+                logger.debug(f"[AUTH] Access token expires at: {exp_datetime.isoformat()}")
+                logger.debug(f"[AUTH] Time until expiry: {time_until_expiry}")
         except Exception as e:
             logger.debug(f"[AUTH] Could not decode JWT for expiry check: {e}")
     
