@@ -239,6 +239,201 @@ class StorageService:
                     return json.load(f)
             return None
     
+    def _write_metrics_to_sharepoint_list(self, run_id: str, bucket_results: pd.DataFrame, 
+                                          findings: pd.DataFrame, metadata: dict) -> bool:
+        """Write summary metrics to SharePoint List 'Audit Run Metrics'."""
+        if not self.use_sharepoint or not self.access_token:
+            logger.debug(f"[STORAGE] Skipping SharePoint list write - not configured")
+            return False
+        
+        try:
+            from audit_engine.canonical_fields import CanonicalField
+            
+            logger.info(f"[STORAGE] 📊 Writing metrics to SharePoint list for run {run_id}")
+            
+            # Calculate metrics from bucket_results
+            total_buckets = len(bucket_results)
+            matched = len(bucket_results[bucket_results[CanonicalField.STATUS.value] == 'Matched'])
+            exceptions = bucket_results[bucket_results[CanonicalField.STATUS.value] != 'Matched']
+            
+            # Count by status
+            scheduled_not_billed = len(bucket_results[bucket_results[CanonicalField.STATUS.value] == 'Scheduled Not Billed'])
+            billed_not_scheduled = len(bucket_results[bucket_results[CanonicalField.STATUS.value] == 'Billed Not Scheduled'])
+            amount_mismatch = len(bucket_results[bucket_results[CanonicalField.STATUS.value] == 'Amount Mismatch'])
+            
+            # Calculate totals
+            total_scheduled = bucket_results[CanonicalField.EXPECTED_TOTAL.value].sum()
+            total_actual = bucket_results[CanonicalField.ACTUAL_TOTAL.value].sum()
+            
+            # Count findings by severity
+            high_severity = len(findings[findings[CanonicalField.SEVERITY.value] == 'high']) if len(findings) > 0 else 0
+            medium_severity = len(findings[findings[CanonicalField.SEVERITY.value] == 'medium']) if len(findings) > 0 else 0
+            
+            # Calculate property-level breakdown
+            property_summary = {}
+            for prop_id in bucket_results[CanonicalField.PROPERTY_ID.value].unique():
+                prop_buckets = bucket_results[bucket_results[CanonicalField.PROPERTY_ID.value] == prop_id]
+                prop_exceptions = prop_buckets[prop_buckets[CanonicalField.STATUS.value] != 'Matched']
+                property_summary[str(int(prop_id))] = {
+                    'total_buckets': len(prop_buckets),
+                    'exceptions': len(prop_exceptions),
+                    'variance': float(prop_buckets[CanonicalField.VARIANCE.value].abs().sum())
+                }
+            
+            # Prepare list item data
+            list_item = {
+                "fields": {
+                    "Title": run_id,
+                    "RunDateTime": metadata.get('timestamp', ''),
+                    "UploadedBy": metadata.get('uploaded_by', ''),
+                    "FileName": metadata.get('filename', ''),
+                    "TotalScheduled": float(total_scheduled),
+                    "TotalActual": float(total_actual),
+                    "Matched": matched,
+                    "ScheduledNotBilled": scheduled_not_billed,
+                    "BilledNotScheduled": billed_not_scheduled,
+                    "AmountMismatch": amount_mismatch,
+                    "TotalVariances": len(exceptions),
+                    "HighSeverity": high_severity,
+                    "MediumSeverity": medium_severity,
+                    "Properties": json.dumps(property_summary)
+                }
+            }
+            
+            # Get site ID
+            site_id, _ = self._get_site_and_drive_id()
+            if not site_id:
+                logger.error(f"[STORAGE] Cannot write to list - site ID not found")
+                return False
+            
+            # Get list ID for "Audit Run Metrics"
+            list_name = "Audit Run Metrics"
+            list_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists"
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Get list by display name
+            params = {'$filter': f"displayName eq '{list_name}'"}
+            response = requests.get(list_url, headers=headers, params=params, timeout=30)
+            
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] Failed to find list '{list_name}': {response.status_code} - {response.text}")
+                return False
+            
+            lists_data = response.json()
+            if not lists_data.get('value'):
+                logger.error(f"[STORAGE] List '{list_name}' not found")
+                return False
+            
+            list_id = lists_data['value'][0]['id']
+            
+            # Create list item
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            response = requests.post(items_url, headers=headers, json=list_item, timeout=30)
+            
+            if response.status_code in [200, 201]:
+                logger.info(f"[STORAGE] ✅ Metrics written to SharePoint list successfully")
+                return True
+            else:
+                logger.error(f"[STORAGE] Failed to create list item: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[STORAGE] Error writing metrics to SharePoint list: {e}", exc_info=True)
+            return False
+    
+    def load_all_metrics_from_sharepoint_list(self) -> List[Dict[str, Any]]:
+        """Load all metrics from SharePoint List 'Audit Run Metrics'."""
+        if not self.use_sharepoint or not self.access_token:
+            logger.debug(f"[STORAGE] SharePoint list not configured, returning empty list")
+            return []
+        
+        try:
+            logger.info(f"[STORAGE] 📊 Loading metrics from SharePoint list")
+            
+            # Get site ID
+            site_id, _ = self._get_site_and_drive_id()
+            if not site_id:
+                logger.error(f"[STORAGE] Cannot read list - site ID not found")
+                return []
+            
+            # Get list ID for "Audit Run Metrics"
+            list_name = "Audit Run Metrics"
+            list_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists"
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Get list by display name
+            params = {'$filter': f"displayName eq '{list_name}'"}
+            response = requests.get(list_url, headers=headers, params=params, timeout=30)
+            
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] Failed to find list '{list_name}': {response.status_code} - {response.text}")
+                return []
+            
+            lists_data = response.json()
+            if not lists_data.get('value'):
+                logger.error(f"[STORAGE] List '{list_name}' not found")
+                return []
+            
+            list_id = lists_data['value'][0]['id']
+            
+            # Query all list items
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            params = {
+                '$expand': 'fields',
+                '$top': 1000,  # Get up to 1000 items
+                '$orderby': 'fields/RunDateTime desc'  # Most recent first
+            }
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+            
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] Failed to query list items: {response.status_code} - {response.text}")
+                return []
+            
+            items_data = response.json()
+            items = items_data.get('value', [])
+            
+            # Extract fields from items
+            metrics_list = []
+            for item in items:
+                fields = item.get('fields', {})
+                # Parse Properties JSON if present
+                properties = {}
+                if 'Properties' in fields and fields['Properties']:
+                    try:
+                        properties = json.loads(fields['Properties'])
+                    except:
+                        pass
+                
+                metrics_list.append({
+                    'run_id': fields.get('Title', ''),
+                    'timestamp': fields.get('RunDateTime', ''),
+                    'uploaded_by': fields.get('UploadedBy', ''),
+                    'filename': fields.get('FileName', ''),
+                    'total_scheduled': fields.get('TotalScheduled', 0),
+                    'total_actual': fields.get('TotalActual', 0),
+                    'matched': fields.get('Matched', 0),
+                    'scheduled_not_billed': fields.get('ScheduledNotBilled', 0),
+                    'billed_not_scheduled': fields.get('BilledNotScheduled', 0),
+                    'amount_mismatch': fields.get('AmountMismatch', 0),
+                    'total_variances': fields.get('TotalVariances', 0),
+                    'high_severity': fields.get('HighSeverity', 0),
+                    'medium_severity': fields.get('MediumSeverity', 0),
+                    'properties': properties
+                })
+            
+            logger.info(f"[STORAGE] ✅ Loaded {len(metrics_list)} metrics from SharePoint list")
+            return metrics_list
+            
+        except Exception as e:
+            logger.error(f"[STORAGE] Error loading metrics from SharePoint list: {e}", exc_info=True)
+            return []
+    
     def save_uploaded_file(self, run_id: str, file_path: Path, original_filename: str):
         """Save the original uploaded Excel file."""
         if self.use_sharepoint:
@@ -307,6 +502,12 @@ class StorageService:
         logger.info(f"[STORAGE] 📋 Saving metadata...")
         self._save_json(metadata, run_id, "run_meta.json")
         files_saved.append("run_meta.json")
+        
+        # Write metrics to SharePoint list (don't fail save if this fails)
+        try:
+            self._write_metrics_to_sharepoint_list(run_id, bucket_results, findings, metadata)
+        except Exception as e:
+            logger.warning(f"[STORAGE] Failed to write metrics to SharePoint list: {e}")
         
         logger.info(f"[STORAGE] ✅ Successfully saved run {run_id} - {len(files_saved)} files")
         if self.use_sharepoint:

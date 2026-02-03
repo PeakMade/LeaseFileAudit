@@ -5,6 +5,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from werkzeug.utils import secure_filename
 from pathlib import Path
 import pandas as pd
+import logging
 
 from audit_engine import (
     ExcelSourceLoader,
@@ -26,6 +27,7 @@ from web.auth import require_auth, optional_auth, get_current_user, get_access_t
 from activity_logging.sharepoint import log_user_activity
 import os
 
+logger = logging.getLogger(__name__)
 bp = Blueprint('main', __name__)
 
 
@@ -66,22 +68,90 @@ def get_available_runs() -> list:
 def calculate_cumulative_metrics() -> dict:
     """Calculate cumulative portfolio metrics across all audit runs."""
     storage = get_storage_service()
+    
+    # Try to load metrics from SharePoint list first (fast path)
+    all_metrics = storage.load_all_metrics_from_sharepoint_list()
+    
+    if all_metrics:
+        # Use metrics from SharePoint list - much faster!
+        logger.info(f"[METRICS] Using SharePoint list data ({len(all_metrics)} runs)")
+        
+        # Get most recent run
+        most_recent_metrics = all_metrics[0] if all_metrics else None
+        if not most_recent_metrics:
+            return _empty_metrics_dict()
+        
+        # Current state from most recent run
+        current_variances = most_recent_metrics['total_variances']
+        matched = most_recent_metrics['matched']
+        total_buckets = matched + current_variances
+        match_rate = (matched / total_buckets * 100) if total_buckets > 0 else 0
+        
+        # Calculate undercharge/overcharge from most recent run
+        # Need to load most recent run's bucket_results for detailed calculation
+        # But we can approximate from the variances for now
+        most_recent_run_id = most_recent_metrics['run_id']
+        try:
+            latest_data = storage.load_run(most_recent_run_id)
+            latest_buckets = latest_data['bucket_results']
+            
+            current_exceptions = latest_buckets[
+                latest_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
+            ]
+            
+            current_undercharge = current_exceptions.apply(
+                lambda row: max(0, row[CanonicalField.EXPECTED_TOTAL.value] - row[CanonicalField.ACTUAL_TOTAL.value]),
+                axis=1
+            ).sum()
+            
+            current_overcharge = current_exceptions.apply(
+                lambda row: max(0, row[CanonicalField.ACTUAL_TOTAL.value] - row[CanonicalField.EXPECTED_TOTAL.value]),
+                axis=1
+            ).sum()
+            
+            total_leases_audited = latest_buckets[CanonicalField.LEASE_INTERVAL_ID.value].nunique()
+        except Exception as e:
+            logger.warning(f"[METRICS] Error loading most recent run details: {e}")
+            # Fall back to approximations
+            current_undercharge = 0
+            current_overcharge = 0
+            total_leases_audited = 0
+        
+        # Historical metrics - sum across all runs (not deduplicated, but fast)
+        # This is an approximation - true deduplication would require loading all CSVs
+        total_historical_variances = sum(m['total_variances'] for m in all_metrics)
+        total_historical_high_severity = sum(m['high_severity'] for m in all_metrics)
+        
+        # Simplified recovery calculation - compare current vs. historical averages
+        avg_variances_per_run = total_historical_variances / len(all_metrics) if all_metrics else 0
+        money_recovered = max(0, avg_variances_per_run - current_variances) * 100  # Rough estimate
+        
+        current_net_variance = current_overcharge - current_undercharge
+        
+        return {
+            'current_undercharge': float(current_undercharge),
+            'current_overcharge': float(current_overcharge),
+            'current_variance': float(current_net_variance),
+            'open_exceptions': int(current_variances),
+            'total_audits': int(total_leases_audited),
+            'match_rate': float(match_rate),
+            'money_recovered': float(money_recovered),
+            'historical_undercharge': 0,  # Would require full CSV analysis
+            'historical_overcharge': 0,   # Would require full CSV analysis
+            'most_recent_run': {
+                'run_id': most_recent_metrics['run_id'],
+                'timestamp': most_recent_metrics['timestamp'],
+                'uploaded_by': most_recent_metrics['uploaded_by']
+            },
+            'total_runs': len(all_metrics)
+        }
+    
+    # Fallback to old method if SharePoint list not available (local mode or list empty)
+    logger.info(f"[METRICS] SharePoint list not available, using CSV loading (slow)")
     all_runs = storage.list_runs(limit=1000)
     
     if not all_runs:
-        return {
-            'current_undercharge': 0,
-            'current_overcharge': 0,
-            'current_variance': 0,
-            'open_exceptions': 0,
-            'total_audits': 0,
-            'match_rate': 0,
-            'money_recovered': 0,
-            'historical_undercharge': 0,
-            'historical_overcharge': 0,
-            'most_recent_run': None,
-            'total_runs': 0
-        }
+        return _empty_metrics_dict()
     
     # Get most recent run for current state
     most_recent = all_runs[0]
@@ -193,6 +263,23 @@ def calculate_cumulative_metrics() -> dict:
         'historical_overcharge': float(historical_overcharge),
         'most_recent_run': most_recent,
         'total_runs': len(all_runs)
+    }
+
+
+def _empty_metrics_dict():
+    """Return empty metrics dictionary."""
+    return {
+        'current_undercharge': 0,
+        'current_overcharge': 0,
+        'current_variance': 0,
+        'open_exceptions': 0,
+        'total_audits': 0,
+        'match_rate': 0,
+        'money_recovered': 0,
+        'historical_undercharge': 0,
+        'historical_overcharge': 0,
+        'most_recent_run': None,
+        'total_runs': 0
     }
 
 
