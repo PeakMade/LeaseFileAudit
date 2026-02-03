@@ -185,6 +185,28 @@ def require_auth(f):
                 'message': 'Authentication required. Please ensure Azure App Service authentication is enabled.'
             }), 401
         
+        # Check if access token is expired - force re-login if needed
+        access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
+        if access_token:
+            try:
+                decoded = jwt.decode(access_token, options={"verify_signature": False})
+                exp_timestamp = decoded.get('exp')
+                
+                if exp_timestamp:
+                    exp_datetime = datetime.fromtimestamp(exp_timestamp)
+                    now = datetime.now()
+                    
+                    if exp_datetime < now:
+                        logger.warning(f"[AUTH] Access token expired for {user['name']}, forcing re-login")
+                        # Build redirect URL to force fresh login
+                        from flask import redirect
+                        from urllib.parse import quote
+                        current_url = request.url
+                        login_url = f"/.auth/login/aad?post_login_redirect_uri={quote(current_url)}"
+                        return redirect(login_url)
+            except Exception as e:
+                logger.debug(f"[AUTH] Could not check token expiry: {e}")
+        
         # Store user in Flask's g object for access in the view
         g.user = user
         
