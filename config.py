@@ -55,13 +55,22 @@ class SeverityMapping:
 @dataclass
 class StorageConfig:
     """Configuration for data persistence."""
+    # Local filesystem settings (used as fallback)
     base_dir: Path = field(default_factory=lambda: Path("instance/runs"))
     inputs_dir: str = "inputs_normalized"
     outputs_dir: str = "outputs"
     meta_file: str = "run_meta.json"
     
+    # SharePoint Document Library settings (for production)
+    use_sharepoint_storage: bool = field(default_factory=lambda: os.getenv('USE_SHAREPOINT_STORAGE', 'false').lower() == 'true')
+    sharepoint_library_name: str = field(default_factory=lambda: os.getenv('SHAREPOINT_LIBRARY_NAME', 'LeaseFileAudit Runs'))
+    
     def get_run_dir(self, run_id: str) -> Path:
         return self.base_dir / run_id
+    
+    def is_sharepoint_configured(self) -> bool:
+        """Check if SharePoint storage is enabled."""
+        return self.use_sharepoint_storage
 
 
 @dataclass

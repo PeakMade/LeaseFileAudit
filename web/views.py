@@ -22,7 +22,7 @@ from audit_engine.rules import default_registry
 from audit_engine.canonical_fields import CanonicalField
 from storage.service import StorageService
 from config import config
-from web.auth import require_auth, optional_auth, get_current_user
+from web.auth import require_auth, optional_auth, get_current_user, get_access_token
 from activity_logging.sharepoint import log_user_activity
 import os
 
@@ -30,8 +30,19 @@ bp = Blueprint('main', __name__)
 
 
 def get_storage_service() -> StorageService:
-    """Get storage service instance."""
-    return StorageService(config.storage.base_dir)
+    """Get storage service instance with SharePoint support."""
+    # Get access token if SharePoint storage is enabled
+    access_token = None
+    if config.storage.is_sharepoint_configured():
+        access_token = get_access_token()
+    
+    return StorageService(
+        base_dir=config.storage.base_dir,
+        use_sharepoint=config.storage.is_sharepoint_configured(),
+        sharepoint_site_url=config.auth.sharepoint_site_url if config.storage.is_sharepoint_configured() else None,
+        library_name=config.storage.sharepoint_library_name,
+        access_token=access_token
+    )
 
 
 def get_available_runs() -> list:
@@ -467,7 +478,8 @@ def upload():
             results["bucket_results"],
             results["findings"],
             metadata,
-            results.get("variance_detail")
+            results.get("variance_detail"),
+            file_path  # Pass the original Excel file path
         )
         
         # Create success message with period info

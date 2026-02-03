@@ -1,42 +1,263 @@
 """
 Storage service for audit run persistence.
+Supports both local filesystem and SharePoint Document Library.
 """
 import json
 import hashlib
+import io
+import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import pandas as pd
+import requests
+
+logger = logging.getLogger(__name__)
 
 
 class StorageService:
     """
-    Manage audit run persistence to disk.
+    Manage audit run persistence with SharePoint/local fallback.
+    
+    Uses SharePoint Document Library in production, local filesystem in development.
     
     Structure:
-    instance/runs/<run_id>/
+    instance/runs/<run_id>/  OR  SharePoint://<library>/<run_id>/
         inputs_normalized/
-            expected_detail.parquet
-            actual_detail.parquet
+            expected_detail.csv
+            actual_detail.csv
         outputs/
-            bucket_results.parquet
-            findings.parquet
+            bucket_results.csv
+            findings.csv
+            variance_detail.csv (optional)
         run_meta.json
     """
     
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, use_sharepoint: bool = False, sharepoint_site_url: str = None, 
+                 library_name: str = None, access_token: str = None):
         self.base_dir = Path(base_dir)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.use_sharepoint = use_sharepoint and sharepoint_site_url and library_name
+        self.sharepoint_site_url = sharepoint_site_url.rstrip('/') if sharepoint_site_url else None
+        self.library_name = library_name
+        self.access_token = access_token
+        self._site_id = None
+        self._drive_id = None
+        
+        if self.use_sharepoint:
+            logger.info(f"[STORAGE] Using SharePoint Document Library: {library_name}")
+        else:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"[STORAGE] Using local filesystem: {self.base_dir}")
+    
+    def _get_site_and_drive_id(self) -> tuple:
+        """Get SharePoint site ID and drive ID for document library."""
+        if self._site_id and self._drive_id:
+            return self._site_id, self._drive_id
+        
+        try:
+            # Parse site URL: https://tenant.sharepoint.com/sites/sitename
+            parts = self.sharepoint_site_url.replace('https://', '').split('/')
+            hostname = parts[0]
+            site_path = '/'.join(parts[1:])  # sites/BaseCampApps
+            
+            # Get site ID
+            site_url = f"https://graph.microsoft.com/v1.0/sites/{hostname}:/{site_path}"
+            headers = {'Authorization': f'Bearer {self.access_token}'}
+            response = requests.get(site_url, headers=headers, timeout=10)
+            
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] Failed to get site ID: {response.status_code} - {response.text}")
+                return None, None
+            
+            self._site_id = response.json()['id']
+            
+            # Get drive ID for document library
+            drives_url = f"https://graph.microsoft.com/v1.0/sites/{self._site_id}/drives"
+            response = requests.get(drives_url, headers=headers, timeout=10)
+            
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] Failed to get drives: {response.status_code}")
+                return None, None
+            
+            # Find the drive matching our library name
+            for drive in response.json()['value']:
+                if drive['name'] == self.library_name:
+                    self._drive_id = drive['id']
+                    logger.info(f"[STORAGE] Found drive ID for library '{self.library_name}'")
+                    return self._site_id, self._drive_id
+            
+            logger.error(f"[STORAGE] Document library '{self.library_name}' not found")
+            return None, None
+            
+        except Exception as e:
+            logger.error(f"[STORAGE] Error getting site/drive ID: {e}", exc_info=True)
+            return None, None
+    
+    def _upload_file_to_sharepoint(self, file_content: str, file_path: str) -> bool:
+        """Upload file to SharePoint document library."""
+        try:
+            site_id, drive_id = self._get_site_and_drive_id()
+            if not site_id or not drive_id:
+                logger.error(f"[STORAGE] ❌ Failed to upload {file_path} - Cannot get site/drive ID")
+                return False
+            
+            # Upload file
+            url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{file_path}:/content"
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'text/plain'
+            }
+            logger.debug(f"[STORAGE] 📤 Uploading: {file_path} ({len(file_content)} chars)")
+            response = requests.put(url, headers=headers, data=file_content.encode('utf-8'), timeout=30)
+            
+            if response.status_code in [200, 201]:
+                logger.debug(f"[STORAGE] ✅ Uploaded: {file_path}")
+                return True
+            else:
+                logger.error(f"[STORAGE] ❌ Failed to upload {file_path}: HTTP {response.status_code} - {response.text[:200]}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[STORAGE] ❌ Exception uploading {file_path}: {e}", exc_info=True)
+            return False
+    
+    def _upload_binary_file_to_sharepoint(self, file_content: bytes, file_path: str) -> bool:
+        """Upload binary file (like Excel) to SharePoint document library."""
+        try:
+            site_id, drive_id = self._get_site_and_drive_id()
+            if not site_id or not drive_id:
+                logger.error(f"[STORAGE] ❌ Failed to upload {file_path} - Cannot get site/drive ID")
+                return False
+            
+            # Upload binary file
+            url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{file_path}:/content"
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            }
+            logger.info(f"[STORAGE] 📤 Uploading binary file: {file_path} ({len(file_content)} bytes)")
+            response = requests.put(url, headers=headers, data=file_content, timeout=30)
+            
+            if response.status_code in [200, 201]:
+                logger.info(f"[STORAGE] ✅ Successfully uploaded: {file_path}")
+                return True
+            else:
+                logger.error(f"[STORAGE] ❌ Failed to upload {file_path}: HTTP {response.status_code} - {response.text[:200]}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[STORAGE] ❌ Exception uploading {file_path}: {e}", exc_info=True)
+            return False
+    
+    def _download_file_from_sharepoint(self, file_path: str) -> Optional[str]:
+        """Download file from SharePoint document library."""
+        try:
+            site_id, drive_id = self._get_site_and_drive_id()
+            if not site_id or not drive_id:
+                return None
+            
+            # Download file
+            url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{file_path}:/content"
+            headers = {'Authorization': f'Bearer {self.access_token}'}
+            response = requests.get(url, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                return response.text
+            else:
+                logger.warning(f"[STORAGE] File not found or error downloading {file_path}: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"[STORAGE] Error downloading {file_path}: {e}", exc_info=True)
+            return None
     
     def create_run_dir(self, run_id: str) -> Path:
         """Create directory structure for a new run."""
-        run_dir = self.base_dir / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        
-        (run_dir / "inputs_normalized").mkdir(exist_ok=True)
-        (run_dir / "outputs").mkdir(exist_ok=True)
-        
-        return run_dir
+        if not self.use_sharepoint:
+            run_dir = self.base_dir / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "inputs_normalized").mkdir(exist_ok=True)
+            (run_dir / "outputs").mkdir(exist_ok=True)
+            return run_dir
+        return Path(run_id)  # For SharePoint, just return the run_id as path
+    
+    def _save_dataframe(self, df: pd.DataFrame, run_id: str, file_path: str):
+        """Save DataFrame to either SharePoint or local filesystem."""
+        if self.use_sharepoint:
+            # Save to SharePoint
+            csv_content = df.to_csv(index=False)
+            sp_path = f"{run_id}/{file_path}"
+            self._upload_file_to_sharepoint(csv_content, sp_path)
+        else:
+            # Save to local filesystem
+            local_path = self.base_dir / run_id / file_path
+            df.to_csv(local_path, index=False)
+    
+    def _load_dataframe(self, run_id: str, file_path: str) -> Optional[pd.DataFrame]:
+        """Load DataFrame from either SharePoint or local filesystem."""
+        if self.use_sharepoint:
+            # Load from SharePoint
+            sp_path = f"{run_id}/{file_path}"
+            content = self._download_file_from_sharepoint(sp_path)
+            if content:
+                return pd.read_csv(io.StringIO(content))
+            return None
+        else:
+            # Load from local filesystem
+            local_path = self.base_dir / run_id / file_path
+            if local_path.exists():
+                return pd.read_csv(local_path)
+            return None
+    
+    def _save_json(self, data: Dict[str, Any], run_id: str, file_path: str):
+        """Save JSON to either SharePoint or local filesystem."""
+        if self.use_sharepoint:
+            # Save to SharePoint
+            json_content = json.dumps(data, indent=2, default=str)
+            sp_path = f"{run_id}/{file_path}"
+            self._upload_file_to_sharepoint(json_content, sp_path)
+        else:
+            # Save to local filesystem
+            local_path = self.base_dir / run_id / file_path
+            with open(local_path, "w") as f:
+                json.dump(data, f, indent=2, default=str)
+    
+    def _load_json(self, run_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+        """Load JSON from either SharePoint or local filesystem."""
+        if self.use_sharepoint:
+            # Load from SharePoint
+            sp_path = f"{run_id}/{file_path}"
+            content = self._download_file_from_sharepoint(sp_path)
+            if content:
+                return json.loads(content)
+            return None
+        else:
+            # Load from local filesystem
+            local_path = self.base_dir / run_id / file_path
+            if local_path.exists():
+                with open(local_path, "r") as f:
+                    return json.load(f)
+            return None
+    
+    def save_uploaded_file(self, run_id: str, file_path: Path, original_filename: str):
+        """Save the original uploaded Excel file."""
+        if self.use_sharepoint:
+            # Read file and upload to SharePoint
+            logger.info(f"[STORAGE] 📁 Saving uploaded file: {original_filename}")
+            try:
+                with open(file_path, 'rb') as f:
+                    file_content = f.read()
+                sp_path = f"{run_id}/{original_filename}"
+                success = self._upload_binary_file_to_sharepoint(file_content, sp_path)
+                if success:
+                    logger.info(f"[STORAGE] ✅ Original file saved to SharePoint: {original_filename}")
+                else:
+                    logger.error(f"[STORAGE] ❌ Failed to save original file: {original_filename}")
+            except Exception as e:
+                logger.error(f"[STORAGE] ❌ Exception reading/uploading file {original_filename}: {e}", exc_info=True)
+        else:
+            logger.debug(f"[STORAGE] 💾 Original file already saved locally: {original_filename}")
+        # For local storage, file is already saved by views.py to the run directory
     
     def save_run(
         self,
@@ -46,45 +267,64 @@ class StorageService:
         bucket_results: pd.DataFrame,
         findings: pd.DataFrame,
         metadata: Dict[str, Any],
-        variance_detail: Optional[pd.DataFrame] = None
+        variance_detail: Optional[pd.DataFrame] = None,
+        original_file_path: Optional[Path] = None
     ):
-        """Save complete audit run to disk."""
-        run_dir = self.create_run_dir(run_id)
+        """Save complete audit run to storage."""
+        logger.info(f"[STORAGE] 💾 Starting save for run: {run_id}")
+        self.create_run_dir(run_id)
         
-        # Save inputs (using CSV instead of Parquet)
-        expected_detail.to_csv(run_dir / "inputs_normalized" / "expected_detail.csv", index=False)
-        actual_detail.to_csv(run_dir / "inputs_normalized" / "actual_detail.csv", index=False)
+        files_saved = []
+        files_failed = []
         
-        # Save outputs (using CSV instead of Parquet)
-        bucket_results.to_csv(run_dir / "outputs" / "bucket_results.csv", index=False)
-        findings.to_csv(run_dir / "outputs" / "findings.csv", index=False)
+        # Save original uploaded file if provided
+        if original_file_path and original_file_path.exists():
+            self.save_uploaded_file(run_id, original_file_path, original_file_path.name)
+            files_saved.append(original_file_path.name)
+        
+        # Save inputs
+        logger.info(f"[STORAGE] 📊 Saving input files...")
+        self._save_dataframe(expected_detail, run_id, "inputs_normalized/expected_detail.csv")
+        files_saved.append("expected_detail.csv")
+        
+        self._save_dataframe(actual_detail, run_id, "inputs_normalized/actual_detail.csv")
+        files_saved.append("actual_detail.csv")
+        
+        # Save outputs
+        logger.info(f"[STORAGE] 📈 Saving output files...")
+        self._save_dataframe(bucket_results, run_id, "outputs/bucket_results.csv")
+        files_saved.append("bucket_results.csv")
+        
+        self._save_dataframe(findings, run_id, "outputs/findings.csv")
+        files_saved.append("findings.csv")
         
         # Save variance detail if provided
         if variance_detail is not None and len(variance_detail) > 0:
-            variance_detail.to_csv(run_dir / "outputs" / "variance_detail.csv", index=False)
+            self._save_dataframe(variance_detail, run_id, "outputs/variance_detail.csv")
+            files_saved.append("variance_detail.csv")
         
         # Save metadata
-        with open(run_dir / "run_meta.json", "w") as f:
-            json.dump(metadata, f, indent=2, default=str)
+        logger.info(f"[STORAGE] 📋 Saving metadata...")
+        self._save_json(metadata, run_id, "run_meta.json")
+        files_saved.append("run_meta.json")
+        
+        logger.info(f"[STORAGE] ✅ Successfully saved run {run_id} - {len(files_saved)} files")
+        if self.use_sharepoint:
+            logger.info(f"[STORAGE] 📍 Location: SharePoint/{self.library_name}/{run_id}")
+        else:
+            logger.info(f"[STORAGE] 📍 Location: {self.base_dir}/{run_id}")
     
     def load_run(self, run_id: str) -> Dict[str, Any]:
-        """Load complete audit run from disk."""
-        run_dir = self.base_dir / run_id
+        """Load complete audit run from storage."""
+        # Load CSVs
+        expected_detail = self._load_dataframe(run_id, "inputs_normalized/expected_detail.csv")
+        actual_detail = self._load_dataframe(run_id, "inputs_normalized/actual_detail.csv")
+        bucket_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
+        findings = self._load_dataframe(run_id, "outputs/findings.csv")
+        variance_detail = self._load_dataframe(run_id, "outputs/variance_detail.csv")
         
-        if not run_dir.exists():
-            raise ValueError(f"Run {run_id} not found")
-        
-        # Load CSVs with proper date parsing
-        expected_detail = pd.read_csv(run_dir / "inputs_normalized" / "expected_detail.csv")
-        actual_detail = pd.read_csv(run_dir / "inputs_normalized" / "actual_detail.csv")
-        bucket_results = pd.read_csv(run_dir / "outputs" / "bucket_results.csv")
-        findings = pd.read_csv(run_dir / "outputs" / "findings.csv")
-        
-        # Load variance_detail if it exists
-        variance_detail = None
-        variance_path = run_dir / "outputs" / "variance_detail.csv"
-        if variance_path.exists():
-            variance_detail = pd.read_csv(variance_path)
+        if expected_detail is None or actual_detail is None or bucket_results is None or findings is None:
+            raise ValueError(f"Run {run_id} not found or incomplete")
         
         # Convert date columns to datetime
         date_columns = ['AUDIT_MONTH', 'PERIOD_START', 'PERIOD_END', 'POST_DATE', 'audit_month']
@@ -110,34 +350,78 @@ class StorageService:
     
     def load_metadata(self, run_id: str) -> Dict[str, Any]:
         """Load run metadata."""
-        meta_path = self.base_dir / run_id / "run_meta.json"
-        with open(meta_path, "r") as f:
-            return json.load(f)
+        metadata = self._load_json(run_id, "run_meta.json")
+        if metadata is None:
+            raise ValueError(f"Metadata not found for run {run_id}")
+        return metadata
     
     def list_runs(self, limit: int = 10) -> List[Dict[str, Any]]:
         """List recent audit runs."""
         runs = []
         
-        if not self.base_dir.exists():
-            return runs
-        
-        for run_dir in sorted(self.base_dir.iterdir(), reverse=True):
-            if run_dir.is_dir():
-                meta_path = run_dir / "run_meta.json"
-                if meta_path.exists():
-                    with open(meta_path, "r") as f:
-                        meta = json.load(f)
-                        meta["run_id"] = run_dir.name
-                        runs.append(meta)
+        if self.use_sharepoint:
+            # List folders from SharePoint
+            try:
+                site_id, drive_id = self._get_site_and_drive_id()
+                if not site_id or not drive_id:
+                    logger.warning("[STORAGE] Cannot list runs - SharePoint not accessible")
+                    return runs
                 
-                if len(runs) >= limit:
-                    break
+                # List children of root folder
+                url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root/children"
+                headers = {'Authorization': f'Bearer {self.access_token}'}
+                response = requests.get(url, headers=headers, timeout=10)
+                
+                if response.status_code != 200:
+                    logger.error(f"[STORAGE] Failed to list runs: {response.status_code}")
+                    return runs
+                
+                # Get folders that start with "run_"
+                folders = [item for item in response.json().get('value', []) 
+                          if item.get('folder') and item['name'].startswith('run_')]
+                
+                # Sort by name (which includes timestamp) in reverse
+                folders.sort(key=lambda x: x['name'], reverse=True)
+                
+                # Load metadata for each run
+                for folder in folders[:limit]:
+                    run_id = folder['name']
+                    try:
+                        meta = self._load_json(run_id, "run_meta.json")
+                        if meta:
+                            meta["run_id"] = run_id
+                            runs.append(meta)
+                    except Exception as e:
+                        logger.warning(f"[STORAGE] Failed to load metadata for {run_id}: {e}")
+                
+            except Exception as e:
+                logger.error(f"[STORAGE] Error listing SharePoint runs: {e}", exc_info=True)
+        else:
+            # List from local filesystem
+            if not self.base_dir.exists():
+                return runs
+            
+            for run_dir in sorted(self.base_dir.iterdir(), reverse=True):
+                if run_dir.is_dir():
+                    meta_path = run_dir / "run_meta.json"
+                    if meta_path.exists():
+                        with open(meta_path, "r") as f:
+                            meta = json.load(f)
+                            meta["run_id"] = run_dir.name
+                            runs.append(meta)
+                    
+                    if len(runs) >= limit:
+                        break
         
         return runs
     
     def get_run_exists(self, run_id: str) -> bool:
         """Check if run exists."""
-        return (self.base_dir / run_id).exists()
+        if self.use_sharepoint:
+            metadata = self._load_json(run_id, "run_meta.json")
+            return metadata is not None
+        else:
+            return (self.base_dir / run_id).exists()
     
     @staticmethod
     def calculate_file_hash(file_path: Path) -> str:
