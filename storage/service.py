@@ -386,8 +386,7 @@ class StorageService:
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
             params = {
                 '$expand': 'fields',
-                '$top': 1000,  # Get up to 1000 items
-                '$orderby': 'fields/RunDateTime desc'  # Most recent first
+                '$top': 1000  # Get up to 1000 items
             }
             response = requests.get(items_url, headers=headers, params=params, timeout=30)
             
@@ -426,6 +425,9 @@ class StorageService:
                     'medium_severity': fields.get('MediumSeverity', 0),
                     'properties': properties
                 })
+            
+            # Sort by timestamp descending (most recent first)
+            metrics_list.sort(key=lambda x: x['timestamp'], reverse=True)
             
             logger.info(f"[STORAGE] ✅ Loaded {len(metrics_list)} metrics from SharePoint list")
             return metrics_list
