@@ -15,11 +15,11 @@
         </div>
         <div class="col-auto">
             {% if has_customer_id %}
-            <a href="{{ entrata_url }}" target="_blank" class="btn btn-primary me-2" title="Open resident profile in Entrata">
+            <a href="{{ entrata_url }}" target="_blank" class="btn btn-primary me-2" title="Open resident profile in Entrata (Customer ID: {{ customer_id }})">
                 <i class="fas fa-external-link-alt"></i> Open in Entrata
             </a>
             {% else %}
-            <button class="btn btn-primary me-2" disabled title="Customer ID not available">
+            <button class="btn btn-primary me-2" disabled title="Customer ID not available - button disabled">
                 <i class="fas fa-external-link-alt"></i> Open in Entrata
             </button>
             {% endif %}

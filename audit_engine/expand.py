@@ -99,10 +99,12 @@ def expand_scheduled_to_months(df: pd.DataFrame) -> pd.DataFrame:
         CanonicalField.PERIOD_END.value
     ]
     
-    # Add optional name columns if they exist
+    # Add optional name and ID columns if they exist
     optional_cols = [
         CanonicalField.GUARANTOR_NAME.value,
         CanonicalField.CUSTOMER_NAME.value,
+        CanonicalField.CUSTOMER_ID.value,
+        CanonicalField.LEASE_ID.value,
         CanonicalField.AR_CODE_NAME.value
     ]
     for col in optional_cols:

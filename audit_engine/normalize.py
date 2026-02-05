@@ -57,8 +57,19 @@ def normalize_ar_transactions(df: pd.DataFrame) -> pd.DataFrame:
             f"Available columns: {df.columns.tolist()}"
         )
     
-    # Return DataFrame with ONLY canonical columns (no source columns)
-    return df[required_cols].copy()
+    # Include optional columns if they exist (LEASE_ID, CUSTOMER_ID, SCHEDULED_CHARGE_ID_LINK)
+    output_cols = required_cols.copy()
+    optional_cols = [
+        CanonicalField.LEASE_ID.value,
+        CanonicalField.CUSTOMER_ID.value,
+        CanonicalField.SCHEDULED_CHARGE_ID_LINK.value
+    ]
+    for col in optional_cols:
+        if col in df.columns:
+            output_cols.append(col)
+    
+    # Return DataFrame with canonical columns
+    return df[output_cols].copy()
 
 
 def normalize_scheduled_charges(df: pd.DataFrame) -> pd.DataFrame:
@@ -93,12 +104,15 @@ def normalize_scheduled_charges(df: pd.DataFrame) -> pd.DataFrame:
     required_cols = [
         CanonicalField.SCHEDULED_CHARGES_ID.value,
         CanonicalField.PROPERTY_ID.value,
+        CanonicalField.LEASE_ID.value,
         CanonicalField.LEASE_INTERVAL_ID.value,
         CanonicalField.AR_CODE_ID.value,
         CanonicalField.EXPECTED_AMOUNT.value,
         CanonicalField.PERIOD_START.value,
         CanonicalField.PERIOD_END.value,
         CanonicalField.AR_CODE_NAME.value,
+        CanonicalField.CUSTOMER_NAME.value,
+        CanonicalField.CUSTOMER_ID.value,
         CanonicalField.GUARANTOR_NAME.value
     ]
     
@@ -109,5 +123,5 @@ def normalize_scheduled_charges(df: pd.DataFrame) -> pd.DataFrame:
             f"Available columns: {df.columns.tolist()}"
         )
     
-    # Return DataFrame with ONLY canonical columns (no source columns)
+    # Return DataFrame with canonical columns
     return df[required_cols].copy()

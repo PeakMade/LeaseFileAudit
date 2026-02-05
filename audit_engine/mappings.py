@@ -23,6 +23,7 @@ class ARSourceColumns:
     """Raw column names from AR Transactions source."""
     PROPERTY_ID = "PROPERTY_ID"
     PROPERTY_NAME = "PROPERTY_NAME"
+    LEASE_ID = "LEASE_ID"
     LEASE_INTERVAL_ID = "LEASE_INTERVAL_ID"
     AR_CODE_ID = "AR_CODE_ID"
     AR_CODE_NAME = "AR_CODE_NAME"
@@ -45,6 +46,7 @@ class ScheduledSourceColumns:
     """Raw column names from Scheduled Charges source."""
     ID = "ID"
     PROPERTY_ID = "PROPERTY_ID"
+    LEASE_ID = "LEASE_ID"
     LEASE_INTERVAL_ID = "LEASE_INTERVAL_ID"
     AR_CODE_ID = "AR_CODE_ID"
     AR_CODE_NAME = "AR_CODE_NAME"
@@ -234,8 +236,8 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ARSourceColumns.IS_REVERSAL,
         ARSourceColumns.ID,
         ARSourceColumns.CUSTOMER_NAME,
-        ARSourceColumns.CUSTOMER_ID,
         ARSourceColumns.GUARANTOR_NAME,
+        # LEASE_ID and CUSTOMER_ID are optional in AR - will fall back to scheduled charges
         # SCHEDULED_CHARGE_ID is optional - not all AR transactions link to scheduled charges
     ],
     column_transforms=[
@@ -252,10 +254,8 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ColumnTransform(ARSourceColumns.IS_REVERSAL, CanonicalField.IS_REVERSAL),
         ColumnTransform(ARSourceColumns.ID, CanonicalField.AR_TRANSACTION_ID),
         ColumnTransform(ARSourceColumns.CUSTOMER_NAME, CanonicalField.CUSTOMER_NAME),
-        ColumnTransform(ARSourceColumns.CUSTOMER_ID, CanonicalField.CUSTOMER_ID),
         ColumnTransform(ARSourceColumns.GUARANTOR_NAME, CanonicalField.GUARANTOR_NAME),
-        # Add SCHEDULED_CHARGE_ID link if column exists (optional, conditional transform handled in apply_source_mapping)
-        ColumnTransform(ARSourceColumns.SCHEDULED_CHARGE_ID, CanonicalField.SCHEDULED_CHARGE_ID_LINK),
+        # Add LEASE_ID and CUSTOMER_ID if columns exist (optional for AR, will fall back to scheduled)
     ],
     row_filter=_ar_row_filter,
     derived_fields={
@@ -387,6 +387,7 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
     required_source_columns=[
         ScheduledSourceColumns.ID,
         ScheduledSourceColumns.PROPERTY_ID,
+        ScheduledSourceColumns.LEASE_ID,
         ScheduledSourceColumns.LEASE_INTERVAL_ID,
         ScheduledSourceColumns.AR_CODE_ID,
         ScheduledSourceColumns.AR_CODE_NAME,
@@ -402,6 +403,8 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
                        CanonicalField.SCHEDULED_CHARGES_ID),
         ColumnTransform(ScheduledSourceColumns.PROPERTY_ID, 
                        CanonicalField.PROPERTY_ID),
+        ColumnTransform(ScheduledSourceColumns.LEASE_ID, 
+                       CanonicalField.LEASE_ID),
         ColumnTransform(ScheduledSourceColumns.LEASE_INTERVAL_ID, 
                        CanonicalField.LEASE_INTERVAL_ID),
         ColumnTransform(ScheduledSourceColumns.AR_CODE_ID, 

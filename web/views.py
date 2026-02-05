@@ -886,21 +886,23 @@ def _get_status_color(status: str) -> str:
 def build_entrata_url(lease_id: str, customer_id: str = None) -> str:
     """Build Entrata resident profile URL.
     
+    Opens the resident profile shell (module=customers_systemxxx) with customer[id] and lease[id].
+    
     Args:
         lease_id: The lease interval ID
         customer_id: The customer ID (optional)
         
     Returns:
-        Entrata URL string. If customer_id is missing, returns customer list URL.
+        Entrata URL string. If customer_id is missing, returns customers module.
     """
     base_url = "https://peakmade-test-17291.entrata.com/"
     
     if customer_id and str(customer_id).strip() and str(customer_id).lower() != 'nan':
-        # Build full resident profile URL
-        return f"{base_url}?module=customerxxx&lease[id]={lease_id}&customer[id]={customer_id}"
+        # Open resident profile shell
+        return f"{base_url}?module=customers_systemxxx&customer[id]={customer_id}&lease[id]={lease_id}"
     else:
-        # Fallback to customer list if customer_id is missing
-        return f"{base_url}?module=customerxxx"
+        # Fallback to customers module if customer_id is missing
+        return f"{base_url}?module=customers_systemxxx"
 
 
 @bp.route('/lease/<run_id>/<property_id>/<lease_interval_id>')
@@ -1174,33 +1176,45 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         if not property_name:
             property_name = PROPERTY_NAME_MAP.get(int(float(property_id)))
         
-        # Get customer name from actual records
+        # Get customer name and IDs from actual records
         customer_name = None
         customer_id = None
-        if len(lease_actual) > 0 and CanonicalField.CUSTOMER_NAME.value in lease_actual.columns:
-            customer_value = lease_actual[CanonicalField.CUSTOMER_NAME.value].iloc[0]
-            if pd.notna(customer_value):
-                customer_name = customer_value
+        lease_id = None
         
-        # Get customer ID from actual records
-        if len(lease_actual) > 0 and CanonicalField.CUSTOMER_ID.value in lease_actual.columns:
-            customer_id_value = lease_actual[CanonicalField.CUSTOMER_ID.value].iloc[0]
-            if pd.notna(customer_id_value):
-                customer_id = int(customer_id_value)
+        if len(lease_actual) > 0:
+            if CanonicalField.CUSTOMER_NAME.value in lease_actual.columns:
+                customer_value = lease_actual[CanonicalField.CUSTOMER_NAME.value].iloc[0]
+                if pd.notna(customer_value):
+                    customer_name = customer_value
+            
+            if CanonicalField.CUSTOMER_ID.value in lease_actual.columns:
+                customer_id_value = lease_actual[CanonicalField.CUSTOMER_ID.value].iloc[0]
+                if pd.notna(customer_id_value):
+                    customer_id = int(customer_id_value)
+            
+            if CanonicalField.LEASE_ID.value in lease_actual.columns:
+                lease_id_value = lease_actual[CanonicalField.LEASE_ID.value].iloc[0]
+                if pd.notna(lease_id_value):
+                    lease_id = int(lease_id_value)
         
         # If not found in actual, check expected records (scheduled charges)
-        if not customer_name:
-            if len(lease_expected) > 0 and CanonicalField.CUSTOMER_NAME.value in lease_expected.columns:
+        if not customer_name and len(lease_expected) > 0:
+            if CanonicalField.CUSTOMER_NAME.value in lease_expected.columns:
                 customer_value = lease_expected[CanonicalField.CUSTOMER_NAME.value].iloc[0]
                 if pd.notna(customer_value):
                     customer_name = customer_value
         
-        # If customer_id not found in actual, check expected records
-        if not customer_id:
-            if len(lease_expected) > 0 and CanonicalField.CUSTOMER_ID.value in lease_expected.columns:
+        if not customer_id and len(lease_expected) > 0:
+            if CanonicalField.CUSTOMER_ID.value in lease_expected.columns:
                 customer_id_value = lease_expected[CanonicalField.CUSTOMER_ID.value].iloc[0]
                 if pd.notna(customer_id_value):
                     customer_id = int(customer_id_value)
+        
+        if not lease_id and len(lease_expected) > 0:
+            if CanonicalField.LEASE_ID.value in lease_expected.columns:
+                lease_id_value = lease_expected[CanonicalField.LEASE_ID.value].iloc[0]
+                if pd.notna(lease_id_value):
+                    lease_id = int(lease_id_value)
         
         # Build matched details grouped by AR code
         matched_groups = {}
@@ -1358,9 +1372,9 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         # Sort by AR code ID
         all_ar_codes = sorted(all_ar_codes, key=lambda x: x['ar_code_id'])
         
-        # Build Entrata URL
-        entrata_url = build_entrata_url(lease_interval_id, customer_id)
-        has_customer_id = customer_id is not None
+        # Build Entrata URL using LEASE_ID (not LEASE_INTERVAL_ID)
+        entrata_url = build_entrata_url(lease_id, customer_id)
+        has_customer_id = customer_id is not None and lease_id is not None
         
         return render_template(
             'lease.html',
@@ -1369,6 +1383,7 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             property_name=property_name,
             customer_name=customer_name,
             customer_id=customer_id,
+            lease_id=lease_id,
             lease_interval_id=lease_interval_id,
             entrata_url=entrata_url,
             has_customer_id=has_customer_id,
