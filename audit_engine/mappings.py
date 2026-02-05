@@ -51,6 +51,7 @@ class ScheduledSourceColumns:
     CHARGE_START_DATE = "CHARGE_START_DATE"
     CHARGE_END_DATE = "CHARGE_END_DATE"
     GUARANTOR_NAME = "GUARANTOR_NAME"
+    CUSTOMER_NAME = "CUSTOMER_NAME"
     DELETED_ON = "DELETED_ON"
     FLAG_ACTIVE_LEASE_INTERVAL = "FLAG_ACTIVE_LEASE_INTERVAL"
     # Critical reconciliation filter fields
@@ -183,29 +184,33 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
 
 def _ar_audit_month_calc(df: pd.DataFrame) -> pd.Series:
     """
-    Calculate audit month from POST_MONTH_DATE (YYYYMMDD integer format).
+    Calculate audit month from POST_DATE (YYYYMMDD integer format).
+    Normalizes to first day of the month to match with scheduled charges expansion.
     
     Args:
         df: SOURCE DataFrame (after row_filter, before column transforms)
         
     Returns:
-        Series of datetime64[ns] values representing audit month
+        Series of datetime64[ns] values representing first day of audit month
     """
-    if ARSourceColumns.POST_MONTH_DATE not in df.columns:
+    if ARSourceColumns.POST_DATE not in df.columns:
         raise ValueError(
-            f"POST_MONTH_DATE column not found in source data. "
+            f"POST_DATE column not found in source data. "
             f"Available columns: {df.columns.tolist()}"
         )
     
-    # POST_MONTH_DATE is in YYYYMMDD integer format (e.g., 20240101)
-    # Convert to int first (in case it's float), then string, then parse as datetime
-    result = pd.to_datetime(df[ARSourceColumns.POST_MONTH_DATE].astype(int).astype(str), format='%Y%m%d', errors='coerce')
+    # POST_DATE is in YYYYMMDD integer format (e.g., 20250808)
+    # Convert to datetime, then normalize to first day of month
+    dates = pd.to_datetime(df[ARSourceColumns.POST_DATE].astype(int).astype(str), format='%Y%m%d', errors='coerce')
+    
+    # Normalize to first day of month (e.g., 2025-08-08 -> 2025-08-01)
+    result = dates.dt.to_period('M').dt.to_timestamp()
     
     # Check for NaT values and warn
     nat_count = result.isna().sum()
     if nat_count > 0:
-        print(f"[WARNING] Found {nat_count} invalid/missing POST_MONTH_DATE values")
-        print(f"[WARNING] Sample of problematic values: {df[ARSourceColumns.POST_MONTH_DATE][result.isna()].head().tolist()}")
+        print(f"[WARNING] Found {nat_count} invalid/missing POST_DATE values")
+        print(f"[WARNING] Sample of problematic values: {df[ARSourceColumns.POST_DATE][result.isna()].head().tolist()}")
         print(f"[WARNING] These rows will be dropped during normalization")
     
     return result
@@ -385,6 +390,7 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
         ScheduledSourceColumns.CHARGE_START_DATE,
         ScheduledSourceColumns.CHARGE_END_DATE,
         ScheduledSourceColumns.GUARANTOR_NAME,
+        ScheduledSourceColumns.CUSTOMER_NAME,
     ],
     column_transforms=[
         ColumnTransform(ScheduledSourceColumns.ID, 
@@ -401,6 +407,8 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
                        CanonicalField.EXPECTED_AMOUNT),
         ColumnTransform(ScheduledSourceColumns.GUARANTOR_NAME, 
                        CanonicalField.GUARANTOR_NAME),
+        ColumnTransform(ScheduledSourceColumns.CUSTOMER_NAME, 
+                       CanonicalField.CUSTOMER_NAME),
         # Reconciliation filtering and matching fields
         ColumnTransform(ScheduledSourceColumns.IS_UNSELECTED_QUOTE, 
                        CanonicalField.IS_UNSELECTED_QUOTE),

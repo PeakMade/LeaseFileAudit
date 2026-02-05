@@ -55,11 +55,9 @@
                                     <label for="audit_year" class="form-label">Year</label>
                                     <select class="form-select" id="audit_year" name="audit_year">
                                         <option value="">All Years</option>
-                                        <option value="2026" selected>2026</option>
                                         <option value="2025">2025</option>
-                                        <option value="2024">2024</option>
-                                        <option value="2022">2022</option>
-                                        <option value="2021">2021</option>
+                                        <option value="2026">2026</option>
+                                        <option value="2027">2027</option>
                                     </select>
                                 </div>
                                 <div class="col-md-6">
@@ -129,12 +127,31 @@
 
 {% block extra_js %}
 <script>
-    // Initialize Bootstrap tooltips
+    // Initialize Bootstrap tooltips and set default audit period
     document.addEventListener('DOMContentLoaded', function() {
         var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
         var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
             return new bootstrap.Tooltip(tooltipTriggerEl);
         });
+        
+        // Default to current year and current month
+        const today = new Date();
+        const currentMonth = today.getMonth() + 1; // JavaScript months are 0-indexed
+        const currentYear = today.getFullYear();
+        
+        // Set the year dropdown to current year
+        const yearDropdown = document.getElementById('audit_year');
+        const yearOption = yearDropdown.querySelector(`option[value="${currentYear}"]`);
+        if (yearOption) {
+            yearOption.selected = true;
+        }
+        
+        // Set the month dropdown to the current month
+        const monthDropdown = document.getElementById('audit_month');
+        const monthOption = monthDropdown.querySelector(`option[value="${currentMonth}"]`);
+        if (monthOption) {
+            monthOption.selected = true;
+        }
     });
 </script>
 {% endblock %}
