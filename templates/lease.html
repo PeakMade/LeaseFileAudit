@@ -34,153 +34,51 @@
         </div>
     </div>
 
-    <!-- Discrepancy Details Table -->
+    <!-- Unified AR Codes Table -->
     <div class="row">
         <div class="col-12">
             <div class="card">
                 <div class="card-header bg-light">
-                    <h5 class="mb-0">{% if exceptions %}Discrepancy Details{% else %}Audit Results{% endif %}</h5>
+                    <h5 class="mb-0">AR Code Details</h5>
                 </div>
                 <div class="card-body p-0">
-                    {% if exceptions %}
+                    {% if all_ar_codes %}
                     <div class="table-responsive">
                         <table class="table table-sm table-hover mb-0">
                             <thead class="table-light">
                                 <tr>
-                                    <th>AR Code</th>
-                                    <th>Scheduled Start</th>
-                                    <th>Scheduled End</th>
-                                    <th>Posted Date(s)</th>
-                                    <th class="text-end">Scheduled Amount</th>
-                                    <th class="text-end">Actual Ledger</th>
-                                    <th class="text-end">Difference</th>
-                                    <th class="text-center">Details</th>
+                                    <th style="width: 120px;">AR Code</th>
+                                    <th>AR Code Name</th>
+                                    <th class="text-center" style="width: 120px;">Matched</th>
+                                    <th class="text-center" style="width: 120px;">Exceptions</th>
+                                    <th class="text-center" style="width: 80px;">Details</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {% for exc in exceptions %}
-                                <!-- Summary Row (Grouped by AR Code) -->
-                                <tr class="table-active">
-                                    <td>
-                                        <strong>{{ exc.ar_code_id|int }}{% if exc.ar_code_name %} - {{ exc.ar_code_name }}{% endif %}</strong><br>
-                                        <small><span class="badge bg-{{ exc.status_color }}">{{ exc.status_label }}</span></small>
-                                        {% if exc.month_count > 1 %}
-                                        <br><small class="text-muted">{{ exc.month_count }} months</small>
-                                        {% endif %}
-                                    </td>
-                                    <td colspan="2" class="text-center text-muted">
-                                        {% if exc.month_count > 1 %}
-                                            Multiple months
+                                {% for ar_code in all_ar_codes %}
+                                <tr>
+                                    <td><strong>{{ ar_code.ar_code_id|int }}</strong></td>
+                                    <td>{{ ar_code.ar_code_name if ar_code.ar_code_name else '-' }}</td>
+                                    <td class="text-center">
+                                        {% if ar_code.matched_count > 0 %}
+                                        <span class="badge bg-success">{{ ar_code.matched_count }}</span>
                                         {% else %}
-                                            {% set detail = exc.monthly_details[0] %}
-                                            {{ detail.charge_start|safe_strftime('%m/%d/%Y') }} to {{ detail.charge_end|safe_strftime('%m/%d/%Y') }}
+                                        <span class="text-muted">0</span>
                                         {% endif %}
-                                    </td>
-                                    <td class="text-center text-muted">
-                                        {{ exc.all_actual_transactions|length }} transaction(s)
-                                    </td>
-                                    <td class="text-end"><strong>${{ "{:,.0f}".format(exc.total_expected) }}</strong></td>
-                                    <td class="text-end"><strong>${{ "{:,.0f}".format(exc.total_actual) }}</strong></td>
-                                    <td class="text-end">
-                                        <strong class="text-{{ 'danger' if exc.total_variance < 0 else 'success' }}">
-                                            ${{ "{:,.0f}".format(exc.total_variance) }}
-                                        </strong>
                                     </td>
                                     <td class="text-center">
-                                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#details-{{ loop.index }}" aria-expanded="false" title="View Monthly Details">
-                                            <i class="fas fa-chevron-down"></i>
-                                        </button>
+                                        {% if ar_code.exception_count > 0 %}
+                                        <span class="badge bg-danger">{{ ar_code.exception_count }}</span>
+                                        {% else %}
+                                        <span class="text-muted">0</span>
+                                        {% endif %}
                                     </td>
-                                </tr>
-                                <!-- Expandable Monthly Details -->
-                                <tr class="collapse" id="details-{{ loop.index }}">
-                                    <td colspan="8" class="p-0">
-                                        <div class="bg-light p-3">
-                                            <h6 class="mb-3"><i class="fas fa-calendar-alt"></i> Monthly Breakdown</h6>
-                                            
-                                            <table class="table table-sm table-bordered table-hover bg-white">
-                                                <thead class="table-secondary">
-                                                    <tr>
-                                                        <th rowspan="2" class="align-middle">Month</th>
-                                                        <th colspan="3" class="text-center text-info">Expected</th>
-                                                        <th colspan="3" class="text-center text-primary">Actual</th>
-                                                        <th rowspan="2" class="text-end align-middle">Variance</th>
-                                                    </tr>
-                                                    <tr>
-                                                        <th class="text-info">Period Start</th>
-                                                        <th class="text-info">Period End</th>
-                                                        <th class="text-end text-info">Amount</th>
-                                                        <th class="text-primary">Posted Date</th>
-                                                        <th class="text-primary">Txn ID</th>
-                                                        <th class="text-end text-primary">Amount</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {% for monthly in exc.monthly_details %}
-                                                    {% set exp_count = monthly.expected_transactions|length %}
-                                                    {% set act_count = monthly.actual_transactions|length %}
-                                                    {% set max_rows = [exp_count, act_count]|max %}
-                                                    {% set max_rows = max_rows if max_rows > 0 else 1 %}
-                                                    
-                                                    {% for i in range(max_rows) %}
-                                                    <tr>
-                                                        {% if i == 0 %}
-                                                        <td rowspan="{{ max_rows }}" class="align-middle">
-                                                            <strong>{{ monthly.audit_month|safe_strftime('%B %Y') }}</strong>
-                                                        </td>
-                                                        {% endif %}
-                                                        
-                                                        <!-- Expected columns -->
-                                                        {% if i < exp_count %}
-                                                        {% set exp = monthly.expected_transactions[i] %}
-                                                        <td>{{ exp.period_start|safe_strftime('%m/%d/%Y') }}</td>
-                                                        <td>{{ exp.period_end|safe_strftime('%m/%d/%Y') }}</td>
-                                                        <td class="text-end">${{ "{:,.0f}".format(exp.amount) }}</td>
-                                                        {% else %}
-                                                        <td colspan="3" class="text-muted text-center">
-                                                            {% if i == 0 %}No scheduled charges{% endif %}
-                                                        </td>
-                                                        {% endif %}
-                                                        
-                                                        <!-- Actual columns -->
-                                                        {% if i < act_count %}
-                                                        {% set act = monthly.actual_transactions[i] %}
-                                                        <td>{{ act.post_date|safe_strftime('%m/%d/%Y') }}</td>
-                                                        <td><small>{{ act.transaction_id|int if act.transaction_id else '-' }}</small></td>
-                                                        <td class="text-end">${{ "{:,.0f}".format(act.amount) }}</td>
-                                                        {% else %}
-                                                        <td colspan="3" class="text-muted text-center">
-                                                            {% if i == 0 %}No actual transactions{% endif %}
-                                                        </td>
-                                                        {% endif %}
-                                                        
-                                                        {% if i == 0 %}
-                                                        <td rowspan="{{ max_rows }}" class="align-middle text-end">
-                                                            <strong class="text-{{ 'danger' if monthly.variance < 0 else 'success' }}">
-                                                                ${{ "{:,.0f}".format(monthly.variance) }}
-                                                            </strong>
-                                                        </td>
-                                                        {% endif %}
-                                                    </tr>
-                                                    {% endfor %}
-                                                    {% endfor %}
-                                                </tbody>
-                                                <tfoot class="table-light">
-                                                    <tr>
-                                                        <th>Total</th>
-                                                        <th colspan="2" class="text-end">{{ exc.all_expected_transactions|length }} transaction(s)</th>
-                                                        <th class="text-end">${{ "{:,.0f}".format(exc.total_expected) }}</th>
-                                                        <th colspan="2" class="text-end">{{ exc.all_actual_transactions|length }} transaction(s)</th>
-                                                        <th class="text-end">${{ "{:,.0f}".format(exc.total_actual) }}</th>
-                                                        <th class="text-end">
-                                                            <strong class="text-{{ 'danger' if exc.total_variance < 0 else 'success' }}">
-                                                                ${{ "{:,.0f}".format(exc.total_variance) }}
-                                                            </strong>
-                                                        </th>
-                                                    </tr>
-                                                </tfoot>
-                                            </table>
-                                        </div>
+                                    <td class="text-center">
+                                        <button class="btn btn-sm btn-outline-secondary" 
+                                                onclick="openDrawer({{ loop.index0 }})"
+                                                title="View Details">
+                                            <i class="fas fa-chevron-right"></i>
+                                        </button>
                                     </td>
                                 </tr>
                                 {% endfor %}
@@ -189,123 +87,203 @@
                     </div>
                     {% else %}
                         <div class="alert alert-success m-3" role="alert">
-                            <h5><i class="fas fa-check-circle"></i> Clean Audit - No Exceptions</h5>
-                            <p class="mb-0">All scheduled charges for this lease matched the actual billed amounts perfectly. No discrepancies found.</p>
+                            <h5><i class="fas fa-check-circle"></i> Clean Audit - No Charges Found</h5>
+                            <p class="mb-0">No AR codes found for this lease.</p>
                         </div>
                     {% endif %}
                 </div>
             </div>
         </div>
     </div>
-    
-    <!-- Matched Records Table -->
-    {% if matched_records %}
-    <div class="row mt-4">
-        <div class="col-12">
-            <div class="card">
-                <div class="card-header bg-success text-white">
-                    <h5 class="mb-0"><i class="fas fa-check-circle"></i> Matched Charges ({{ matched_count }})</h5>
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive">
-                        <table class="table table-sm table-hover mb-0">
-                            <thead class="table-light">
-                                <tr>
-                                    <th>AR Code</th>
-                                    <th class="text-center">Months</th>
-                                    <th class="text-end">Total Amount</th>
-                                    <th class="text-center">Details</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for match in matched_records %}
-                                <!-- Summary Row -->
-                                <tr class="table-success">
-                                    <td>
-                                        <strong>{{ match.ar_code_id|int }}{% if match.ar_code_name %} - {{ match.ar_code_name }}{% endif %}</strong><br>
-                                        <small class="text-muted">{{ match.month_count }} month(s) matched</small>
-                                    </td>
-                                    <td class="text-center">{{ match.month_count }}</td>
-                                    <td class="text-end"><strong>${{ "{:,.0f}".format(match.total_amount) }}</strong></td>
-                                    <td class="text-center">
-                                        <button class="btn btn-sm btn-outline-success" type="button" data-bs-toggle="collapse" data-bs-target="#match-{{ loop.index }}" aria-expanded="false" title="View Monthly Details">
-                                            <i class="fas fa-chevron-down"></i>
-                                        </button>
-                                    </td>
-                                </tr>
-                                <!-- Expandable Monthly Details -->
-                                <tr class="collapse" id="match-{{ loop.index }}">
-                                    <td colspan="4" class="p-0">
-                                        <div class="bg-light p-3">
-                                            <h6 class="mb-3"><i class="fas fa-calendar-check"></i> Monthly Breakdown</h6>
-                                            
-                                            <table class="table table-sm table-bordered bg-white">
-                                                <thead class="table-secondary">
-                                                    <tr>
-                                                        <th rowspan="2" class="align-middle">Month</th>
-                                                        <th colspan="3" class="text-center text-info">Expected</th>
-                                                        <th colspan="3" class="text-center text-success">Actual (Matched)</th>
-                                                    </tr>
-                                                    <tr>
-                                                        <th class="text-info">Period Start</th>
-                                                        <th class="text-info">Period End</th>
-                                                        <th class="text-end text-info">Amount</th>
-                                                        <th class="text-success">Posted Date</th>
-                                                        <th class="text-success">Txn ID</th>
-                                                        <th class="text-end text-success">Amount</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {% for monthly in match.monthly_details %}
-                                                    {% set exp_count = monthly.expected_transactions|length %}
-                                                    {% set act_count = monthly.actual_transactions|length %}
-                                                    {% set max_rows = [exp_count, act_count]|max %}
-                                                    {% set max_rows = max_rows if max_rows > 0 else 1 %}
-                                                    
-                                                    {% for i in range(max_rows) %}
-                                                    <tr>
-                                                        {% if i == 0 %}
-                                                        <td rowspan="{{ max_rows }}" class="align-middle">
-                                                            <strong>{{ monthly.audit_month|safe_strftime('%B %Y') }}</strong>
-                                                        </td>
-                                                        {% endif %}
-                                                        
-                                                        <!-- Expected columns -->
-                                                        {% if i < exp_count %}
-                                                        {% set exp = monthly.expected_transactions[i] %}
-                                                        <td>{{ exp.period_start|safe_strftime('%m/%d/%Y') }}</td>
-                                                        <td>{{ exp.period_end|safe_strftime('%m/%d/%Y') }}</td>
-                                                        <td class="text-end">${{ "{:,.0f}".format(exp.amount) }}</td>
-                                                        {% else %}
-                                                        <td colspan="3" class="text-muted text-center">-</td>
-                                                        {% endif %}
-                                                        
-                                                        <!-- Actual columns -->
-                                                        {% if i < act_count %}
-                                                        {% set act = monthly.actual_transactions[i] %}
-                                                        <td>{{ act.post_date|safe_strftime('%m/%d/%Y') }}</td>
-                                                        <td><small>{{ act.transaction_id|int if act.transaction_id else '-' }}</small></td>
-                                                        <td class="text-end">${{ "{:,.0f}".format(act.amount) }}</td>
-                                                        {% else %}
-                                                        <td colspan="3" class="text-muted text-center">-</td>
-                                                        {% endif %}
-                                                    </tr>
-                                                    {% endfor %}
-                                                    {% endfor %}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+
+    <!-- Side Drawer for AR Code Details -->
+    <div id="drawerOverlay" class="drawer-overlay" onclick="closeDrawer()"></div>
+    <div id="detailsDrawer" class="drawer">
+        <div class="drawer-content">
+            <div class="drawer-header">
+                <h5 class="mb-0" id="drawerTitle">AR Code Details</h5>
+                <button type="button" class="btn-close" onclick="closeDrawer()"></button>
+            </div>
+            <div class="drawer-body" id="drawerBody">
+                <!-- Content will be populated by JavaScript -->
             </div>
         </div>
     </div>
-    {% endif %}
+
+    <!-- Hidden data for drawer content -->
+    <script>
+    const arCodeData = {{ all_ar_codes|tojson|safe }};
+    
+    function openDrawer(index) {
+        const data = arCodeData[index];
+        const drawer = document.getElementById('detailsDrawer');
+        const title = document.getElementById('drawerTitle');
+        const body = document.getElementById('drawerBody');
+        
+        title.textContent = `${data.ar_code_id} - ${data.ar_code_name || 'Unknown'}`;
+        
+        // Build drawer content
+        let content = '<div class="mb-3">';
+        content += `<div class="d-flex gap-2 mb-3">`;
+        if (data.matched_count > 0) {
+            content += `<span class="badge bg-success">${data.matched_count} Matched</span>`;
+        }
+        if (data.exception_count > 0) {
+            content += `<span class="badge bg-danger">${data.exception_count} Exception(s)</span>`;
+        }
+        content += '</div>';
+        content += '</div>';
+        
+        // Monthly details table
+        content += '<table class="table table-sm table-bordered">';
+        content += '<thead class="table-secondary">';
+        content += '<tr>';
+        content += '<th class="align-middle">Month</th>';
+        content += '<th colspan="2" class="text-center text-info">Expected</th>';
+        content += '<th colspan="2" class="text-center text-primary">Actual</th>';
+        content += '</tr>';
+        content += '<tr>';
+        content += '<th></th>';
+        content += '<th class="text-info">Period</th>';
+        content += '<th class="text-end text-info">Amount</th>';
+        content += '<th class="text-primary">Post Date</th>';
+        content += '<th class="text-end text-primary">Amount</th>';
+        content += '</tr>';
+        content += '</thead>';
+        content += '<tbody>';
+        
+        // Add monthly rows
+        if (data.monthly_details && data.monthly_details.length > 0) {
+            data.monthly_details.forEach(month => {
+                const expTrans = month.expected_transactions || [];
+                const actTrans = month.actual_transactions || [];
+                const maxRows = Math.max(expTrans.length, actTrans.length, 1);
+                const isException = month.status !== 'matched';
+                const rowClass = isException ? 'table-danger' : '';
+                
+                for (let i = 0; i < maxRows; i++) {
+                    content += `<tr class="${rowClass}">`;
+                    
+                    // Month column (only first row)
+                    if (i === 0) {
+                        let monthLabel = formatDate(month.audit_month, 'MMMM YYYY');
+                        if (isException) {
+                            monthLabel += ` <span class="badge bg-${month.status_color}">${month.status_label}</span>`;
+                        }
+                        content += `<td rowspan="${maxRows}" class="align-middle"><strong>${monthLabel}</strong></td>`;
+                    }
+                    
+                    // Expected columns
+                    if (i < expTrans.length) {
+                        const exp = expTrans[i];
+                        content += `<td><small>${formatDate(exp.period_start, 'MM/DD/YYYY')} - ${formatDate(exp.period_end, 'MM/DD/YYYY')}</small></td>`;
+                        content += `<td class="text-end">$${formatNumber(exp.amount)}</td>`;
+                    } else {
+                        content += '<td colspan="2" class="text-muted text-center"><em>No scheduled charges</em></td>';
+                    }
+                    
+                    // Actual columns
+                    if (i < actTrans.length) {
+                        const act = actTrans[i];
+                        content += `<td>${formatDate(act.post_date, 'MM/DD/YYYY')}</td>`;
+                        content += `<td class="text-end">$${formatNumber(act.amount)}</td>`;
+                    } else {
+                        content += '<td colspan="2" class="text-muted text-center"><em>No actual transactions</em></td>';
+                    }
+                    
+                    content += '</tr>';
+                }
+            });
+        } else {
+            content += '<tr><td colspan="5" class="text-center text-muted">No monthly details available</td></tr>';
+        }
+        
+        content += '</tbody>';
+        content += '</table>';
+        
+        body.innerHTML = content;
+        drawer.classList.add('open');
+        document.getElementById('drawerOverlay').classList.add('open');
+    }
+    
+    function closeDrawer() {
+        document.getElementById('detailsDrawer').classList.remove('open');
+        document.getElementById('drawerOverlay').classList.remove('open');
+    }
+    
+    function formatDate(dateStr, format) {
+        if (!dateStr) return '-';
+        const date = new Date(dateStr);
+        if (isNaN(date.getTime())) return '-';
+        
+        if (format === 'MMMM YYYY') {
+            return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+        } else if (format === 'MM/DD/YYYY') {
+            return date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+        }
+        return date.toLocaleDateString();
+    }
+    
+    function formatNumber(num) {
+        if (num === null || num === undefined) return '0';
+        return Math.round(num).toLocaleString();
+    }
+    </script>
+
+    <style>
+    .drawer {
+        position: fixed;
+        top: 0;
+        right: -800px;
+        width: 800px;
+        height: 100vh;
+        background: white;
+        box-shadow: -2px 0 10px rgba(0,0,0,0.1);
+        transition: right 0.3s ease;
+        z-index: 1051;
+        overflow-y: auto;
+    }
+    
+    .drawer.open {
+        right: 0;
+    }
+    
+    .drawer-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1050;
+        display: none;
+    }
+    
+    .drawer-overlay.open {
+        display: block;
+    }
+    
+    .drawer-content {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .drawer-header {
+        padding: 1.5rem;
+        border-bottom: 1px solid #dee2e6;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: #f8f9fa;
+    }
+    
+    .drawer-body {
+        padding: 1.5rem;
+        flex: 1;
+        overflow-y: auto;
+    }
+    </style>
     
     <!-- Lease Metadata -->
     <div class="row mt-3 mb-4">

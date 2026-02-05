@@ -1237,6 +1237,93 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         # Convert to sorted list
         matched_list = sorted(matched_groups.values(), key=lambda x: x['total_amount'], reverse=True)
         
+        # Create unified list of all AR codes - ONE ROW PER AR CODE
+        ar_code_unified = {}
+        
+        # First, add all matched months by AR code
+        for match in matched_list:
+            ar_code_id = match['ar_code_id']
+            if ar_code_id not in ar_code_unified:
+                ar_code_unified[ar_code_id] = {
+                    'ar_code_id': ar_code_id,
+                    'ar_code_name': match['ar_code_name'],
+                    'matched_count': 0,
+                    'exception_count': 0,
+                    'monthly_details': [],
+                    'has_exceptions': False
+                }
+            
+            ar_code_unified[ar_code_id]['matched_count'] = match['month_count']
+            
+            # Add matched monthly details with status flag
+            for monthly in match['monthly_details']:
+                ar_code_unified[ar_code_id]['monthly_details'].append({
+                    'audit_month': monthly['audit_month'],
+                    'expected_transactions': monthly['expected_transactions'],
+                    'actual_transactions': monthly['actual_transactions'],
+                    'status': 'matched',
+                    'status_label': 'Matched',
+                    'status_color': 'success',
+                    'variance': 0,
+                    'expected_total': monthly['amount'],
+                    'actual_total': monthly['amount']
+                })
+        
+        # Then, add all exception months by AR code
+        for exc in grouped_list:
+            ar_code_id = exc['ar_code_id']
+            if ar_code_id not in ar_code_unified:
+                ar_code_unified[ar_code_id] = {
+                    'ar_code_id': ar_code_id,
+                    'ar_code_name': exc['ar_code_name'],
+                    'matched_count': 0,
+                    'exception_count': 0,
+                    'monthly_details': [],
+                    'has_exceptions': False
+                }
+            
+            ar_code_unified[ar_code_id]['exception_count'] += exc['month_count']
+            ar_code_unified[ar_code_id]['has_exceptions'] = True
+            
+            # Add exception monthly details with status flag
+            for monthly in exc['monthly_details']:
+                ar_code_unified[ar_code_id]['monthly_details'].append({
+                    'audit_month': monthly['audit_month'],
+                    'expected_transactions': monthly['expected_transactions'],
+                    'actual_transactions': monthly['actual_transactions'],
+                    'status': exc['status'],
+                    'status_label': exc['status_label'],
+                    'status_color': exc['status_color'],
+                    'variance': monthly['variance'],
+                    'expected_total': monthly['expected_total'],
+                    'actual_total': monthly['actual_total'],
+                    'description': monthly.get('description'),
+                    'recommendation': monthly.get('recommendation')
+                })
+        
+        # Determine overall status for each AR code
+        all_ar_codes = []
+        for ar_data in ar_code_unified.values():
+            # Sort monthly details by audit month
+            ar_data['monthly_details'] = sorted(
+                ar_data['monthly_details'], 
+                key=lambda x: x['audit_month'] if x['audit_month'] else ''
+            )
+            
+            # Determine overall status
+            if ar_data['has_exceptions']:
+                # If has exceptions, show the most critical status
+                ar_data['status_label'] = f"{ar_data['matched_count']} Matched, {ar_data['exception_count']} Exception(s)"
+                ar_data['status_color'] = 'warning'
+            else:
+                ar_data['status_label'] = f"{ar_data['matched_count']} Matched"
+                ar_data['status_color'] = 'success'
+            
+            all_ar_codes.append(ar_data)
+        
+        # Sort by AR code ID
+        all_ar_codes = sorted(all_ar_codes, key=lambda x: x['ar_code_id'])
+        
         return render_template(
             'lease.html',
             run_id=run_id,
@@ -1249,6 +1336,7 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             exception_count=len(grouped_list),
             matched_records=matched_list,
             matched_count=len(matched_list),
+            all_ar_codes=all_ar_codes,
             total_variance=total_variance,
             total_expected=total_expected,
             total_actual=total_actual,
