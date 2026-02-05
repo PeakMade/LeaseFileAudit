@@ -1353,9 +1353,10 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         all_ar_codes = []
         for ar_data in ar_code_unified.values():
             # Sort monthly details by audit month
+            # Convert None to pd.Timestamp('1900-01-01') so it sorts first
             ar_data['monthly_details'] = sorted(
                 ar_data['monthly_details'], 
-                key=lambda x: x['audit_month'] if x['audit_month'] else ''
+                key=lambda x: x['audit_month'] if x['audit_month'] is not None else pd.Timestamp('1900-01-01')
             )
             
             # Determine overall status
@@ -1371,6 +1372,22 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         
         # Sort by AR code ID
         all_ar_codes = sorted(all_ar_codes, key=lambda x: x['ar_code_id'])
+        
+        # Convert NaT/NaN values to None for JSON serialization
+        def sanitize_for_json(obj):
+            """Recursively convert pandas NaT/NaN to None for JSON serialization."""
+            if isinstance(obj, dict):
+                return {k: sanitize_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [sanitize_for_json(item) for item in obj]
+            elif pd.isna(obj):
+                return None
+            else:
+                return obj
+        
+        all_ar_codes = sanitize_for_json(all_ar_codes)
+        grouped_list = sanitize_for_json(grouped_list)
+        matched_list = sanitize_for_json(matched_list)
         
         # Build Entrata URL using LEASE_ID (not LEASE_INTERVAL_ID)
         entrata_url = build_entrata_url(lease_id, customer_id)
