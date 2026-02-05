@@ -34,6 +34,7 @@ class ARSourceColumns:
     IS_REVERSAL = "IS_REVERSAL"
     ID = "ID"
     CUSTOMER_NAME = "CUSTOMER_NAME"
+    CUSTOMER_ID = "CUSTOMER_ID"
     GUARANTOR_NAME = "GUARANTOR_NAME"
     FLAG_ACTIVE_LEASE_INTERVAL = "FLAG_ACTIVE_LEASE_INTERVAL"
     # Critical reconciliation linking field
@@ -52,6 +53,7 @@ class ScheduledSourceColumns:
     CHARGE_END_DATE = "CHARGE_END_DATE"
     GUARANTOR_NAME = "GUARANTOR_NAME"
     CUSTOMER_NAME = "CUSTOMER_NAME"
+    CUSTOMER_ID = "CUSTOMER_ID"
     DELETED_ON = "DELETED_ON"
     FLAG_ACTIVE_LEASE_INTERVAL = "FLAG_ACTIVE_LEASE_INTERVAL"
     # Critical reconciliation filter fields
@@ -232,6 +234,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ARSourceColumns.IS_REVERSAL,
         ARSourceColumns.ID,
         ARSourceColumns.CUSTOMER_NAME,
+        ARSourceColumns.CUSTOMER_ID,
         ARSourceColumns.GUARANTOR_NAME,
         # SCHEDULED_CHARGE_ID is optional - not all AR transactions link to scheduled charges
     ],
@@ -249,6 +252,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ColumnTransform(ARSourceColumns.IS_REVERSAL, CanonicalField.IS_REVERSAL),
         ColumnTransform(ARSourceColumns.ID, CanonicalField.AR_TRANSACTION_ID),
         ColumnTransform(ARSourceColumns.CUSTOMER_NAME, CanonicalField.CUSTOMER_NAME),
+        ColumnTransform(ARSourceColumns.CUSTOMER_ID, CanonicalField.CUSTOMER_ID),
         ColumnTransform(ARSourceColumns.GUARANTOR_NAME, CanonicalField.GUARANTOR_NAME),
         # Add SCHEDULED_CHARGE_ID link if column exists (optional, conditional transform handled in apply_source_mapping)
         ColumnTransform(ARSourceColumns.SCHEDULED_CHARGE_ID, CanonicalField.SCHEDULED_CHARGE_ID_LINK),
@@ -391,6 +395,7 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
         ScheduledSourceColumns.CHARGE_END_DATE,
         ScheduledSourceColumns.GUARANTOR_NAME,
         ScheduledSourceColumns.CUSTOMER_NAME,
+        ScheduledSourceColumns.CUSTOMER_ID,
     ],
     column_transforms=[
         ColumnTransform(ScheduledSourceColumns.ID, 
@@ -409,6 +414,8 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
                        CanonicalField.GUARANTOR_NAME),
         ColumnTransform(ScheduledSourceColumns.CUSTOMER_NAME, 
                        CanonicalField.CUSTOMER_NAME),
+        ColumnTransform(ScheduledSourceColumns.CUSTOMER_ID, 
+                       CanonicalField.CUSTOMER_ID),
         # Reconciliation filtering and matching fields
         ColumnTransform(ScheduledSourceColumns.IS_UNSELECTED_QUOTE, 
                        CanonicalField.IS_UNSELECTED_QUOTE),
