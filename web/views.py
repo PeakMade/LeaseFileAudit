@@ -1154,19 +1154,19 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         if not property_name:
             property_name = PROPERTY_NAME_MAP.get(int(float(property_id)))
         
-        # Get guarantor name from actual records
-        guarantor_name = None
-        if len(lease_actual) > 0 and CanonicalField.GUARANTOR_NAME.value in lease_actual.columns:
-            guarantor_value = lease_actual[CanonicalField.GUARANTOR_NAME.value].iloc[0]
-            if pd.notna(guarantor_value):
-                guarantor_name = guarantor_value
+        # Get customer name from actual records
+        customer_name = None
+        if len(lease_actual) > 0 and CanonicalField.CUSTOMER_NAME.value in lease_actual.columns:
+            customer_value = lease_actual[CanonicalField.CUSTOMER_NAME.value].iloc[0]
+            if pd.notna(customer_value):
+                customer_name = customer_value
         
         # If not found in actual, check expected records (scheduled charges)
-        if not guarantor_name:
-            if len(lease_expected) > 0 and CanonicalField.GUARANTOR_NAME.value in lease_expected.columns:
-                guarantor_value = lease_expected[CanonicalField.GUARANTOR_NAME.value].iloc[0]
-                if pd.notna(guarantor_value):
-                    guarantor_name = guarantor_value
+        if not customer_name:
+            if len(lease_expected) > 0 and CanonicalField.CUSTOMER_NAME.value in lease_expected.columns:
+                customer_value = lease_expected[CanonicalField.CUSTOMER_NAME.value].iloc[0]
+                if pd.notna(customer_value):
+                    customer_name = customer_value
         
         # Build matched details grouped by AR code
         matched_groups = {}
@@ -1242,7 +1242,7 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             run_id=run_id,
             property_id=property_id,
             property_name=property_name,
-            guarantor_name=guarantor_name,
+            customer_name=customer_name,
             lease_interval_id=lease_interval_id,
             metadata=run_data["metadata"],
             exceptions=grouped_list,

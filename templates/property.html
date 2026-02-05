@@ -42,15 +42,6 @@
 
     <div class="row mb-4">
         <div class="col-md-4">
-            <div class="card" style="height: 80px; border: 2px solid #00a8c8; border-radius: 8px;">
-                <div class="card-body py-2 px-3 d-flex flex-column justify-content-center">
-                    <small class="d-block mb-1 text-muted" style="font-size: 0.75rem;">Matched</small>
-                    <h5 class="mb-0" style="color: #00a8c8;">{{ kpis.matched_buckets }}</h5>
-                    <small class="text-muted" style="font-size: 0.7rem;">{{ "%.1f"|format(kpis.match_rate) }}% rate</small>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-4">
             <div class="card" style="height: 80px; border: 2px solid #ff6600; border-radius: 8px;">
                 <div class="card-body py-2 px-3 d-flex flex-column justify-content-center">
                     <small class="d-block mb-1 text-muted" style="font-size: 0.75rem;">Exceptions</small>
@@ -61,8 +52,16 @@
         <div class="col-md-4">
             <div class="card" style="height: 80px; border: 2px solid #c20068; border-radius: 8px;">
                 <div class="card-body py-2 px-3 d-flex flex-column justify-content-center">
-                    <small class="d-block mb-1 text-muted" style="font-size: 0.75rem;">Total Variance</small>
-                    <h5 class="mb-0" style="color: #c20068;">${{ "{:,.0f}".format(kpis.total_variance|abs) }}</h5>
+                    <small class="d-block mb-1 text-muted" style="font-size: 0.75rem;">Total Undercharge</small>
+                    <h5 class="mb-0" style="color: #c20068;">${{ "{:,.0f}".format(kpis.total_undercharge) }}</h5>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card" style="height: 80px; border: 2px solid #00a8c8; border-radius: 8px;">
+                <div class="card-body py-2 px-3 d-flex flex-column justify-content-center">
+                    <small class="d-block mb-1 text-muted" style="font-size: 0.75rem;">Total Overcharge</small>
+                    <h5 class="mb-0" style="color: #00a8c8;">${{ "{:,.0f}".format(kpis.total_overcharge) }}</h5>
                 </div>
             </div>
         </div>

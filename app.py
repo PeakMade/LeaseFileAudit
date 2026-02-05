@@ -34,6 +34,7 @@ def create_app(config_name='default'):
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
     app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
     app.config['UPLOAD_FOLDER'] = Path('instance/runs')
+    app.config['TEMPLATES_AUTO_RELOAD'] = True  # Disable template caching
     
     # Ensure instance folder exists
     instance_path = Path(app.instance_path)

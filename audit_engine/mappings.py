@@ -126,7 +126,7 @@ class SourceMapping:
 API_POSTED_AR_CODES = [
     155023, 154776, 155217, 154777, 155018, 156669, 
     155099, 155022, 154785, 155049, 155040, 155015, 
-    155017, 155176
+    155017, 155176, 155203
 ]
 
 def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
@@ -160,8 +160,15 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     print(f"[AR FILTER DEBUG] IS_REVERSAL == 1: {reversal_count}/{len(df)} (KEEPING for reconciliation)")
     
     # Handle potential data type mismatches (sometimes Excel reads as float or string)
-    # ONLY filter by IS_POSTED - KEEP deleted/reversed for matching, KEEP API codes (they're real billings)
+    # ONLY filter by IS_POSTED - KEEP deleted/reversed for matching
     mask = (df[ARSourceColumns.IS_POSTED].astype(float) == 1)
+    
+    # Exclude API-posted AR codes - these are automatically posted and shouldn't be audited
+    if ARSourceColumns.AR_CODE_ID in df.columns:
+        filtered_api_codes = df[ARSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES).sum()
+        if filtered_api_codes > 0:
+            print(f"[FILTER] Excluding {filtered_api_codes} AR transactions with API-posted AR codes: {API_POSTED_AR_CODES}")
+        mask = mask & ~df[ARSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES)
     
     # Only include active lease intervals (FLAG_ACTIVE_LEASE_INTERVAL = 1)
     if ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL in df.columns:
@@ -261,10 +268,18 @@ def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
       - DELETED_ON IS NULL (exclude deleted charges)
       - IS_CACHED_TO_LEASE = 1 (only active charges cached to lease)
       - FLAG_ACTIVE_LEASE_INTERVAL = 1 (only active lease intervals)
+      - AR_CODE_ID NOT IN API_POSTED_AR_CODES (exclude API-posted charges)
     
     This ensures we only compare billings against charges that SHOULD have been billed.
     """
     mask = pd.Series(True, index=df.index)
+    
+    # Exclude API-posted AR codes - these are automatically posted and shouldn't be in scheduled charges
+    if ScheduledSourceColumns.AR_CODE_ID in df.columns:
+        filtered_api_codes = df[ScheduledSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES).sum()
+        if filtered_api_codes > 0:
+            print(f"[FILTER] Excluding {filtered_api_codes} scheduled charges with API-posted AR codes: {API_POSTED_AR_CODES}")
+        mask = mask & ~df[ScheduledSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES)
     
     # CRITICAL: Exclude unselected quotes (IS_UNSELECTED_QUOTE = 1)
     # These are from quotes the tenant didn't select, so they should never appear in AR

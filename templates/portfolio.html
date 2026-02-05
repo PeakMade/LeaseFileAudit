@@ -17,27 +17,17 @@
             <div class="card">
                 <div class="card-body">
                     <div class="row text-center">
-                        <div class="col-md-3">
+                        <div class="col-md-4">
                             <h6 class="text-muted mb-2">Current Undercharge</h6>
                             <h3 class="mb-0" style="color: #c20068;">${{ "{:,.0f}".format(kpis.current_undercharge) }}</h3>
                             <small class="text-muted">Historical: ${{ "{:,.0f}".format(kpis.historical_undercharge) }}</small>
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-4">
                             <h6 class="text-muted mb-2">Current Overcharge</h6>
                             <h3 class="mb-0" style="color: #00a8c8;">${{ "{:,.0f}".format(kpis.current_overcharge) }}</h3>
                             <small class="text-muted">Historical: ${{ "{:,.0f}".format(kpis.historical_overcharge) }}</small>
                         </div>
-                        <div class="col-md-2">
-                            <h6 class="text-muted mb-2">Money Recovered</h6>
-                            <h3 class="mb-0" style="color: #ff6600;">${{ "{:,.0f}".format(kpis.money_recovered) }}</h3>
-                            <small class="text-muted">Exceptions Fixed</small>
-                        </div>
-                        <div class="col-md-2">
-                            <h6 class="text-muted mb-2">Total Variance</h6>
-                            <h3 class="mb-0">${{ "{:,.0f}".format(kpis.current_variance) }}</h3>
-                            <small class="text-muted">Current Net</small>
-                        </div>
-                        <div class="col-md-2">
+                        <div class="col-md-4">
                             <h6 class="text-muted mb-2">Open Exceptions</h6>
                             <h3 class="mb-0" style="color: #ff6600;">{{ kpis.open_exceptions }}</h3>
                             <small class="text-muted">Match Rate: {{ "%.1f"|format(kpis.match_rate) }}%</small>

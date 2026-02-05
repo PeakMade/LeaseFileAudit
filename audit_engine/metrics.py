@@ -27,7 +27,9 @@ def calculate_kpis(
         bucket_results = bucket_results[
             bucket_results[CanonicalField.PROPERTY_ID.value] == property_id
         ]
-        findings = findings[findings["property_id"] == property_id]
+        # Only filter findings if PROPERTY_ID column exists
+        if CanonicalField.PROPERTY_ID.value in findings.columns:
+            findings = findings[findings[CanonicalField.PROPERTY_ID.value] == property_id]
     
     total_buckets = len(bucket_results)
     
@@ -40,6 +42,8 @@ def calculate_kpis(
             "total_expected": 0.0,
             "total_actual": 0.0,
             "total_variance": 0.0,
+            "total_undercharge": 0.0,
+            "total_overcharge": 0.0,
             "total_findings": 0,
             "high_severity_count": 0,
             "medium_severity_count": 0,
@@ -59,6 +63,11 @@ def calculate_kpis(
     total_actual = bucket_results[CanonicalField.ACTUAL_TOTAL.value].sum()
     total_variance = bucket_results[CanonicalField.VARIANCE.value].sum()
     
+    # Calculate undercharge and overcharge
+    variances = bucket_results[CanonicalField.VARIANCE.value]
+    total_undercharge = variances[variances < 0].sum()  # Negative variance = undercharge
+    total_overcharge = variances[variances > 0].sum()   # Positive variance = overcharge
+    
     # Finding counts
     total_findings = len(findings)
     high_severity_count = len(findings[findings["severity"] == "high"])
@@ -75,6 +84,8 @@ def calculate_kpis(
         "total_expected": float(total_expected),
         "total_actual": float(total_actual),
         "total_variance": float(total_variance),
+        "total_undercharge": abs(float(total_undercharge)),  # Return as positive number
+        "total_overcharge": float(total_overcharge),
         "total_findings": int(total_findings),
         "high_severity_count": int(high_severity_count),
         "medium_severity_count": int(medium_severity_count),
