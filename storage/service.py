@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import pandas as pd
 import requests
+from activity_logging.sharepoint import _get_app_only_token
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +43,30 @@ class StorageService:
         self.access_token = access_token
         self._site_id = None
         self._drive_id = None
+        self._list_ids = {}
         
         if self.use_sharepoint:
             logger.info(f"[STORAGE] Using SharePoint Document Library: {library_name}")
         else:
             self.base_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"[STORAGE] Using local filesystem: {self.base_dir}")
+
+    def _can_use_sharepoint_lists(self) -> bool:
+        if self.access_token and self.sharepoint_site_url:
+            return True
+
+        if not self.sharepoint_site_url:
+            logger.error("[STORAGE] SharePoint site URL not configured; cannot use lists")
+            return False
+
+        if not self.access_token:
+            logger.info("[STORAGE] No access token; attempting app-only token for SharePoint lists")
+            self.access_token = _get_app_only_token()
+            if not self.access_token:
+                logger.error("[STORAGE] Failed to acquire app-only token for SharePoint lists")
+            return bool(self.access_token)
+
+        return False
     
     def _get_site_and_drive_id(self) -> tuple:
         """Get SharePoint site ID and drive ID for document library."""
@@ -55,24 +74,13 @@ class StorageService:
             return self._site_id, self._drive_id
         
         try:
-            # Parse site URL: https://tenant.sharepoint.com/sites/sitename
-            parts = self.sharepoint_site_url.replace('https://', '').split('/')
-            hostname = parts[0]
-            site_path = '/'.join(parts[1:])  # sites/BaseCampApps
-            
-            # Get site ID
-            site_url = f"https://graph.microsoft.com/v1.0/sites/{hostname}:/{site_path}"
-            headers = {'Authorization': f'Bearer {self.access_token}'}
-            response = requests.get(site_url, headers=headers, timeout=10)
-            
-            if response.status_code != 200:
-                logger.error(f"[STORAGE] Failed to get site ID: {response.status_code} - {response.text}")
+            site_id = self._get_site_id()
+            if not site_id:
                 return None, None
-            
-            self._site_id = response.json()['id']
+            headers = {'Authorization': f'Bearer {self.access_token}'}
             
             # Get drive ID for document library
-            drives_url = f"https://graph.microsoft.com/v1.0/sites/{self._site_id}/drives"
+            drives_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives"
             response = requests.get(drives_url, headers=headers, timeout=10)
             
             if response.status_code != 200:
@@ -84,7 +92,7 @@ class StorageService:
                 if drive['name'] == self.library_name:
                     self._drive_id = drive['id']
                     logger.info(f"[STORAGE] Found drive ID for library '{self.library_name}'")
-                    return self._site_id, self._drive_id
+                    return site_id, self._drive_id
             
             logger.error(f"[STORAGE] Document library '{self.library_name}' not found")
             return None, None
@@ -92,6 +100,197 @@ class StorageService:
         except Exception as e:
             logger.error(f"[STORAGE] Error getting site/drive ID: {e}", exc_info=True)
             return None, None
+
+    def _get_site_id(self) -> Optional[str]:
+        """Get SharePoint site ID without resolving document library."""
+        if self._site_id:
+            return self._site_id
+
+        try:
+            parts = self.sharepoint_site_url.replace('https://', '').split('/')
+            hostname = parts[0]
+            site_path = '/'.join(parts[1:])
+            site_url = f"https://graph.microsoft.com/v1.0/sites/{hostname}:/{site_path}"
+            headers = {'Authorization': f'Bearer {self.access_token}'}
+            response = requests.get(site_url, headers=headers, timeout=10)
+
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] Failed to get site ID: {response.status_code} - {response.text}")
+                return None
+
+            self._site_id = response.json()['id']
+            return self._site_id
+        except Exception as e:
+            logger.error(f"[STORAGE] Error getting site ID: {e}", exc_info=True)
+            return None
+
+    def _get_sharepoint_list_id(self, list_name: str) -> Optional[str]:
+        if list_name in self._list_ids:
+            return self._list_ids[list_name]
+
+        site_id = self._get_site_id()
+        if not site_id:
+            logger.error("[STORAGE] Cannot resolve list ID - site ID not found")
+            return None
+
+        list_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists"
+        headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/json'
+        }
+        params = {'$filter': f"displayName eq '{list_name}'"}
+        response = requests.get(list_url, headers=headers, params=params, timeout=30)
+
+        if response.status_code != 200:
+            logger.error(f"[STORAGE] Failed to find list '{list_name}': {response.status_code} - {response.text}")
+            return None
+
+        lists_data = response.json()
+        if not lists_data.get('value'):
+            logger.error(f"[STORAGE] List '{list_name}' not found")
+            return None
+
+        list_id = lists_data['value'][0]['id']
+        self._list_ids[list_name] = list_id
+        logger.info(f"[STORAGE] Resolved SharePoint list '{list_name}' id: {list_id}")
+        return list_id
+
+    def load_exception_states_from_sharepoint_list(self, run_id: str, property_id: int, lease_interval_id: int) -> List[Dict[str, Any]]:
+        """Load exception workflow states from SharePoint List 'ExceptionStates'."""
+        if not self._can_use_sharepoint_lists():
+            logger.debug("[STORAGE] SharePoint list not configured, returning empty exception states")
+            return []
+
+        try:
+            logger.info("[STORAGE] 📊 Loading exception states from SharePoint list")
+            site_id = self._get_site_id()
+            if not site_id:
+                return []
+
+            list_id = self._get_sharepoint_list_id("ExceptionStates")
+            if not list_id:
+                return []
+
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+            filter_query = (
+                f"fields/RunId eq '{run_id}' and "
+                f"fields/PropertyId eq {int(property_id)} and "
+                f"fields/LeaseIntervalId eq {int(lease_interval_id)}"
+            )
+            logger.info(f"[STORAGE] ExceptionStates filter: {filter_query}")
+            params = {'$expand': 'fields', '$filter': filter_query}
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] Failed to query exception states: {response.status_code} - {response.text}")
+                return []
+
+            items_data = response.json()
+            items = items_data.get('value', [])
+            results = []
+            for item in items:
+                fields = item.get('fields', {})
+                results.append({
+                    'composite_key': fields.get('CompositeKey', ''),
+                    'run_id': fields.get('RunId', ''),
+                    'property_id': fields.get('PropertyId', None),
+                    'lease_interval_id': fields.get('LeaseIntervalId', None),
+                    'ar_code_id': fields.get('ArCodeId', None),
+                    'exception_type': fields.get('ExceptionType', ''),
+                    'status': fields.get('Status', ''),
+                    'fix_label': fields.get('FixLabel', ''),
+                    'action_type': fields.get('ActionType', ''),
+                    'resolved_at': fields.get('ResolvedAt', ''),
+                    'updated_at': fields.get('UpdatedAt', ''),
+                    'updated_by': fields.get('UpdatedBy', '')
+                })
+            logger.info(f"[STORAGE] Loaded {len(results)} exception state(s)")
+            return results
+
+        except Exception as e:
+            logger.error(f"[STORAGE] Error loading exception states from SharePoint list: {e}", exc_info=True)
+            return []
+
+    def upsert_exception_state_to_sharepoint_list(self, state: Dict[str, Any]) -> bool:
+        """Upsert exception workflow state into SharePoint List 'ExceptionStates'."""
+        if not self._can_use_sharepoint_lists():
+            logger.debug("[STORAGE] SharePoint list not configured, skipping exception state upsert")
+            return False
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return False
+
+            list_id = self._get_sharepoint_list_id("ExceptionStates")
+            if not list_id:
+                return False
+
+            composite_key = state.get('composite_key')
+            if not composite_key:
+                composite_key = (
+                    f"{state.get('run_id')}:{state.get('property_id')}:{state.get('lease_interval_id')}:"
+                    f"{state.get('ar_code_id')}:{state.get('exception_type')}"
+                )
+            logger.info(f"[STORAGE] Upserting ExceptionState: {composite_key}")
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            filter_query = f"fields/CompositeKey eq '{composite_key}'"
+            params = {'$expand': 'fields', '$filter': filter_query}
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] Failed to query exception state: {response.status_code} - {response.text}")
+                return False
+
+            fields_payload = {
+                'CompositeKey': composite_key,
+                'RunId': state.get('run_id'),
+                'PropertyId': state.get('property_id'),
+                'LeaseIntervalId': state.get('lease_interval_id'),
+                'ArCodeId': state.get('ar_code_id'),
+                'ExceptionType': state.get('exception_type'),
+                'Status': state.get('status'),
+                'FixLabel': state.get('fix_label'),
+                'ActionType': state.get('action_type'),
+                'ResolvedAt': state.get('resolved_at'),
+                'UpdatedAt': state.get('updated_at'),
+                'UpdatedBy': state.get('updated_by')
+            }
+
+            items_data = response.json()
+            items = items_data.get('value', [])
+            if items:
+                item_id = items[0]['id']
+                update_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items/{item_id}/fields"
+                update_response = requests.patch(update_url, headers=headers, json=fields_payload, timeout=30)
+                if update_response.status_code in [200, 204]:
+                    logger.info("[STORAGE] ✅ Exception state updated")
+                    return True
+                logger.error(f"[STORAGE] Failed to update exception state: {update_response.status_code} - {update_response.text}")
+                return False
+
+            create_payload = {'fields': fields_payload}
+            create_response = requests.post(items_url, headers=headers, json=create_payload, timeout=30)
+            if create_response.status_code in [200, 201]:
+                logger.info("[STORAGE] ✅ Exception state created")
+                return True
+
+            logger.error(f"[STORAGE] Failed to create exception state: {create_response.status_code} - {create_response.text}")
+            return False
+
+        except Exception as e:
+            logger.error(f"[STORAGE] Error upserting exception state: {e}", exc_info=True)
+            return False
     
     def _upload_file_to_sharepoint(self, file_content: str, file_path: str) -> bool:
         """Upload file to SharePoint document library."""
@@ -242,7 +441,7 @@ class StorageService:
     def _write_metrics_to_sharepoint_list(self, run_id: str, bucket_results: pd.DataFrame, 
                                           findings: pd.DataFrame, metadata: dict) -> bool:
         """Write summary metrics to SharePoint List 'Audit Run Metrics'."""
-        if not self.use_sharepoint or not self.access_token:
+        if not self._can_use_sharepoint_lists():
             logger.debug(f"[STORAGE] Skipping SharePoint list write - not configured")
             return False
         
@@ -256,10 +455,25 @@ class StorageService:
             matched = len(bucket_results[bucket_results[CanonicalField.STATUS.value] == 'Matched'])
             exceptions = bucket_results[bucket_results[CanonicalField.STATUS.value] != 'Matched']
             
-            # Count by status
-            scheduled_not_billed = len(bucket_results[bucket_results[CanonicalField.STATUS.value] == 'Scheduled Not Billed'])
-            billed_not_scheduled = len(bucket_results[bucket_results[CanonicalField.STATUS.value] == 'Billed Not Scheduled'])
-            amount_mismatch = len(bucket_results[bucket_results[CanonicalField.STATUS.value] == 'Amount Mismatch'])
+            # Count by status (normalize labels)
+            def _normalize_status(value: str) -> str:
+                if not value:
+                    return ''
+                normalized = str(value).strip().lower()
+                if normalized in {'scheduled not billed', 'scheduled_not_billed'}:
+                    return 'scheduled_not_billed'
+                if normalized in {'billed not scheduled', 'billed without schedule', 'billed_not_scheduled'}:
+                    return 'billed_not_scheduled'
+                if normalized in {'amount mismatch', 'amount_mismatch'}:
+                    return 'amount_mismatch'
+                if normalized == 'matched':
+                    return 'matched'
+                return normalized
+
+            normalized_status = bucket_results[CanonicalField.STATUS.value].map(_normalize_status)
+            scheduled_not_billed = int((normalized_status == 'scheduled_not_billed').sum())
+            billed_not_scheduled = int((normalized_status == 'billed_not_scheduled').sum())
+            amount_mismatch = int((normalized_status == 'amount_mismatch').sum())
             
             # Calculate totals
             total_scheduled = bucket_results[CanonicalField.EXPECTED_TOTAL.value].sum()
@@ -301,7 +515,7 @@ class StorageService:
             }
             
             # Get site ID
-            site_id, _ = self._get_site_and_drive_id()
+            site_id = self._get_site_id()
             if not site_id:
                 logger.error(f"[STORAGE] Cannot write to list - site ID not found")
                 return False
@@ -346,7 +560,7 @@ class StorageService:
     
     def load_all_metrics_from_sharepoint_list(self) -> List[Dict[str, Any]]:
         """Load all metrics from SharePoint List 'Audit Run Metrics'."""
-        if not self.use_sharepoint or not self.access_token:
+        if not self._can_use_sharepoint_lists():
             logger.debug(f"[STORAGE] SharePoint list not configured, returning empty list")
             return []
         
@@ -354,7 +568,7 @@ class StorageService:
             logger.info(f"[STORAGE] 📊 Loading metrics from SharePoint list")
             
             # Get site ID
-            site_id, _ = self._get_site_and_drive_id()
+            site_id = self._get_site_id()
             if not site_id:
                 logger.error(f"[STORAGE] Cannot read list - site ID not found")
                 return []

@@ -84,7 +84,7 @@
                                         {% endif %}
                                     </td>
                                     <td class="text-center">
-                                        <span class="badge bg-{{ ar_code.status_color }}" id="arStatusBadge-{{ loop.index0 }}">{{ ar_code.status_label }}</span>
+                                        <span class="badge bg-{{ ar_code.status_color }} ar-status-badge" id="arStatusBadge-{{ loop.index0 }}" data-pending="true">{{ ar_code.status_label }}</span>
                                     </td>
                                     <td class="text-center">
                                         <button class="btn btn-sm btn-outline-secondary" 
@@ -129,13 +129,23 @@
     const exceptionState = {};
 
     function getExceptionKey(data, exceptionType) {
-        return `resolved:{{ run_id }}:{{ property_id }}:{{ lease_interval_id }}:${data.ar_code_id}:${exceptionType || 'UNKNOWN'}`;
+        return `{{ run_id }}:{{ property_id }}:{{ lease_interval_id }}:${data.ar_code_id}:${exceptionType || 'UNKNOWN'}`;
+    }
+
+    function normalizeWorkflowStatus(status) {
+        if (!status) return 'Open';
+        const normalized = String(status).trim().toLowerCase();
+        if (normalized === 'resolved') return 'Resolved';
+        if (normalized === 'in progress' || normalized === 'in_progress') return 'In Progress';
+        if (normalized === 'open') return 'Open';
+        return status;
     }
 
     function getStatusMeta(status) {
-        if (status === 'Resolved') return { label: 'Resolved', color: 'success' };
-        if (status === 'In Progress') return { label: 'In Progress', color: 'warning' };
-        if (status === 'Open') return { label: 'Open', color: 'danger' };
+        const normalized = normalizeWorkflowStatus(status);
+        if (normalized === 'Resolved') return { label: 'Resolved', color: 'success' };
+        if (normalized === 'In Progress') return { label: 'In Progress', color: 'warning' };
+        if (normalized === 'Open') return { label: 'Open', color: 'danger' };
         return { label: 'Clean', color: 'success' };
     }
 
@@ -145,9 +155,7 @@
             const hasExceptions = data.exception_count > 0;
             const exception = (data.monthly_details || []).find(m => m.status !== 'matched');
             const exceptionType = exception ? exception.status : null;
-            const storageKey = getExceptionKey(data, exceptionType);
-            const stored = storageKey ? localStorage.getItem(storageKey) : null;
-            const storedState = stored ? JSON.parse(stored) : null;
+            const storedState = exceptionState[key] || null;
             exceptionState[key] = {
                 status: storedState?.status || (hasExceptions ? 'Open' : 'Clean'),
                 fixLabel: storedState?.fixLabel || null,
@@ -160,11 +168,13 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        arCodeData.forEach(data => {
-            const state = getOrInitState(data);
-            if (state.status && state.status !== 'Open' && state.status !== 'Clean') {
-                updateArCodeStatusBadge(data.ar_code_id, state.status);
-            }
+        loadExceptionStates().finally(() => {
+            arCodeData.forEach(data => {
+                const state = getOrInitState(data);
+                if (state.status) {
+                    updateArCodeStatusBadge(data.ar_code_id, state.status);
+                }
+            });
         });
     });
     
@@ -509,13 +519,13 @@
         state.actionType = actionType;
         if (state.status === 'Resolved') {
             state.resolvedAt = new Date().toISOString();
-            persistResolvedState(arCodeId, state);
         }
         exceptionState[String(arCodeId)] = state;
 
         updateWorkflowUI(state);
         updateArCodeStatusBadge(arCodeId, state.status);
         collapseSuggestedFixes();
+        persistExceptionState(arCodeId, state);
     }
 
     function markResolved(event) {
@@ -527,7 +537,7 @@
         state.status = 'Resolved';
         state.resolvedAt = new Date().toISOString();
         exceptionState[String(arCodeId)] = state;
-        persistResolvedState(arCodeId, state);
+        persistExceptionState(arCodeId, state);
         updateWorkflowUI(state);
         updateArCodeStatusBadge(arCodeId, state.status);
     }
@@ -624,21 +634,60 @@
         if (!badge) return;
         const statusMeta = getStatusMeta(status);
         badge.textContent = statusMeta.label === 'Clean' ? 'Clean' : statusMeta.label;
-        badge.className = `badge bg-${statusMeta.color}`;
+        badge.className = `badge bg-${statusMeta.color} ar-status-badge`;
+        badge.removeAttribute('data-pending');
     }
 
-    function persistResolvedState(arCodeId, state) {
+    function persistExceptionState(arCodeId, state) {
         const data = arCodeData.find(item => String(item.ar_code_id) === String(arCodeId));
         if (!data) return;
         const exceptionType = state.exceptionType || ((data.monthly_details || []).find(m => m.status !== 'matched') || {}).status;
-        const storageKey = getExceptionKey(data, exceptionType);
-        if (!storageKey) return;
-        localStorage.setItem(storageKey, JSON.stringify({
+        saveExceptionState({
+            composite_key: getExceptionKey(data, exceptionType),
+            run_id: "{{ run_id }}",
+            property_id: {{ property_id|int }},
+            lease_interval_id: {{ lease_interval_id|int }},
+            ar_code_id: data.ar_code_id,
+            exception_type: exceptionType || 'UNKNOWN',
             status: state.status,
-            fixLabel: state.fixLabel,
-            actionType: state.actionType,
-            resolvedAt: state.resolvedAt
-        }));
+            fix_label: state.fixLabel,
+            action_type: state.actionType,
+            resolved_at: state.resolvedAt,
+            updated_at: new Date().toISOString(),
+            updated_by: "{{ current_user.email if current_user and current_user.email else '' }}"
+        });
+    }
+
+    async function loadExceptionStates() {
+        try {
+            const response = await fetch(`/api/exception-states/{{ run_id }}/{{ property_id|int }}/{{ lease_interval_id|int }}`);
+            if (!response.ok) return;
+            const data = await response.json();
+            (data.states || []).forEach(item => {
+                if (!item.ar_code_id) return;
+                exceptionState[String(item.ar_code_id)] = {
+                    status: normalizeWorkflowStatus(item.status || 'Open'),
+                    fixLabel: item.fix_label || null,
+                    actionType: item.action_type || null,
+                    resolvedAt: item.resolved_at || null,
+                    exceptionType: item.exception_type || null
+                };
+            });
+        } catch (err) {
+            console.warn('Failed to load exception states', err);
+        }
+    }
+
+    async function saveExceptionState(state) {
+        try {
+            await fetch('/api/exception-states', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(state)
+            });
+        } catch (err) {
+            console.warn('Failed to save exception state', err);
+        }
     }
     
     function formatDateTime(dateStr) {
@@ -792,6 +841,10 @@
         background-color: #0b5ed7;
         border-color: #0b5ed7;
         color: #fff;
+    }
+
+    .ar-status-badge[data-pending="true"] {
+        opacity: 0;
     }
 
     .suggested-fixes.collapsed .suggested-fix {

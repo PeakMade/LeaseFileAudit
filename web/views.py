@@ -1,7 +1,7 @@
 """
 Flask views for Lease File Audit application.
 """
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify
 from werkzeug.utils import secure_filename
 from pathlib import Path
 import pandas as pd
@@ -33,15 +33,13 @@ bp = Blueprint('main', __name__)
 
 def get_storage_service() -> StorageService:
     """Get storage service instance with SharePoint support."""
-    # Get access token if SharePoint storage is enabled
-    access_token = None
-    if config.storage.is_sharepoint_configured():
-        access_token = get_access_token()
+    access_token = get_access_token()
+    sharepoint_site_url = config.auth.sharepoint_site_url
     
     return StorageService(
         base_dir=config.storage.base_dir,
         use_sharepoint=config.storage.is_sharepoint_configured(),
-        sharepoint_site_url=config.auth.sharepoint_site_url if config.storage.is_sharepoint_configured() else None,
+        sharepoint_site_url=sharepoint_site_url,
         library_name=config.storage.sharepoint_library_name,
         access_token=access_token
     )
@@ -689,6 +687,28 @@ def portfolio(run_id: str = None):
         print(traceback.format_exc())
         flash(f'Error loading portfolio: {str(e)}', 'danger')
         return redirect(url_for('main.index'))
+
+
+@bp.route('/api/exception-states/<run_id>/<int:property_id>/<int:lease_interval_id>', methods=['GET'])
+@require_auth
+def get_exception_states(run_id: str, property_id: int, lease_interval_id: int):
+    storage = get_storage_service()
+    states = storage.load_exception_states_from_sharepoint_list(run_id, property_id, lease_interval_id)
+    return jsonify({'states': states})
+
+
+@bp.route('/api/exception-states', methods=['POST'])
+@require_auth
+def upsert_exception_state():
+    payload = request.get_json(silent=True) or {}
+    required = ['run_id', 'property_id', 'lease_interval_id', 'ar_code_id', 'exception_type', 'status']
+    missing = [key for key in required if key not in payload]
+    if missing:
+        return jsonify({'ok': False, 'error': f"Missing fields: {', '.join(missing)}"}), 400
+
+    storage = get_storage_service()
+    ok = storage.upsert_exception_state_to_sharepoint_list(payload)
+    return jsonify({'ok': ok})
 
 
 @bp.route('/property/<property_id>')
