@@ -73,7 +73,7 @@
         
         /* Main content styling */
         .main-content {
-            padding: 60px 0 0 0;  /* Add top padding to prevent overlap with user badge */
+            padding: 30px 0 0 0;  /* Reduced top padding below user dropdown */
             margin: 0;
             min-height: calc(100vh - 80px);
             background-color: #f4f4f4;
@@ -287,6 +287,35 @@
             background: #c20068;
             color: white;
         }
+
+        .page-loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.85);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+
+        .page-loading-overlay.show {
+            display: flex;
+        }
+
+        .page-spinner {
+            width: 44px;
+            height: 44px;
+            border: 5px solid #d6d6d6;
+            border-top-color: #00a8c8;
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
         
         .user-info .user-name {
             font-weight: 600;
@@ -406,6 +435,9 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body style="margin: 0; padding: 0; overflow-x: hidden; position: relative;">
+    <div id="pageLoadingOverlay" class="page-loading-overlay" aria-hidden="true">
+        <div class="page-spinner" role="status" aria-label="Loading"></div>
+    </div>
     <!-- User Badge (fixed position at top right) -->
     {% if user %}
     <div class="user-badge">
@@ -496,6 +528,39 @@
                     return response;
                 });
             };
+        })();
+    </script>
+
+    <script>
+        (function () {
+            const overlay = document.getElementById('pageLoadingOverlay');
+            if (!overlay) return;
+
+            function showOverlay() {
+                overlay.classList.add('show');
+                overlay.setAttribute('aria-hidden', 'false');
+            }
+
+            document.addEventListener('click', function (event) {
+                const link = event.target.closest('a[href]');
+                if (!link) return;
+
+                const href = link.getAttribute('href');
+                if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) return;
+                if (link.target && link.target !== '_self') return;
+                if (link.hasAttribute('download')) return;
+
+                showOverlay();
+            });
+
+            document.addEventListener('submit', function () {
+                showOverlay();
+            });
+
+            window.addEventListener('pageshow', function () {
+                overlay.classList.remove('show');
+                overlay.setAttribute('aria-hidden', 'true');
+            });
         })();
     </script>
     
