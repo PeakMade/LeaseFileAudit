@@ -966,18 +966,23 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             if not expected_records.empty:
                 if 'PERIOD_START' in expected_records.columns:
                     charge_start = expected_records['PERIOD_START'].iloc[0]
-                    # Convert NaT to None
+                    # Convert NaT to None, Timestamp to date string
                     if pd.isna(charge_start):
                         charge_start = None
+                    elif isinstance(charge_start, pd.Timestamp):
+                        charge_start = charge_start.strftime('%Y-%m-%d')
                 if 'PERIOD_END' in expected_records.columns:
                     charge_end = expected_records['PERIOD_END'].iloc[0]
-                    # Convert NaT to None
+                    # Convert NaT to None, Timestamp to date string
                     if pd.isna(charge_end):
                         charge_end = None
+                    elif isinstance(charge_end, pd.Timestamp):
+                        charge_end = charge_end.strftime('%Y-%m-%d')
             
             if not actual_records.empty:
                 if 'POST_DATE' in actual_records.columns:
-                    post_dates = actual_records['POST_DATE'].dropna().tolist()
+                    # Convert Timestamps to date strings
+                    post_dates = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in actual_records['POST_DATE'].dropna()]
                 # Try to get AR code name from actual records first
                 if 'AR_CODE_NAME' in actual_records.columns:
                     name_value = actual_records['AR_CODE_NAME'].iloc[0]
@@ -1001,13 +1006,18 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     period_start = exp_rec.get('PERIOD_START')
                     period_end = exp_rec.get('PERIOD_END')
                     
-                    # Convert NaT to None for template compatibility
+                    # Convert NaT to None, Timestamps to date strings for template compatibility
                     if pd.isna(period_start):
                         missing_dates_warning.append(f"Missing PERIOD_START for expected charge")
                         period_start = None
+                    elif isinstance(period_start, pd.Timestamp):
+                        period_start = period_start.strftime('%Y-%m-%d')
+                    
                     if pd.isna(period_end):
                         missing_dates_warning.append(f"Missing PERIOD_END for expected charge")
                         period_end = None
+                    elif isinstance(period_end, pd.Timestamp):
+                        period_end = period_end.strftime('%Y-%m-%d')
                     
                     expected_transactions.append({
                         'amount': exp_rec.get('expected_amount', 0),
@@ -1020,10 +1030,12 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 for _, act_rec in actual_records.iterrows():
                     post_date = act_rec.get('POST_DATE')
                     
-                    # Convert NaT to None for template compatibility
+                    # Convert NaT to None, Timestamps to date strings for template compatibility
                     if pd.isna(post_date):
                         missing_dates_warning.append(f"Missing POST_DATE for actual transaction")
                         post_date = None
+                    elif isinstance(post_date, pd.Timestamp):
+                        post_date = post_date.strftime('%Y-%m-%d')
                     
                     actual_transactions.append({
                         'amount': act_rec.get('actual_amount', 0),
@@ -1032,10 +1044,13 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                         'transaction_id': act_rec.get('AR_TRANSACTION_ID')
                     })
             
+            # Convert audit_month Timestamp to date string
+            audit_month_str = audit_month.strftime('%Y-%m-%d') if isinstance(audit_month, pd.Timestamp) else audit_month
+            
             exception = {
                 'ar_code_id': ar_code,
                 'ar_code_name': ar_code_name,
-                'audit_month': audit_month,
+                'audit_month': audit_month_str,
                 'charge_start': charge_start,
                 'charge_end': charge_end,
                 'post_dates': post_dates,
@@ -1259,24 +1274,49 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             
             if not expected_records.empty:
                 for _, exp_rec in expected_records.iterrows():
+                    period_start = exp_rec.get('PERIOD_START')
+                    period_end = exp_rec.get('PERIOD_END')
+                    
+                    # Convert Timestamps to date strings
+                    if pd.notna(period_start) and isinstance(period_start, pd.Timestamp):
+                        period_start = period_start.strftime('%Y-%m-%d')
+                    elif pd.isna(period_start):
+                        period_start = None
+                    
+                    if pd.notna(period_end) and isinstance(period_end, pd.Timestamp):
+                        period_end = period_end.strftime('%Y-%m-%d')
+                    elif pd.isna(period_end):
+                        period_end = None
+                    
                     expected_transactions.append({
                         'amount': exp_rec.get('expected_amount', 0),
-                        'period_start': exp_rec.get('PERIOD_START') if pd.notna(exp_rec.get('PERIOD_START')) else None,
-                        'period_end': exp_rec.get('PERIOD_END') if pd.notna(exp_rec.get('PERIOD_END')) else None,
+                        'period_start': period_start,
+                        'period_end': period_end,
                     })
             
             if not actual_records.empty:
                 for _, act_rec in actual_records.iterrows():
+                    post_date = act_rec.get('POST_DATE')
+                    
+                    # Convert Timestamp to date string
+                    if pd.notna(post_date) and isinstance(post_date, pd.Timestamp):
+                        post_date = post_date.strftime('%Y-%m-%d')
+                    elif pd.isna(post_date):
+                        post_date = None
+                    
                     actual_transactions.append({
                         'amount': act_rec.get('actual_amount', 0),
-                        'post_date': act_rec.get('POST_DATE') if pd.notna(act_rec.get('POST_DATE')) else None,
+                        'post_date': post_date,
                         'transaction_id': act_rec.get('AR_TRANSACTION_ID')
                     })
+            
+            # Convert audit_month to date string
+            audit_month_str = audit_month.strftime('%Y-%m-%d') if isinstance(audit_month, pd.Timestamp) else audit_month
             
             matched_groups[ar_code]['total_amount'] += bucket[CanonicalField.ACTUAL_TOTAL.value]
             matched_groups[ar_code]['month_count'] += 1
             matched_groups[ar_code]['monthly_details'].append({
-                'audit_month': audit_month,
+                'audit_month': audit_month_str,
                 'amount': bucket[CanonicalField.ACTUAL_TOTAL.value],
                 'expected_transactions': expected_transactions,
                 'actual_transactions': actual_transactions
@@ -1375,13 +1415,20 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         
         # Convert NaT/NaN values to None for JSON serialization
         def sanitize_for_json(obj):
-            """Recursively convert pandas NaT/NaN to None for JSON serialization."""
+            """Recursively convert pandas NaT/NaN to None and Timestamps to date strings for JSON serialization."""
             if isinstance(obj, dict):
                 return {k: sanitize_for_json(v) for k, v in obj.items()}
             elif isinstance(obj, list):
                 return [sanitize_for_json(item) for item in obj]
             elif pd.isna(obj):
                 return None
+            elif isinstance(obj, (pd.Timestamp, pd.DatetimeIndex)):
+                # Convert to date-only string to prevent JavaScript timezone conversion
+                # '2026-02-01' instead of '2026-02-01T00:00:00' avoids UTC interpretation
+                return obj.strftime('%Y-%m-%d')
+            elif hasattr(obj, 'isoformat') and hasattr(obj, 'date'):
+                # Handle Python datetime objects
+                return obj.strftime('%Y-%m-%d')
             else:
                 return obj
         
