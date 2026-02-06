@@ -141,6 +141,24 @@
             content += `<span class="badge bg-danger">${data.exception_count} Exception(s)</span>`;
         }
         content += '</div>';
+
+        if (data.exception_count > 0) {
+            const firstException = (data.monthly_details || []).find(m => m.status !== 'matched');
+            const statusLabel = firstException ? firstException.status_label : 'Exception';
+            const statusColor = firstException ? firstException.status_color : 'danger';
+            content += `
+                <div class="alert alert-warning d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="mb-1">
+                            <span class="badge bg-${statusColor}">${statusLabel}</span>
+                            <span class="ms-2"><strong>Status:</strong> Open</span>
+                            <span class="ms-3"><strong>Assignee:</strong> Unassigned</span>
+                        </div>
+                        <small class="text-muted">Fix workflow is shown below for this AR code.</small>
+                    </div>
+                </div>
+            `;
+        }
         content += '</div>';
         
         // Monthly details table
@@ -209,6 +227,80 @@
         
         content += '</tbody>';
         content += '</table>';
+
+        if (data.exception_count > 0) {
+            const exception = (data.monthly_details || []).find(m => m.status !== 'matched');
+            const status = exception ? exception.status : null;
+            const statusLabel = exception ? exception.status_label : 'Exception';
+
+            content += `
+                <hr class="my-4" />
+                <h5 class="mb-3"><i class="fas fa-tasks"></i> Exception Workflow</h5>
+                <div class="card mb-3 border-danger">
+                    <div class="card-header bg-danger text-white">
+                        <strong><i class="fas fa-info-circle"></i> What Happened?</strong>
+                    </div>
+                    <div class="card-body">
+                        <p class="mb-2"><strong>Summary:</strong> ${statusLabel} across ${data.exception_count} month${data.exception_count > 1 ? 's' : ''}</p>
+                        <p class="mb-0"><strong>AR Code:</strong> ${data.ar_code_id} - ${data.ar_code_name || 'Unknown'}</p>
+                    </div>
+                </div>
+                <div class="card mb-3 border-primary">
+                    <div class="card-header" style="background-color: #00a8c8; color: white;">
+                        <strong><i class="fas fa-lightbulb"></i> Suggested Fixes</strong>
+                    </div>
+                    <div class="card-body">
+                        ${buildSuggestedFixes(status)}
+                    </div>
+                </div>
+                <div class="card border-warning">
+                    <div class="card-header bg-warning">
+                        <strong><i class="fas fa-clipboard-check"></i> Track It</strong>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label"><strong>Assignee:</strong></label>
+                                <select class="form-select form-select-sm">
+                                    <option selected>Unassigned</option>
+                                    <option>Property Manager</option>
+                                    <option>Accounting</option>
+                                    <option>Regional Manager</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label"><strong>Due Date:</strong></label>
+                                <input type="date" class="form-control form-control-sm">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label"><strong>Status:</strong></label>
+                            <select class="form-select form-select-sm">
+                                <option selected>Open</option>
+                                <option>In Progress</option>
+                                <option>Needs Review</option>
+                                <option>Resolved</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label"><strong>Notes:</strong></label>
+                            <textarea class="form-control form-control-sm" rows="3" placeholder="Add notes about this exception..."></textarea>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-success" onclick="resolveException()">
+                                <i class="fas fa-check-circle"></i> Resolve
+                            </button>
+                            <button class="btn btn-secondary" onclick="dismissException()">
+                                <i class="fas fa-times-circle"></i> Dismiss
+                            </button>
+                            <button class="btn btn-outline-secondary" onclick="needsReview()">
+                                <i class="fas fa-flag"></i> Needs Review
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
         
         body.innerHTML = content;
         drawer.classList.add('open');
@@ -218,6 +310,165 @@
     function closeDrawer() {
         document.getElementById('detailsDrawer').classList.remove('open');
         document.getElementById('drawerOverlay').classList.remove('open');
+    }
+    
+    // Exceptions workflow drawer functions
+    function selectFix(element, fixIndex) {
+        // Remove selected class from all fixes
+        document.querySelectorAll('.suggested-fix').forEach(fix => {
+            fix.classList.remove('selected');
+        });
+        // Add selected class to clicked fix
+        element.classList.add('selected');
+    }
+
+    function buildSuggestedFixes(status) {
+        if (status === 'SCHEDULED_NOT_BILLED') {
+            return `
+                <div class="suggested-fix mb-2" onclick="selectFix(this, 0)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">1</span>
+                        <div class="flex-grow-1">
+                            <strong>Post missing charge in Entrata</strong>
+                            <p class="mb-1 text-muted small">The scheduled charge exists but was never billed. Post the AR transaction in Entrata.</p>
+                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'post_charge')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix mb-2" onclick="selectFix(this, 1)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">2</span>
+                        <div class="flex-grow-1">
+                            <strong>Correct schedule dates</strong>
+                            <p class="mb-1 text-muted small">The schedule may have incorrect start/end dates. Review and adjust the recurring charge schedule.</p>
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'adjust_schedule')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix" onclick="selectFix(this, 2)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">3</span>
+                        <div class="flex-grow-1">
+                            <strong>Mark as expected exception</strong>
+                            <p class="mb-1 text-muted small">This may be expected (move-out, MTM, concession, etc.). Document the reason and mark as resolved.</p>
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'mark_expected')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        if (status === 'BILLED_NOT_SCHEDULED') {
+            return `
+                <div class="suggested-fix mb-2" onclick="selectFix(this, 0)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">1</span>
+                        <div class="flex-grow-1">
+                            <strong>Add recurring charge to schedule</strong>
+                            <p class="mb-1 text-muted small">A charge was billed but no schedule exists. Create or update the recurring charge in Entrata.</p>
+                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'add_schedule')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix mb-2" onclick="selectFix(this, 1)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">2</span>
+                        <div class="flex-grow-1">
+                            <strong>Reverse incorrect charge</strong>
+                            <p class="mb-1 text-muted small">The charge was posted in error. Reverse the transaction in Entrata.</p>
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'reverse_charge')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix" onclick="selectFix(this, 2)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">3</span>
+                        <div class="flex-grow-1">
+                            <strong>Mark as one-time charge</strong>
+                            <p class="mb-1 text-muted small">This is a legitimate one-time charge. Document and mark as resolved.</p>
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'mark_onetime')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        if (status === 'AMOUNT_MISMATCH') {
+            return `
+                <div class="suggested-fix mb-2" onclick="selectFix(this, 0)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">1</span>
+                        <div class="flex-grow-1">
+                            <strong>Correct scheduled amount</strong>
+                            <p class="mb-1 text-muted small">The recurring charge schedule has the wrong amount. Update it in Entrata.</p>
+                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'correct_schedule_amount')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix mb-2" onclick="selectFix(this, 1)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">2</span>
+                        <div class="flex-grow-1">
+                            <strong>Adjust posted transaction</strong>
+                            <p class="mb-1 text-muted small">The posted amount is incorrect. Reverse and repost with correct amount.</p>
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'adjust_transaction')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix" onclick="selectFix(this, 2)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">3</span>
+                        <div class="flex-grow-1">
+                            <strong>Document variance reason</strong>
+                            <p class="mb-1 text-muted small">Amount difference is expected (proration, adjustment, etc.). Document and resolve.</p>
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'document_variance')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        return `
+            <div class="text-muted">No suggested fixes available for this exception type.</div>
+        `;
+    }
+    
+    function applyFix(event, fixType) {
+        event.stopPropagation();
+        // TODO: Implement fix application
+        alert(`Fix plan "${fixType}" selected. (Backend integration pending)`);
+    }
+    
+    function resolveException() {
+        // TODO: Implement resolve functionality
+        alert('Exception marked as resolved. (Backend integration pending)');
+        closeExceptionsDrawer();
+    }
+    
+    function dismissException() {
+        // TODO: Implement dismiss functionality
+        alert('Exception dismissed. (Backend integration pending)');
+        closeExceptionsDrawer();
+    }
+    
+    function needsReview() {
+        // TODO: Implement needs review functionality
+        alert('Exception flagged for review. (Backend integration pending)');
     }
     
     function formatDate(dateStr, format) {
@@ -273,6 +524,7 @@
         right: 0;
     }
     
+    
     .drawer-overlay {
         position: fixed;
         top: 0;
@@ -307,6 +559,56 @@
         padding: 1.5rem;
         flex: 1;
         overflow-y: auto;
+    }
+    
+    
+    .suggested-fix {
+        padding: 0.6rem 0.75rem;
+        margin-bottom: 0.6rem;
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-size: 0.9rem;
+    }
+    
+    .suggested-fix:hover {
+        border-color: #00a8c8;
+        background: #e7f9fd;
+    }
+    
+    .suggested-fix.selected {
+        border-color: #00a8c8;
+        background: #e7f9fd;
+        border-width: 2px;
+    }
+    
+    .suggested-fix .rank-badge {
+        display: inline-block;
+        width: 24px;
+        height: 24px;
+        line-height: 24px;
+        text-align: center;
+        border-radius: 50%;
+        background: #00a8c8;
+        color: white;
+        font-weight: bold;
+        font-size: 0.875rem;
+        margin-right: 0.5rem;
+    }
+
+    .btn-suggested-primary {
+        background-color: #0d6efd;
+        border-color: #0d6efd;
+        color: #fff;
+        font-weight: 700;
+    }
+
+    .btn-suggested-primary:hover {
+        background-color: #0b5ed7;
+        border-color: #0b5ed7;
+        color: #fff;
     }
     </style>
     

@@ -54,7 +54,7 @@
                                 <div class="col-md-6">
                                     <label for="audit_year" class="form-label">Year</label>
                                     <select class="form-select" id="audit_year" name="audit_year">
-                                        <option value="">All Years</option>
+                                        <option value="">Current Academic Year</option>
                                         <option value="2025">2025</option>
                                         <option value="2026">2026</option>
                                         <option value="2027">2027</option>
@@ -134,24 +134,12 @@
             return new bootstrap.Tooltip(tooltipTriggerEl);
         });
         
-        // Default to current year and current month
-        const today = new Date();
-        const currentMonth = today.getMonth() + 1; // JavaScript months are 0-indexed
-        const currentYear = today.getFullYear();
-        
-        // Set the year dropdown to current year
+        // Default to Current Academic Year (blank option) and All Months
         const yearDropdown = document.getElementById('audit_year');
-        const yearOption = yearDropdown.querySelector(`option[value="${currentYear}"]`);
-        if (yearOption) {
-            yearOption.selected = true;
+        if (yearDropdown && yearDropdown.options.length > 0) {
+            yearDropdown.selectedIndex = 0;
         }
         
-        // Set the month dropdown to the current month
-        const monthDropdown = document.getElementById('audit_month');
-        const monthOption = monthDropdown.querySelector(`option[value="${currentMonth}"]`);
-        if (monthOption) {
-            monthOption.selected = true;
-        }
     });
 </script>
 {% endblock %}

@@ -866,8 +866,7 @@ def _get_status_label(status: str) -> str:
     labels = {
         "SCHEDULED_NOT_BILLED": "Scheduled Not Billed",
         "BILLED_NOT_SCHEDULED": "Billed Without Schedule",
-        "AMOUNT_MISMATCH": "Amount Mismatch",
-        "DATE_MISMATCH": "Date Mismatch"
+        "AMOUNT_MISMATCH": "Amount Mismatch"
     }
     return labels.get(status, status)
 
@@ -877,8 +876,7 @@ def _get_status_color(status: str) -> str:
     colors = {
         "SCHEDULED_NOT_BILLED": "brand-danger",  # magenta
         "BILLED_NOT_SCHEDULED": "brand-accent",  # orange
-        "AMOUNT_MISMATCH": "brand-primary",  # cyan
-        "DATE_MISMATCH": "brand-warning"  # yellow/warning
+        "AMOUNT_MISMATCH": "brand-primary"  # cyan
     }
     return colors.get(status, "secondary")
 
@@ -1081,45 +1079,6 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 exception['description'] += f" ⚠️ DATA QUALITY ISSUE: {'; '.join(set(missing_dates_warning))}."
             
             exceptions.append(exception)
-        
-        # Add DATE_MISMATCH variances from variance_detail if available
-        if "variance_detail" in run_data and run_data["variance_detail"] is not None:
-            variance_df = run_data["variance_detail"]
-            date_mismatches = variance_df[
-                (variance_df['VARIANCE_TYPE'] == 'DATE_MISMATCH') &
-                (variance_df['LEASE_INTERVAL_ID'] == float(lease_interval_id))
-            ]
-            
-            for _, var_row in date_mismatches.iterrows():
-                exceptions.append({
-                    'ar_code_id': var_row['AR_CODE_ID'],
-                    'ar_code_name': var_row.get('AR_CODE_NAME'),
-                    'audit_month': None,  # Not bucket-level
-                    'charge_start': var_row.get('PERIOD_START'),
-                    'charge_end': var_row.get('PERIOD_END'),
-                    'post_dates': [var_row.get('POST_DATE')] if pd.notna(var_row.get('POST_DATE')) else [],
-                    'status': 'DATE_MISMATCH',
-                    'status_label': 'Date Mismatch',
-                    'status_color': 'brand-warning',
-                    'expected_total': var_row.get('EXPECTED_AMOUNT', 0),
-                    'actual_total': var_row.get('ACTUAL_AMOUNT', 0),
-                    'variance': var_row.get('VARIANCE', 0),
-                    'expected_transactions': [{
-                        'amount': var_row.get('EXPECTED_AMOUNT', 0),
-                        'period_start': var_row.get('PERIOD_START'),
-                        'period_end': var_row.get('PERIOD_END'),
-                        'ar_code_name': var_row.get('AR_CODE_NAME')
-                    }],
-                    'actual_transactions': [{
-                        'amount': var_row.get('ACTUAL_AMOUNT', 0),
-                        'post_date': var_row.get('POST_DATE'),
-                        'ar_code_name': var_row.get('AR_CODE_NAME'),
-                        'transaction_id': var_row.get('AR_TRANSACTION_ID')
-                    }],
-                    'missing_dates_warning': [],
-                    'description': var_row.get('DESCRIPTION', 'Charge billed on incorrect date'),
-                    'recommendation': 'Review scheduled charge dates and actual billing dates. Adjust schedule or investigate billing timing issue.'
-                })
         
         # Group exceptions by AR code and status
         grouped_exceptions = {}
@@ -1394,9 +1353,17 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         for ar_data in ar_code_unified.values():
             # Sort monthly details by audit month
             # Convert None to pd.Timestamp('1900-01-01') so it sorts first
+            def _sort_audit_month(item):
+                value = item.get('audit_month')
+                if value is None:
+                    return pd.Timestamp('1900-01-01')
+                if isinstance(value, pd.Timestamp):
+                    return value
+                return pd.to_datetime(value, errors='coerce') or pd.Timestamp('1900-01-01')
+
             ar_data['monthly_details'] = sorted(
-                ar_data['monthly_details'], 
-                key=lambda x: x['audit_month'] if x['audit_month'] is not None else pd.Timestamp('1900-01-01')
+                ar_data['monthly_details'],
+                key=_sort_audit_month
             )
             
             # Determine overall status
