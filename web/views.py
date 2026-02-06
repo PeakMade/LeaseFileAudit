@@ -449,7 +449,7 @@ def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audi
 
 
 @bp.route('/')
-@optional_auth
+@require_auth
 def index():
     """Upload form and recent runs."""
     import logging

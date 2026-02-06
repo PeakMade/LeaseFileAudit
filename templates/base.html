@@ -291,7 +291,7 @@
         .page-loading-overlay {
             position: fixed;
             inset: 0;
-            background: rgba(255, 255, 255, 0.85);
+            background: rgba(15, 15, 15, 0.35);
             display: none;
             align-items: center;
             justify-content: center;
@@ -302,18 +302,72 @@
             display: flex;
         }
 
-        .page-spinner {
-            width: 44px;
-            height: 44px;
-            border: 5px solid #d6d6d6;
-            border-top-color: #00a8c8;
-            border-radius: 50%;
-            animation: spin 0.9s linear infinite;
+        .page-scan {
+            position: relative;
+            width: 180px;
+            height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
+        .page-scan .scan-sheet {
+            position: relative;
+            width: 140px;
+            height: 170px;
+            background: #ffffff;
+            border-radius: 16px;
+            border: 1px solid #e1e6ef;
+            box-shadow: 0 16px 36px rgba(0,0,0,0.25);
+            overflow: hidden;
+        }
+
+        .page-scan .scan-top {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 36px;
+            background: linear-gradient(180deg, #e6f1ff 0%, #ffffff 100%);
+        }
+
+        .page-scan .scan-line {
+            position: absolute;
+            left: -12px;
+            right: -12px;
+            height: 18px;
+            background: linear-gradient(180deg, rgba(0,168,200,0.2) 0%, rgba(0,168,200,0.95) 50%, rgba(0,168,200,0.2) 100%);
+            box-shadow: 0 10px 22px rgba(0,168,200,0.45);
+            animation: scan-line 1.8s ease-in-out infinite;
+        }
+
+        .page-scan .scan-text {
+            position: absolute;
+            left: 18px;
+            right: 18px;
+            height: 10px;
+            background: #d3def0;
+            border-radius: 8px;
+            opacity: 0.95;
+        }
+
+        .page-scan .scan-text.line-1 { top: 54px; width: 70%; }
+        .page-scan .scan-text.line-2 { top: 78px; width: 82%; }
+        .page-scan .scan-text.line-3 { top: 102px; width: 60%; }
+        .page-scan .scan-text.line-4 { top: 126px; width: 75%; }
+
+        @keyframes scan-line {
+            0% {
+                top: 26px;
+                opacity: 0.6;
+            }
+            50% {
+                top: 132px;
+                opacity: 1;
+            }
+            100% {
+                top: 26px;
+                opacity: 0.6;
             }
         }
         
@@ -436,7 +490,16 @@
 </head>
 <body style="margin: 0; padding: 0; overflow-x: hidden; position: relative;">
     <div id="pageLoadingOverlay" class="page-loading-overlay" aria-hidden="true">
-        <div class="page-spinner" role="status" aria-label="Loading"></div>
+        <div class="page-scan" role="status" aria-label="Loading">
+            <div class="scan-sheet">
+                <div class="scan-top"></div>
+                <div class="scan-line"></div>
+                <div class="scan-text line-1"></div>
+                <div class="scan-text line-2"></div>
+                <div class="scan-text line-3"></div>
+                <div class="scan-text line-4"></div>
+            </div>
+        </div>
     </div>
     <!-- User Badge (fixed position at top right) -->
     {% if user %}
