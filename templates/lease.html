@@ -84,7 +84,7 @@
                                         {% endif %}
                                     </td>
                                     <td class="text-center">
-                                        <span class="badge bg-{{ ar_code.status_color }}">{{ ar_code.status_label }}</span>
+                                        <span class="badge bg-{{ ar_code.status_color }}" id="arStatusBadge-{{ loop.index0 }}">{{ ar_code.status_label }}</span>
                                     </td>
                                     <td class="text-center">
                                         <button class="btn btn-sm btn-outline-secondary" 
@@ -126,37 +126,85 @@
     <!-- Hidden data for drawer content -->
     <script>
     const arCodeData = {{ all_ar_codes|tojson|safe }};
+    const exceptionState = {};
+
+    function getExceptionKey(data, exceptionType) {
+        return `resolved:{{ run_id }}:{{ property_id }}:{{ lease_interval_id }}:${data.ar_code_id}:${exceptionType || 'UNKNOWN'}`;
+    }
+
+    function getStatusMeta(status) {
+        if (status === 'Resolved') return { label: 'Resolved', color: 'success' };
+        if (status === 'In Progress') return { label: 'In Progress', color: 'warning' };
+        if (status === 'Open') return { label: 'Open', color: 'danger' };
+        return { label: 'Clean', color: 'success' };
+    }
+
+    function getOrInitState(data) {
+        const key = String(data.ar_code_id);
+        if (!exceptionState[key]) {
+            const hasExceptions = data.exception_count > 0;
+            const exception = (data.monthly_details || []).find(m => m.status !== 'matched');
+            const exceptionType = exception ? exception.status : null;
+            const storageKey = getExceptionKey(data, exceptionType);
+            const stored = storageKey ? localStorage.getItem(storageKey) : null;
+            const storedState = stored ? JSON.parse(stored) : null;
+            exceptionState[key] = {
+                status: storedState?.status || (hasExceptions ? 'Open' : 'Clean'),
+                fixLabel: storedState?.fixLabel || null,
+                actionType: storedState?.actionType || null,
+                resolvedAt: storedState?.resolvedAt || null,
+                exceptionType: exceptionType
+            };
+        }
+        return exceptionState[key];
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        arCodeData.forEach(data => {
+            const state = getOrInitState(data);
+            if (state.status && state.status !== 'Open' && state.status !== 'Clean') {
+                updateArCodeStatusBadge(data.ar_code_id, state.status);
+            }
+        });
+    });
     
     function openDrawer(index) {
         const data = arCodeData[index];
+        const state = getOrInitState(data);
         const drawer = document.getElementById('detailsDrawer');
         const title = document.getElementById('drawerTitle');
         const body = document.getElementById('drawerBody');
+        const statusMeta = getStatusMeta(state.status);
         
         title.textContent = `${data.ar_code_id} - ${data.ar_code_name || 'Unknown'}`;
         
         // Build drawer content
         let content = '<div class="mb-3">';
-        content += `<div class="d-flex gap-2 mb-3">`;
+        content += `<div class="d-flex gap-2 mb-3 align-items-center">`;
         if (data.matched_count > 0) {
             content += `<span class="badge bg-success">${data.matched_count} Matched</span>`;
         }
         if (data.exception_count > 0) {
             content += `<span class="badge bg-danger">${data.exception_count} Exception(s)</span>`;
         }
+        content += `<span class="badge bg-${statusMeta.color}" id="drawerStatusBadge">${statusMeta.label}</span>`;
         content += '</div>';
 
         if (data.exception_count > 0) {
             const firstException = (data.monthly_details || []).find(m => m.status !== 'matched');
             const statusLabel = firstException ? firstException.status_label : 'Exception';
             const statusColor = firstException ? firstException.status_color : 'danger';
+            const fixBadge = state.fixLabel
+                ? `<div class="workflow-fix-badge">✅ ${state.status} Fix: ${state.fixLabel}</div>`
+                : '';
             content += `
                 <div class="alert alert-warning d-flex justify-content-between align-items-center">
                     <div>
                         <div class="mb-1">
                             <span class="badge bg-${statusColor}">${statusLabel}</span>
-                            <span class="ms-2"><strong>Status:</strong> <span id="workflowStatus">Open</span></span>
+                            <span class="ms-2"><strong>Status:</strong> <span id="workflowStatus">${state.status}</span></span>
                         </div>
+                        ${fixBadge}
                     </div>
                 </div>
             `;
@@ -235,6 +283,25 @@
             const status = exception ? exception.status : null;
             const statusLabel = exception ? exception.status_label : 'Exception';
 
+            const nextStep = state.status === 'Resolved'
+                ? 'Complete'
+                : state.actionType === 'external'
+                    ? 'Complete in Entrata'
+                    : state.actionType === 'internal'
+                        ? 'Flag for admin/ops'
+                        : state.actionType === 'one_time'
+                            ? 'No further action'
+                            : 'Complete in Entrata';
+
+            const resolvedLine = `
+                <div class="mb-2 ${state.resolvedAt ? '' : 'd-none'}" id="trackerResolvedRow">
+                    <strong>Resolved On:</strong> <span id="trackerResolved">${state.resolvedAt ? formatDateTime(state.resolvedAt) : '-'}</span>
+                </div>
+            `;
+
+            const showTracker = state.fixLabel ? '' : 'd-none';
+            const showOpenEntrata = state.actionType === 'external' ? '' : 'd-none';
+
             content += `
                 <hr class="my-4" />
                 <h5 class="mb-3"><i class="fas fa-tasks"></i> Exception Workflow</h5>
@@ -252,7 +319,28 @@
                         <strong><i class="fas fa-lightbulb"></i> Suggested Fixes</strong>
                     </div>
                     <div class="card-body">
-                        ${buildSuggestedFixes(status)}
+                        <div id="suggestedFixes" class="suggested-fixes">
+                            ${buildSuggestedFixes(status)}
+                        </div>
+                    </div>
+                </div>
+                <div class="card mb-3 border-light ${showTracker}" id="resolutionTracker">
+                    <div class="card-body p-3">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <div class="text-uppercase text-muted small">Resolution Tracker</div>
+                            <span class="badge bg-${statusMeta.color}" id="trackerStatus">${state.status}</span>
+                        </div>
+                        <div class="mb-1"><strong>Fix Chosen:</strong> <span id="trackerFix">${state.fixLabel || '-'}</span></div>
+                        <div class="mb-3"><strong>Next Step:</strong> <span id="trackerNext">${nextStep}</span></div>
+                        ${resolvedLine}
+                        <div class="d-flex gap-2">
+                            <a href="{{ entrata_url }}" target="_blank" class="btn btn-sm btn-outline-primary ${showOpenEntrata}" id="openEntrataBtn">
+                                <i class="fas fa-external-link-alt"></i> Open in Entrata
+                            </a>
+                            <button class="btn btn-sm btn-success" onclick="markResolved(event)">
+                                <i class="fas fa-check-circle"></i> Mark as Resolved
+                            </button>
+                        </div>
                     </div>
                 </div>
             `;
@@ -261,6 +349,9 @@
         body.innerHTML = content;
         drawer.classList.add('open');
         document.getElementById('drawerOverlay').classList.add('open');
+        if (state.fixLabel) {
+            collapseSuggestedFixes();
+        }
     }
     
     function closeDrawer() {
@@ -287,7 +378,7 @@
                         <div class="flex-grow-1">
                             <strong>Post missing charge in Entrata</strong>
                             <p class="mb-1 text-muted small">The scheduled charge exists but was never billed. Post the AR transaction in Entrata.</p>
-                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'post_charge')">
+                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'Post missing charge in Entrata', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -299,7 +390,7 @@
                         <div class="flex-grow-1">
                             <strong>Correct schedule dates</strong>
                             <p class="mb-1 text-muted small">The schedule may have incorrect start/end dates. Review and adjust the recurring charge schedule.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'adjust_schedule')">
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Correct schedule dates', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -311,7 +402,7 @@
                         <div class="flex-grow-1">
                             <strong>Mark as expected exception</strong>
                             <p class="mb-1 text-muted small">This may be expected (move-out, MTM, concession, etc.). Document the reason and mark as resolved.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'mark_expected')">
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Mark as expected exception', 'one_time')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -327,7 +418,7 @@
                         <div class="flex-grow-1">
                             <strong>Add recurring charge to schedule</strong>
                             <p class="mb-1 text-muted small">A charge was billed but no schedule exists. Create or update the recurring charge in Entrata.</p>
-                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'add_schedule')">
+                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'Add recurring charge to schedule', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -339,7 +430,7 @@
                         <div class="flex-grow-1">
                             <strong>Reverse incorrect charge</strong>
                             <p class="mb-1 text-muted small">The charge was posted in error. Reverse the transaction in Entrata.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'reverse_charge')">
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Reverse incorrect charge', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -351,7 +442,7 @@
                         <div class="flex-grow-1">
                             <strong>Mark as one-time charge</strong>
                             <p class="mb-1 text-muted small">This is a legitimate one-time charge. Document and mark as resolved.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'mark_onetime')">
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Mark as one-time charge', 'one_time')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -367,7 +458,7 @@
                         <div class="flex-grow-1">
                             <strong>Correct scheduled amount</strong>
                             <p class="mb-1 text-muted small">The recurring charge schedule has the wrong amount. Update it in Entrata.</p>
-                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'correct_schedule_amount')">
+                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'Correct scheduled amount', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -379,7 +470,7 @@
                         <div class="flex-grow-1">
                             <strong>Adjust posted transaction</strong>
                             <p class="mb-1 text-muted small">The posted amount is incorrect. Reverse and repost with correct amount.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'adjust_transaction')">
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Adjust posted transaction', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -391,7 +482,7 @@
                         <div class="flex-grow-1">
                             <strong>Document variance reason</strong>
                             <p class="mb-1 text-muted small">Amount difference is expected (proration, adjustment, etc.). Document and resolve.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'document_variance')">
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Document variance reason', 'internal')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -404,33 +495,165 @@
         `;
     }
     
-    function applyFix(event, fixType) {
+    function applyFix(event, fixLabel, actionType) {
         event.stopPropagation();
-        const statusEl = document.getElementById('workflowStatus');
-        if (statusEl) {
-            statusEl.textContent = 'In Progress';
+        const drawerTitle = document.getElementById('drawerTitle');
+        if (!drawerTitle) return;
+
+        const arCodeId = drawerTitle.textContent.split(' - ')[0];
+        const state = exceptionState[String(arCodeId)] || { status: 'Open', fixLabel: null, actionType: null };
+
+        const shouldResolveImmediately = actionType === 'one_time';
+        state.status = shouldResolveImmediately ? 'Resolved' : 'In Progress';
+        state.fixLabel = fixLabel;
+        state.actionType = actionType;
+        if (state.status === 'Resolved') {
+            state.resolvedAt = new Date().toISOString();
+            persistResolvedState(arCodeId, state);
         }
-        // TODO: Implement fix application
-        alert(`Fix plan "${fixType}" selected. (Backend integration pending)`);
+        exceptionState[String(arCodeId)] = state;
+
+        updateWorkflowUI(state);
+        updateArCodeStatusBadge(arCodeId, state.status);
+        collapseSuggestedFixes();
+    }
+
+    function markResolved(event) {
+        event.stopPropagation();
+        const drawerTitle = document.getElementById('drawerTitle');
+        if (!drawerTitle) return;
+        const arCodeId = drawerTitle.textContent.split(' - ')[0];
+        const state = exceptionState[String(arCodeId)] || { status: 'Open', fixLabel: null, actionType: null };
+        state.status = 'Resolved';
+        state.resolvedAt = new Date().toISOString();
+        exceptionState[String(arCodeId)] = state;
+        persistResolvedState(arCodeId, state);
+        updateWorkflowUI(state);
+        updateArCodeStatusBadge(arCodeId, state.status);
+    }
+
+    function updateWorkflowUI(state) {
+        const statusMeta = getStatusMeta(state.status);
+        const statusEl = document.getElementById('workflowStatus');
+        const drawerStatusBadge = document.getElementById('drawerStatusBadge');
+        const tracker = document.getElementById('resolutionTracker');
+        const trackerStatus = document.getElementById('trackerStatus');
+        const trackerFix = document.getElementById('trackerFix');
+        const trackerNext = document.getElementById('trackerNext');
+        const trackerResolved = document.getElementById('trackerResolved');
+        const trackerResolvedRow = document.getElementById('trackerResolvedRow');
+        const openEntrataBtn = document.getElementById('openEntrataBtn');
+
+        if (statusEl) statusEl.textContent = state.status;
+        if (drawerStatusBadge) {
+            drawerStatusBadge.textContent = statusMeta.label;
+            drawerStatusBadge.className = `badge bg-${statusMeta.color}`;
+        }
+
+        if (tracker) {
+            tracker.classList.remove('d-none');
+        }
+        if (trackerStatus) {
+            trackerStatus.textContent = statusMeta.label;
+            trackerStatus.className = `badge bg-${statusMeta.color}`;
+        }
+        if (trackerFix) trackerFix.textContent = state.fixLabel || '-';
+
+        const nextStep = state.status === 'Resolved'
+            ? 'Complete'
+            : state.actionType === 'external'
+                ? 'Complete in Entrata'
+                : state.actionType === 'internal'
+                    ? 'Flag for admin/ops'
+                    : state.actionType === 'one_time'
+                        ? 'No further action'
+                        : 'Complete in Entrata';
+        if (trackerNext) trackerNext.textContent = nextStep;
+
+        if (trackerResolved) {
+            if (state.resolvedAt) {
+                trackerResolved.textContent = formatDateTime(state.resolvedAt);
+                if (trackerResolvedRow) trackerResolvedRow.classList.remove('d-none');
+            } else {
+                trackerResolved.textContent = '-';
+                if (trackerResolvedRow) trackerResolvedRow.classList.add('d-none');
+            }
+        }
+
+        if (openEntrataBtn) {
+            if (state.actionType === 'external' && state.status !== 'Resolved') {
+                openEntrataBtn.classList.remove('d-none');
+            } else {
+                openEntrataBtn.classList.add('d-none');
+            }
+        }
+
+        const alertBox = document.querySelector('.alert.alert-warning');
+        if (alertBox) {
+            const existingBadge = alertBox.querySelector('.workflow-fix-badge');
+            if (state.fixLabel) {
+                const badge = existingBadge || document.createElement('div');
+                badge.className = 'workflow-fix-badge';
+                badge.textContent = `✅ ${state.status} Fix: ${state.fixLabel}`;
+                if (!existingBadge) {
+                    alertBox.appendChild(badge);
+                }
+            } else if (existingBadge) {
+                existingBadge.remove();
+            }
+        }
+
+        if (state.fixLabel) {
+            collapseSuggestedFixes();
+        }
+    }
+
+    function collapseSuggestedFixes() {
+        const container = document.getElementById('suggestedFixes');
+        if (!container) return;
+        container.classList.add('collapsed');
+        container.querySelectorAll('button').forEach(btn => {
+            btn.disabled = true;
+        });
+    }
+
+    function updateArCodeStatusBadge(arCodeId, status) {
+        const index = arCodeData.findIndex(item => String(item.ar_code_id) === String(arCodeId));
+        if (index === -1) return;
+        const badge = document.getElementById(`arStatusBadge-${index}`);
+        if (!badge) return;
+        const statusMeta = getStatusMeta(status);
+        badge.textContent = statusMeta.label === 'Clean' ? 'Clean' : statusMeta.label;
+        badge.className = `badge bg-${statusMeta.color}`;
+    }
+
+    function persistResolvedState(arCodeId, state) {
+        const data = arCodeData.find(item => String(item.ar_code_id) === String(arCodeId));
+        if (!data) return;
+        const exceptionType = state.exceptionType || ((data.monthly_details || []).find(m => m.status !== 'matched') || {}).status;
+        const storageKey = getExceptionKey(data, exceptionType);
+        if (!storageKey) return;
+        localStorage.setItem(storageKey, JSON.stringify({
+            status: state.status,
+            fixLabel: state.fixLabel,
+            actionType: state.actionType,
+            resolvedAt: state.resolvedAt
+        }));
     }
     
-    function resolveException() {
-        // TODO: Implement resolve functionality
-        alert('Exception marked as resolved. (Backend integration pending)');
-        closeExceptionsDrawer();
+    function formatDateTime(dateStr) {
+        if (!dateStr) return '-';
+        const date = new Date(dateStr);
+        if (isNaN(date.getTime())) return '-';
+        return date.toLocaleString('en-US', {
+            month: '2-digit',
+            day: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
     }
-    
-    function dismissException() {
-        // TODO: Implement dismiss functionality
-        alert('Exception dismissed. (Backend integration pending)');
-        closeExceptionsDrawer();
-    }
-    
-    function needsReview() {
-        // TODO: Implement needs review functionality
-        alert('Exception flagged for review. (Backend integration pending)');
-    }
-    
+
     function formatDate(dateStr, format) {
         if (!dateStr) return '-';
         
@@ -569,6 +792,31 @@
         background-color: #0b5ed7;
         border-color: #0b5ed7;
         color: #fff;
+    }
+
+    .suggested-fixes.collapsed .suggested-fix {
+        opacity: 0.45;
+    }
+
+    .suggested-fixes.collapsed .suggested-fix.selected {
+        opacity: 0.9;
+    }
+
+    .suggested-fixes.collapsed .suggested-fix:not(.selected) {
+        display: none;
+    }
+
+    .workflow-fix-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        background: #eef6ff;
+        border: 1px solid #cfe2ff;
+        color: #0b5ed7;
+        padding: 0.25rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        margin-top: 0.5rem;
     }
     </style>
     
