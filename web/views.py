@@ -895,7 +895,7 @@ def build_entrata_url(lease_id: str, customer_id: str = None) -> str:
     Returns:
         Entrata URL string. If customer_id is missing, returns customers module.
     """
-    base_url = "https://peakmade-test-17291.entrata.com/"
+    base_url = "https://peakmade.entrata.com/"
     
     if customer_id and str(customer_id).strip() and str(customer_id).lower() != 'nan':
         # Open resident profile shell
