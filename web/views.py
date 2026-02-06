@@ -1368,11 +1368,10 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             
             # Determine overall status
             if ar_data['has_exceptions']:
-                # If has exceptions, show the most critical status
-                ar_data['status_label'] = f"{ar_data['matched_count']} Matched, {ar_data['exception_count']} Exception(s)"
-                ar_data['status_color'] = 'warning'
+                ar_data['status_label'] = 'Open'
+                ar_data['status_color'] = 'danger'
             else:
-                ar_data['status_label'] = f"{ar_data['matched_count']} Matched"
+                ar_data['status_label'] = 'Passed'
                 ar_data['status_color'] = 'success'
             
             all_ar_codes.append(ar_data)
