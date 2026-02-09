@@ -54,10 +54,16 @@ def get_available_runs() -> list:
     # Format runs for dropdown
     formatted_runs = []
     for run in runs:
+        # Determine if manual or auto based on metadata
+        # For now, all runs are manual (uploaded via UI)
+        # Future: check run metadata for 'run_type' field
+        run_type = run.get('run_type', 'Manual')
+        
         run_info = {
             'run_id': run['run_id'],
             'timestamp': run.get('timestamp', 'Unknown'),
-            'audit_period': run.get('audit_period', {})
+            'audit_period': run.get('audit_period', {}),
+            'run_type': run_type
         }
         formatted_runs.append(run_info)
     

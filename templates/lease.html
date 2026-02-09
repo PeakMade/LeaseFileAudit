@@ -66,7 +66,10 @@
                             </thead>
                             <tbody>
                                 {% for ar_code in all_ar_codes %}
-                                <tr data-ar-code-id="{{ ar_code.ar_code_id }}">
+                                <tr data-ar-code-id="{{ ar_code.ar_code_id }}" 
+                                    onclick="openDrawer({{ loop.index0 }})" 
+                                    style="cursor: pointer;" 
+                                    class="ar-code-row">
                                     <td><strong>{{ ar_code.ar_code_id|int }}</strong></td>
                                     <td>{{ ar_code.ar_code_name if ar_code.ar_code_name else '-' }}</td>
                                     <td class="text-center">
@@ -87,11 +90,7 @@
                                         <span class="badge bg-{{ ar_code.status_color }} ar-status-badge" id="arStatusBadge-{{ loop.index0 }}">{{ ar_code.status_label }}</span>
                                     </td>
                                     <td class="text-center">
-                                        <button class="btn btn-sm btn-outline-secondary" 
-                                                onclick="openDrawer({{ loop.index0 }})"
-                                                title="View Details">
-                                            <i class="fas fa-eye"></i>
-                                        </button>
+                                        <i class="fas fa-eye text-secondary"></i>
                                     </td>
                                 </tr>
                                 {% endfor %}
@@ -311,18 +310,24 @@
         content += '</table>';
 
         // Suggested fixes as horizontal buttons below table
+        // Only show if there are exceptions AND at least one is not resolved
         if (data.exception_count > 0) {
-            const exception = (data.monthly_details || []).find(m => m.status !== 'matched');
-            const status = exception ? exception.status : null;
+            const exceptions = (data.monthly_details || []).filter(m => m.status !== 'matched');
+            const hasUnresolvedExceptions = exceptions.some(m => m.month_status !== 'Resolved');
             
-            content += `
-                <div class="mb-3">
-                    <h6 class="mb-2"><i class="fas fa-lightbulb"></i> Suggested Fixes</h6>
-                    <div class="d-flex gap-2 flex-wrap" id="suggestedFixButtons">
-                        ${buildSuggestedFixButtons(status)}
+            if (hasUnresolvedExceptions) {
+                const exception = exceptions.find(m => m.month_status !== 'Resolved');
+                const status = exception ? exception.status : null;
+                
+                content += `
+                    <div class="mb-3">
+                        <h6 class="mb-2"><i class="fas fa-lightbulb"></i> Suggested Fixes</h6>
+                        <div class="d-flex gap-2 flex-wrap" id="suggestedFixButtons">
+                            ${buildSuggestedFixButtons(status)}
+                        </div>
                     </div>
-                </div>
-            `;
+                `;
+            }
         }
         
         body.innerHTML = content;
@@ -353,14 +358,10 @@
                         }
                     }
                     if (fixCell && month.month_fix_label) {
-                        const historicalBadge = month.is_historical ? 
-                            `<span class="badge bg-info ms-1" title="Auto-applied from previous audit run ${month.resolution_run_id || ''}">Historical</span>` : '';
-                        fixCell.innerHTML = `<small><span class="badge bg-success">✓</span> ${month.month_fix_label}${historicalBadge}</small>`;
+                        fixCell.innerHTML = `<small><span class="badge bg-success">✓</span> ${month.month_fix_label}</small>`;
                     }
                     if (resolvedCell && month.month_resolved_at) {
-                        const historicalNote = month.is_historical ? 
-                            `<br/><span class="text-info" style="font-size: 0.85em;">📜 From previous run</span>` : '';
-                        resolvedCell.innerHTML = `<small>${formatDateTime(month.month_resolved_at)}<br/>by ${month.month_resolved_by || 'Unknown'}${historicalNote}</small>`;
+                        resolvedCell.innerHTML = `<small>${formatDateTime(month.month_resolved_at)}<br/>by ${month.month_resolved_by || 'Unknown'}</small>`;
                     }
                 } else if (month.month_status === 'Open') {
                     // Month is still open
@@ -881,6 +882,15 @@
     </script>
 
     <style>
+    .ar-code-row:hover {
+        background-color: #f8f9fa;
+        transition: background-color 0.2s ease;
+    }
+    
+    .ar-code-row:active {
+        background-color: #e9ecef;
+    }
+    
     .drawer {
         position: fixed;
         top: 0;

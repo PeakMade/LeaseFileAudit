@@ -18,10 +18,12 @@
             <select class="form-select form-select-sm" id="runSelector" onchange="changeRun(this.value)">
                 {% for run in all_runs %}
                 <option value="{{ run.run_id }}" {% if run.run_id == current_run_id %}selected{% endif %}>
-                    {% if run.audit_period.month and run.audit_period.year %}
-                        {{ ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][run.audit_period.month] }} {{ run.audit_period.year }}
+                    {% if run.timestamp and run.timestamp != 'Unknown' %}
+                        {{ run.timestamp[5:7] }}/{{ run.timestamp[8:10] }}/{{ run.timestamp[0:4] }} - {{ run.run_type if run.run_type else 'Manual' }}
+                    {% elif run.audit_period.month and run.audit_period.year %}
+                        {{ '%02d'|format(run.audit_period.month) }}/{{ run.audit_period.year }} - {{ run.run_type if run.run_type else 'Manual' }}
                     {% else %}
-                        {{ run.timestamp[:10] if run.timestamp else run.run_id }}
+                        {{ run.run_id }} - {{ run.run_type if run.run_type else 'Manual' }}
                     {% endif %}
                 </option>
                 {% endfor %}
