@@ -61,12 +61,13 @@
                                     <th class="text-end">Undercharge</th>
                                     <th class="text-end">Overcharge</th>
                                     <th class="text-end">Total Variance</th>
-                                    <th class="text-center">Actions</th>
+                                    <th class="text-center">Details</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for property in properties %}
-                                <tr>
+                                <tr style="cursor: pointer; transition: background-color 0.15s;" 
+                                    onclick="window.location.href='{{ url_for('main.property_view', property_id=property.property_id, run_id=run_id) }}'">
                                     <td><strong>{{ property.property_name if property.property_name else '-' }}</strong></td>
                                     <td>{{ property.property_id|int }}</td>
                                     <td class="text-center">{{ property.total_lease_intervals }}</td>
@@ -95,10 +96,7 @@
                                         <strong>${{ "{:,.0f}".format(property.total_variance|abs) }}</strong>
                                     </td>
                                     <td class="text-center">
-                                        <a href="{{ url_for('main.property_view', property_id=property.property_id, run_id=run_id) }}" 
-                                           class="btn btn-sm btn-primary">
-                                            <i class="fas fa-eye"></i> View
-                                        </a>
+                                        <i class="fas fa-eye" style="color: #6c757d;"></i>
                                     </td>
                                 </tr>
                                 {% endfor %}

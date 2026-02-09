@@ -1368,6 +1368,24 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     'recommendation': monthly.get('recommendation')
                 })
         
+        # Load exception states to get workflow status (Open, Resolved)
+        exception_states = storage.load_exception_states_from_sharepoint_list(run_id, int(float(property_id)), int(float(lease_interval_id)))
+        
+        # Build map of AR code -> most severe workflow status
+        ar_status_map = {}
+        status_priority = {'Open': 2, 'Resolved': 1, 'Passed': 0}
+        for state in exception_states:
+            ar_code = state.get('ar_code_id')
+            status = state.get('status', 'Open')
+            # Normalize old "In Progress" to "Open"
+            if status and str(status).lower() in ['in progress', 'in_progress']:
+                status = 'Open'
+            if ar_code:
+                current_priority = status_priority.get(ar_status_map.get(ar_code, 'Passed'), 0)
+                new_priority = status_priority.get(status, 0)
+                if new_priority > current_priority:
+                    ar_status_map[ar_code] = status
+        
         # Determine overall status for each AR code
         all_ar_codes = []
         for ar_data in ar_code_unified.values():
@@ -1386,8 +1404,17 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 key=_sort_audit_month
             )
             
-            # Determine overall status
-            if ar_data['has_exceptions']:
+            # Determine overall status from exception states or default
+            ar_code_id = ar_data['ar_code_id']
+            if ar_code_id in ar_status_map:
+                workflow_status = ar_status_map[ar_code_id]
+                if workflow_status == 'Resolved':
+                    ar_data['status_label'] = 'Resolved'
+                    ar_data['status_color'] = 'success'
+                else:  # Open
+                    ar_data['status_label'] = 'Open'
+                    ar_data['status_color'] = 'danger'
+            elif ar_data['has_exceptions']:
                 ar_data['status_label'] = 'Open'
                 ar_data['status_color'] = 'danger'
             else:
@@ -1396,8 +1423,9 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             
             all_ar_codes.append(ar_data)
         
-        # Sort by AR code ID
-        all_ar_codes = sorted(all_ar_codes, key=lambda x: x['ar_code_id'])
+        # Sort by status priority (Open > Resolved > Passed), then by exceptions (highest to lowest), then by AR code ID
+        status_sort_order = {'Open': 0, 'Resolved': 1, 'Passed': 2}
+        all_ar_codes = sorted(all_ar_codes, key=lambda x: (status_sort_order.get(x['status_label'], 99), -x['exception_count'], x['ar_code_id']))
         
         # Convert NaT/NaN values to None for JSON serialization
         def sanitize_for_json(obj):

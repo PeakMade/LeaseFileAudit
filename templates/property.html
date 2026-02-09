@@ -83,14 +83,13 @@
                             <thead style="background-color: #f8f9fa; position: sticky; top: 0; z-index: 10;">
                                 <tr style="border-bottom: 2px solid #dee2e6;">
                                     <th class="sortable" data-sort="customer_name" style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">
-                                        Customer Name <span id="customerSortIcon" style="font-size: 1em; color: #000;">↓</span>
+                                        Resident Name <span id="customerSortIcon" style="font-size: 1em; color: #000;">↓</span>
                                     </th>
-                                    <th style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Guarantor Name</th>
                                     <th style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease Interval ID</th>
                                     <th class="text-center" style="width: 120px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Matched</th>
-                                    <th class="text-center" style="width: 120px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Exceptions</th>
+                                    <th class="text-center sortable" data-sort="exceptions" style="width: 120px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">Exceptions <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span></th>
                                     <th class="text-end" style="width: 150px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Variance</th>
-                                    <th class="text-center" style="width: 100px; padding: 12px; font-weight: 600; color: #495057;">Status</th>
+                                    <th class="text-center" style="width: 100px; padding: 12px; font-weight: 600; color: #495057;">Details</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -99,13 +98,6 @@
                                     onclick="window.location.href='{{ url_for('main.lease_view', run_id=run_id, property_id=property_id, lease_interval_id=lease.lease_interval_id) }}'">
                                     <td style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
                                         {{ lease.customer_name if lease.customer_name else '' }}
-                                    </td>
-                                    <td style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
-                                        {% if lease.guarantor_name %}
-                                            {{ lease.guarantor_name }}
-                                        {% else %}
-                                            <span class="text-muted">-</span>
-                                        {% endif %}
                                     </td>
                                     <td style="padding: 10px 12px; font-family: 'Courier New', monospace; border-right: 1px solid #dee2e6;">
                                         <i class="fas fa-file-contract me-2" style="color: #6c757d;"></i>{{ lease.lease_interval_id|int }}
@@ -128,11 +120,7 @@
                                         {% endif %}
                                     </td>
                                     <td class="text-center" style="padding: 10px 12px;">
-                                        {% if not lease.has_exceptions %}
-                                            <span class="badge" style="background-color: #00a8c8;"><i class="fas fa-check-circle"></i> Clean</span>
-                                        {% else %}
-                                            <i class="fas fa-arrow-right" style="color: #6c757d;"></i>
-                                        {% endif %}
+                                        <i class="fas fa-eye" style="color: #6c757d;"></i>
                                     </td>
                                 </tr>
                                 {% endfor %}
@@ -166,50 +154,90 @@
 </style>
 
 <script>
-    let currentSortOrder = 'asc'; // Start with ascending for alphabetical sort
-
-    // Auto-sort alphabetically by customer name on page load
+    // Auto-sort by exceptions (descending) on page load
     document.addEventListener('DOMContentLoaded', function() {
         const table = document.getElementById('leasesTable');
         const tbody = table.querySelector('tbody');
-        const icon = document.getElementById('customerSortIcon');
+        const customerIcon = document.getElementById('customerSortIcon');
+        const exceptionsIcon = document.getElementById('exceptionsSortIcon');
         
-        let currentSortOrder = 'desc';
+        let currentSort = {
+            column: null,
+            order: 'desc'
+        };
         
         // Sort by customer name
         function sortByCustomer() {
             const rows = Array.from(tbody.querySelectorAll('tr'));
-            
-            // Toggle sort order
-            currentSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+            currentSort.order = currentSort.column === 'customer_name' && currentSort.order === 'asc' ? 'desc' : 'asc';
+            currentSort.column = 'customer_name';
             
             rows.sort((a, b) => {
                 const nameA = a.cells[0].textContent.trim().toLowerCase();
                 const nameB = b.cells[0].textContent.trim().toLowerCase();
                 
-                if (currentSortOrder === 'asc') {
+                if (currentSort.order === 'asc') {
                     return nameA.localeCompare(nameB);
                 } else {
                     return nameB.localeCompare(nameA);
                 }
             });
             
-            // Update icon
-            icon.textContent = currentSortOrder === 'asc' ? '↑' : '↓';
-            icon.style.color = '#000';
+            // Update icons
+            customerIcon.textContent = currentSort.order === 'asc' ? '↑' : '↓';
+            customerIcon.style.color = '#000';
+            exceptionsIcon.textContent = '↕';
+            exceptionsIcon.style.color = '#999';
+            
+            // Re-append sorted rows
+            rows.forEach(row => tbody.appendChild(row));
+        }
+        
+        // Sort by exceptions
+        function sortByExceptions() {
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            // Toggle only if already sorting by exceptions
+            if (currentSort.column === 'exceptions') {
+                currentSort.order = currentSort.order === 'desc' ? 'asc' : 'desc';
+            } else {
+                currentSort.order = 'desc'; // Default to descending
+                currentSort.column = 'exceptions';
+            }
+            
+            rows.sort((a, b) => {
+                const countA = parseInt(a.cells[3].textContent.trim()) || 0;
+                const countB = parseInt(b.cells[3].textContent.trim()) || 0;
+                
+                if (currentSort.order === 'asc') {
+                    return countA - countB;
+                } else {
+                    return countB - countA;
+                }
+            });
+            
+            // Update icons
+            exceptionsIcon.textContent = currentSort.order === 'asc' ? '↑' : '↓';
+            exceptionsIcon.style.color = '#000';
+            customerIcon.textContent = '↕';
+            customerIcon.style.color = '#999';
             
             // Re-append sorted rows
             rows.forEach(row => tbody.appendChild(row));
         }
 
-        // Add click handler to customer name header for sorting
+        // Add click handlers
         const customerHeader = table.querySelector('.sortable[data-sort="customer_name"]');
         if (customerHeader) {
             customerHeader.addEventListener('click', sortByCustomer);
         }
         
-        // Initial sort
-        sortByCustomer();
+        const exceptionsHeader = table.querySelector('.sortable[data-sort="exceptions"]');
+        if (exceptionsHeader) {
+            exceptionsHeader.addEventListener('click', sortByExceptions);
+        }
+        
+        // Initial sort by exceptions (descending)
+        sortByExceptions();
     });
 </script>
 {% endblock %}
