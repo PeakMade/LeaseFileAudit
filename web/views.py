@@ -679,9 +679,74 @@ def portfolio(run_id: str = None):
         # Get most recent run data for property breakdown
         run_data = storage.load_run(run_id)
         
-        # Calculate property summary from most recent run
+        # Add analysis period to metadata
+        metadata = run_data["metadata"].copy()
+        analysis_period = _calculate_analysis_period(run_data["actual_detail"], run_data["expected_detail"])
+        if analysis_period:
+            metadata['analysis_period'] = analysis_period
+        
+        # Filter bucket_results to exclude resolved exceptions
+        # Load all exception months for this run and track resolved ones
+        logger.info(f"[PORTFOLIO] Filtering resolved exceptions for run {run_id}")
+        bucket_results = run_data["bucket_results"].copy()
+        exception_buckets = bucket_results[
+            bucket_results[CanonicalField.STATUS.value] != config.reconciliation.status_matched
+        ].copy()
+        
+        resolved_keys = set()
+        unique_properties = exception_buckets[CanonicalField.PROPERTY_ID.value].unique()
+        
+        for property_id in unique_properties:
+            property_exceptions = exception_buckets[
+                exception_buckets[CanonicalField.PROPERTY_ID.value] == property_id
+            ]
+            unique_lease_ids = property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value].unique()
+            
+            for lease_id in unique_lease_ids:
+                lease_exceptions = property_exceptions[
+                    property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
+                ]
+                unique_ar_codes = lease_exceptions[CanonicalField.AR_CODE_ID.value].unique()
+                
+                for ar_code_id in unique_ar_codes:
+                    exception_months = storage.load_exception_months_from_sharepoint_list(
+                        run_id, int(float(property_id)), int(float(lease_id)), ar_code_id
+                    )
+                    
+                    for month_record in exception_months:
+                        if month_record.get('status') == 'Resolved':
+                            audit_month = month_record.get('audit_month')
+                            if isinstance(audit_month, str):
+                                audit_month = audit_month[:10]
+                            resolved_key = (property_id, lease_id, ar_code_id, audit_month)
+                            resolved_keys.add(resolved_key)
+        
+        logger.info(f"[PORTFOLIO] Found {len(resolved_keys)} resolved exception months")
+        
+        # Filter out resolved exceptions from bucket_results
+        def is_unresolved_bucket(row):
+            if row[CanonicalField.STATUS.value] == config.reconciliation.status_matched:
+                return True  # Keep all matched records
+            
+            property_id = row[CanonicalField.PROPERTY_ID.value]
+            lease_id = row[CanonicalField.LEASE_INTERVAL_ID.value]
+            ar_code_id = row[CanonicalField.AR_CODE_ID.value]
+            audit_month = row[CanonicalField.AUDIT_MONTH.value]
+            
+            if isinstance(audit_month, pd.Timestamp):
+                audit_month = audit_month.strftime('%Y-%m-%d')
+            elif isinstance(audit_month, str):
+                audit_month = audit_month[:10]
+            
+            key = (property_id, lease_id, ar_code_id, audit_month)
+            return key not in resolved_keys
+        
+        filtered_bucket_results = bucket_results[bucket_results.apply(is_unresolved_bucket, axis=1)].copy()
+        logger.info(f"[PORTFOLIO] Filtered bucket_results from {len(bucket_results)} to {len(filtered_bucket_results)} (excluded resolved)")
+        
+        # Calculate property summary from filtered bucket results
         property_summary = calculate_property_summary(
-            run_data["bucket_results"],
+            filtered_bucket_results,
             run_data["findings"],
             run_data["actual_detail"]  # Pass actual_detail to get property names
         )
@@ -689,7 +754,7 @@ def portfolio(run_id: str = None):
         return render_template(
             'portfolio.html',
             run_id=run_id,
-            metadata=run_data["metadata"],
+            metadata=metadata,
             kpis=cumulative,
             properties=property_summary.to_dict('records'),
             total_runs=cumulative['total_runs']
@@ -819,6 +884,12 @@ def property_view(property_id: str, run_id: str = None):
         
         run_data = storage.load_run(run_id)
         
+        # Add analysis period to metadata
+        metadata = run_data["metadata"].copy()
+        analysis_period = _calculate_analysis_period(run_data["actual_detail"], run_data["expected_detail"])
+        if analysis_period:
+            metadata['analysis_period'] = analysis_period
+        
         # Get bucket results for this property (all statuses)
         bucket_results = run_data["bucket_results"]
         all_property_buckets = bucket_results[
@@ -849,6 +920,57 @@ def property_view(property_id: str, run_id: str = None):
         property_buckets = all_property_buckets[
             all_property_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
         ].copy()
+        
+        # Filter out resolved exceptions by checking SharePoint
+        # Load all exception months for this property
+        logger.info(f"[PROPERTY_VIEW] Filtering resolved exceptions for property {property_id}")
+        resolved_keys = set()
+        
+        # Get unique lease IDs from property buckets
+        unique_lease_ids = property_buckets[CanonicalField.LEASE_INTERVAL_ID.value].unique()
+        for lease_id in unique_lease_ids:
+            # Get unique AR codes for this lease
+            lease_buckets = property_buckets[
+                property_buckets[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
+            ]
+            unique_ar_codes = lease_buckets[CanonicalField.AR_CODE_ID.value].unique()
+            
+            for ar_code_id in unique_ar_codes:
+                exception_months = storage.load_exception_months_from_sharepoint_list(
+                    run_id, int(float(property_id)), int(float(lease_id)), ar_code_id
+                )
+                
+                # Track which months are resolved
+                for month_record in exception_months:
+                    if month_record.get('status') == 'Resolved':
+                        audit_month = month_record.get('audit_month')
+                        # Normalize date format for comparison
+                        if isinstance(audit_month, str):
+                            audit_month = audit_month[:10]
+                        resolved_key = (lease_id, ar_code_id, audit_month)
+                        resolved_keys.add(resolved_key)
+                        logger.info(f"[PROPERTY_VIEW] Marking as resolved: Lease {lease_id}, AR {ar_code_id}, Month {audit_month}")
+        
+        # Filter property_buckets to exclude resolved ones
+        def is_unresolved(row):
+            lease_id = row[CanonicalField.LEASE_INTERVAL_ID.value]
+            ar_code_id = row[CanonicalField.AR_CODE_ID.value]
+            audit_month = row[CanonicalField.AUDIT_MONTH.value]
+            
+            # Normalize audit_month for comparison
+            if isinstance(audit_month, pd.Timestamp):
+                audit_month = audit_month.strftime('%Y-%m-%d')
+            elif isinstance(audit_month, str):
+                audit_month = audit_month[:10]
+            
+            key = (lease_id, ar_code_id, audit_month)
+            is_unres = key not in resolved_keys
+            if not is_unres:
+                logger.debug(f"[PROPERTY_VIEW] Filtering out resolved exception: {key}")
+            return is_unres
+        
+        property_buckets = property_buckets[property_buckets.apply(is_unresolved, axis=1)].copy()
+        logger.info(f"[PROPERTY_VIEW] After filtering resolved: {len(property_buckets)} unresolved exceptions remain")
         
         # Group exceptions by lease_interval_id
         lease_groups = {}
@@ -954,7 +1076,7 @@ def property_view(property_id: str, run_id: str = None):
             run_id=run_id,
             property_id=property_id,
             property_name=property_name,
-            metadata=run_data["metadata"],
+            metadata=metadata,
             kpis=property_kpis,
             lease_summary=lease_summary,
             exception_count=len(property_buckets),
@@ -977,6 +1099,37 @@ def _get_status_label(status: str) -> str:
         "AMOUNT_MISMATCH": "Amount Mismatch"
     }
     return labels.get(status, status)
+
+
+def _calculate_analysis_period(actual_detail: pd.DataFrame, expected_detail: pd.DataFrame) -> str:
+    """Calculate the date range of data being analyzed."""
+    try:
+        # Get earliest and latest dates from both actual and expected data
+        dates = []
+        
+        # Get dates from actual transactions
+        if CanonicalField.POST_DATE.value in actual_detail.columns:
+            actual_dates = pd.to_datetime(actual_detail[CanonicalField.POST_DATE.value], errors='coerce').dropna()
+            if len(actual_dates) > 0:
+                dates.extend(actual_dates.tolist())
+        
+        # Get dates from scheduled charges
+        if CanonicalField.PERIOD_START.value in expected_detail.columns:
+            expected_dates = pd.to_datetime(expected_detail[CanonicalField.PERIOD_START.value], errors='coerce').dropna()
+            if len(expected_dates) > 0:
+                dates.extend(expected_dates.tolist())
+        
+        if not dates:
+            return None
+        
+        min_date = min(dates)
+        max_date = max(dates)
+        
+        # Format as "MM/YYYY - MM/YYYY"
+        return f"{min_date.strftime('%m/%Y')} - {max_date.strftime('%m/%Y')}"
+    except Exception as e:
+        print(f"[WARNING] Could not calculate analysis period: {e}")
+        return None
 
 
 def _get_status_color(status: str) -> str:
@@ -1525,6 +1678,15 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     monthly['month_resolved_by'] = ''
                     monthly['is_historical'] = False
                     monthly['resolution_run_id'] = ''
+            
+            # Recalculate exception_count to exclude resolved months
+            # Count only unresolved exceptions (status != 'matched' and month_status != 'Resolved')
+            unresolved_count = sum(
+                1 for monthly in ar_data['monthly_details']
+                if monthly.get('status') != 'matched' and monthly.get('month_status') != 'Resolved'
+            )
+            ar_data['exception_count'] = unresolved_count
+            logger.info(f"[LEASE_VIEW] AR Code {ar_code_id}: Updated exception_count to {unresolved_count} (excluding resolved months)")
         
         # Calculate overall AR code status based on month-level statuses
         ar_status_map = {}

@@ -8,6 +8,13 @@
     <div class="row mb-4">
         <div class="col">
             <h2>PeakMade Portfolio</h2>
+            <p class="text-muted small mb-0">
+                <strong>Audit Run:</strong> <code>{{ run_id }}</code><br/>
+                <strong>Executed:</strong> {{ metadata.timestamp }}<br/>
+                {% if metadata.analysis_period %}
+                <strong>Analyzing Data:</strong> {{ metadata.analysis_period }}
+                {% endif %}
+            </p>
         </div>
     </div>
 
@@ -114,27 +121,6 @@
             <a href="{{ url_for('main.index') }}" class="btn btn-secondary">
                 <i class="fas fa-arrow-left"></i> Back to Upload
             </a>
-        </div>
-    </div>
-    
-    <!-- Run Metadata -->
-    <div class="row mt-3 mb-4">
-        <div class="col-12">
-            <p class="text-muted small">
-                Most Recent Run: <code>{{ run_id }}</code> | 
-                Executed: {{ metadata.timestamp }}
-                {% if metadata.audit_period %}
-                | <strong>Audit Period: 
-                {% if metadata.audit_period.month %}
-                    {{ ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][metadata.audit_period.month] }}
-                {% endif %}
-                {% if metadata.audit_period.year %}
-                    {{ metadata.audit_period.year }}
-                {% endif %}
-                </strong>
-                {% endif %}
-                <br>Cumulative data from {{ total_runs }} audit run(s)
-            </p>
         </div>
     </div>
 </div>

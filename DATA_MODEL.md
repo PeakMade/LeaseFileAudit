@@ -144,10 +144,11 @@ Month-by-month comparison of expected vs actual charges for an AR code.
   - `resolved_by`, `resolved_at`: Audit trail
 - **Historical Resolution Matching**:
   - When a new audit run finds an exception, the system queries SharePoint for ANY previous resolution of the same exception (matching property_id, lease_interval_id, ar_code_id, audit_month)
-  - If found, the historical resolution is automatically displayed with a "Historical" badge
-  - Shows original resolution date/time and who resolved it
+  - If found, the historical resolution is automatically displayed in the issue column (Expected or Actual) with checkmark badge
+  - Shows original resolution date/time and who resolved it (displayed below fix statement)
   - Does NOT create a new SharePoint row - displays the existing resolution
   - Prevents re-resolving the same exception across multiple audit runs
+  - Two-pass deduplication: Prioritizes current run resolutions over historical (processes current run records first, then backfills with historical)
 
 ## Data Flow
 
@@ -162,11 +163,15 @@ Month-by-month comparison of expected vs actual charges for an AR code.
 ### Exception Resolution Workflow
 1. **User opens lease** → Views ArCode with exceptions
 2. **Historical resolutions auto-apply** → System queries SharePoint for resolutions from ANY previous audit run
-3. **User sees historical fixes** → Months resolved in past runs show with "Historical" badge
+3. **User sees historical fixes** → Months resolved in past runs show in the issue column (Expected/Actual) with fix statement and resolved date
 4. **User applies new fixes to remaining months** → JavaScript calls `/api/exception-months` (POST)
 5. **ExceptionMonth saved to SharePoint** → Creates/updates record with fix details
 6. **Status recalculated** → Backend queries all ExceptionMonth records (current + historical)
 7. **Badge updated** → UI reflects new status (Open → Resolved when all months fixed)
+8. **Fix display location** → Fix statements appear in the relevant issue column:
+   - "Billed Without Schedule" → Fix shown in **Expected** column
+   - "Scheduled Charge Not Billed" → Fix shown in **Actual** column
+   - Resolved date/user info displayed as small text below fix
 
 ### Status Calculation Logic
 ```python
@@ -194,8 +199,11 @@ else:
 - **Contents**: ExceptionMonth records
 - **Scope**: Cross-run, multi-user, persisted resolution states
 - **Indexed Columns**: `RunId`, `PropertyId`, `LeaseIntervalId`, `ArCodeId` (for efficient filtering)
-- **Query Strategy**: Queries WITHOUT run_id filter to enable cross-run historical resolution matching
-- **Deduplication**: When multiple resolutions exist for the same month (from different runs), keeps the most recent one
+- **Query Strategy**: Queries WITHOUT run_id filter to enable cross-run historical resolution matching (orderby clause removed to avoid non-indexed field errors)
+- **Deduplication**: Two-pass strategy when multiple resolutions exist for the same month:
+  1. **Pass 1**: Process current run resolutions first (prioritizes fresh data from active audit)
+  2. **Pass 2**: Backfill with historical resolutions for months not in current run
+  - Result: Current run data always takes precedence over historical
 
 ## Key Relationships
 
