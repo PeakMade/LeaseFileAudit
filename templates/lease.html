@@ -66,7 +66,7 @@
                             </thead>
                             <tbody>
                                 {% for ar_code in all_ar_codes %}
-                                <tr>
+                                <tr data-ar-code-id="{{ ar_code.ar_code_id }}">
                                     <td><strong>{{ ar_code.ar_code_id|int }}</strong></td>
                                     <td>{{ ar_code.ar_code_name if ar_code.ar_code_name else '-' }}</td>
                                     <td class="text-center">
@@ -84,7 +84,7 @@
                                         {% endif %}
                                     </td>
                                     <td class="text-center">
-                                        <span class="badge bg-{{ ar_code.status_color }} ar-status-badge" id="arStatusBadge-{{ loop.index0 }}" data-pending="true">{{ ar_code.status_label }}</span>
+                                        <span class="badge bg-{{ ar_code.status_color }} ar-status-badge" id="arStatusBadge-{{ loop.index0 }}">{{ ar_code.status_label }}</span>
                                     </td>
                                     <td class="text-center">
                                         <button class="btn btn-sm btn-outline-secondary" 
@@ -126,6 +126,8 @@
     <!-- Hidden data for drawer content -->
     <script>
     const arCodeData = {{ all_ar_codes|tojson|safe }};
+    let currentDrawerData = null;  // Track currently open drawer data
+    let currentArCodeId = null;    // Track currently open AR code ID
     const exceptionState = {};
     const hasCustomerId = {{ 'true' if has_customer_id else 'false' }};
 
@@ -164,30 +166,30 @@
                 resolvedAt: storedState?.resolvedAt || null,
                 exceptionType: exceptionType,
                 originalFixLabel: storedState?.originalFixLabel || storedState?.fixLabel || null,
-                updatedFixLabel: storedState?.updatedFixLabel || storedState?.fixLabel || null
+                updatedFixLabel: storedState?.updatedFixLabel || storedState?.fixLabel || null,
+                resolvedMonths: storedState?.resolvedMonths || []
             };
         }
         return exceptionState[key];
     }
 
+    // Status badges are already set correctly from backend - no need to override them on page load
     document.addEventListener('DOMContentLoaded', () => {
-        loadExceptionStates().finally(() => {
-            arCodeData.forEach(data => {
-                const state = getOrInitState(data);
-                if (state.status) {
-                    updateArCodeStatusBadge(data.ar_code_id, state.status);
-                }
-            });
-        });
+        // Status calculation happens on the backend based on SharePoint month data
+        // The status_label in the HTML is already correct, don't override it
     });
     
     function openDrawer(index) {
         const data = arCodeData[index];
+        currentDrawerData = data;  // Store for later use
+        currentArCodeId = data.ar_code_id;  // Store AR code ID
         const state = getOrInitState(data);
         const drawer = document.getElementById('detailsDrawer');
         const title = document.getElementById('drawerTitle');
         const body = document.getElementById('drawerBody');
-        const statusMeta = getStatusMeta(state.status);
+        // Use backend status instead of JavaScript state
+        const backendStatus = data.status_label || 'Open';
+        const statusColor = data.status_color || 'warning';
         const hasSelectionChanged = !!(state.originalFixLabel && state.updatedFixLabel && state.originalFixLabel !== state.updatedFixLabel);
         
         title.textContent = `${data.ar_code_id} - ${data.ar_code_name || 'Unknown'}`;
@@ -201,7 +203,7 @@
         if (data.exception_count > 0) {
             content += `<span class="badge bg-danger">${data.exception_count} Exception(s)</span>`;
         }
-        content += `<span class="badge bg-${statusMeta.color}" id="drawerStatusBadge">${statusMeta.label}</span>`;
+        content += `<span class="badge bg-${statusColor}" id="drawerStatusBadge">${backendStatus}</span>`;
         content += '</div>';
 
         // Exception Workflow section - moved to top
@@ -210,47 +212,9 @@
             const status = exception ? exception.status : null;
             const statusLabel = exception ? exception.status_label : 'Exception';
 
-            const nextStep = state.status === 'Resolved'
-                ? 'Complete'
-                : state.actionType === 'external'
-                    ? 'Complete in Entrata'
-                    : state.actionType === 'internal'
-                        ? 'Flag for admin/ops'
-                        : state.actionType === 'one_time'
-                            ? 'No further action'
-                            : 'Complete in Entrata';
-
-            const showTracker = state.fixLabel ? '' : 'd-none';
-            const showOpenEntrata = state.actionType === 'external' ? '' : 'd-none';
-            const originalFixRow = hasSelectionChanged ? '' : 'd-none';
-            const updatedFixRow = hasSelectionChanged ? '' : 'd-none';
-
-            const openEntrataMarkup = hasCustomerId
-                ? `<a href="{{ entrata_url }}" target="_blank" class="btn btn-sm btn-outline-primary ${showOpenEntrata}" id="openEntrataBtn">
-                    <i class="fas fa-external-link-alt"></i> Open in Entrata
-                   </a>`
-                : `<button class="btn btn-sm btn-outline-primary ${showOpenEntrata}" id="openEntrataBtn" disabled title="Customer ID not available - button disabled">
-                    <i class="fas fa-external-link-alt"></i> Open in Entrata
-                   </button>`;
-
             content += `
                 <h5 class="mb-3"><i class="fas fa-tasks"></i> Exception Workflow</h5>
                 <p class="text-muted mb-3"><strong>${statusLabel}</strong> detected across ${data.exception_count} month${data.exception_count > 1 ? 's' : ''}</p>
-                <div class="card mb-3 border-light ${showTracker}" id="resolutionTracker">
-                    <div class="card-body p-3">
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <div class="text-uppercase text-muted small">Resolution Summary</div>
-                            <span class="badge bg-${statusMeta.color}" id="trackerStatus">${state.status}</span>
-                        </div>
-                        <div class="mb-2"><strong>Fix Applied:</strong> <span id="trackerFix">${state.fixLabel || '-'}</span></div>
-                        <div class="mb-2 ${originalFixRow}" id="trackerOriginalRow"><strong>Original Fix:</strong> <span id="trackerOriginal">${state.originalFixLabel || '-'}</span></div>
-                        <div class="mb-2 ${updatedFixRow}" id="trackerUpdatedRow"><strong>Updated Fix:</strong> <span id="trackerUpdated">${state.updatedFixLabel || '-'}</span></div>
-                        <div class="mb-2"><strong>Resolved On:</strong> <span id="trackerResolved">${state.resolvedAt ? formatDateTime(state.resolvedAt) : '-'}</span></div>
-                        <div class="d-flex gap-2">
-                            ${openEntrataMarkup}
-                        </div>
-                    </div>
-                </div>
             `;
         }
         
@@ -264,6 +228,8 @@
         content += '<th class="align-middle">Month</th>';
         content += '<th colspan="2" class="text-center text-info">Expected</th>';
         content += '<th colspan="2" class="text-center text-primary">Actual</th>';
+        content += '<th class="text-center">Fix Applied</th>';
+        content += '<th class="text-center">Resolved On</th>';
         content += '</tr>';
         content += '<tr>';
         content += '<th></th>';
@@ -272,6 +238,8 @@
         content += '<th class="text-end text-info">Amount</th>';
         content += '<th class="text-primary">Post Date</th>';
         content += '<th class="text-end text-primary">Amount</th>';
+        content += '<th></th>';
+        content += '<th></th>';
         content += '</tr>';
         content += '</thead>';
         content += '<tbody>';
@@ -326,6 +294,12 @@
                         content += '<td colspan="2" class="text-muted text-center"><em>No actual transactions</em></td>';
                     }
                     
+                    // Fix Applied and Resolved On columns (only first row)
+                    if (i === 0) {
+                        content += `<td rowspan="${maxRows}" class="align-middle fix-applied-cell" id="fixApplied-${monthIndex}"></td>`;
+                        content += `<td rowspan="${maxRows}" class="align-middle text-center resolved-on-cell" id="resolvedOn-${monthIndex}"></td>`;
+                    }
+                    
                     content += '</tr>';
                 }
             });
@@ -352,6 +326,50 @@
         }
         
         body.innerHTML = content;
+        
+        // Populate fix cells and checkbox states from month-level data
+        if (data.monthly_details && data.monthly_details.length > 0) {
+            data.monthly_details.forEach((month, monthIndex) => {
+                // Only process exception months (not matched ones)
+                if (month.status === 'matched') return;
+                
+                const checkbox = document.querySelector(`.exception-row-checkbox[data-month-index="${monthIndex}"]`);
+                const fixCell = document.getElementById(`fixApplied-${monthIndex}`);
+                const resolvedCell = document.getElementById(`resolvedOn-${monthIndex}`);
+                
+                // Check if this month has been resolved (from SharePoint)
+                if (month.month_status === 'Resolved') {
+                    // This month is resolved
+                    if (checkbox) {
+                        checkbox.checked = true;
+                        checkbox.disabled = true;
+                        
+                        // Mark the entire row as resolved visually
+                        const row = checkbox.closest('tr');
+                        if (row) {
+                            row.classList.remove('table-danger');
+                            row.classList.add('table-secondary');
+                            row.style.opacity = '0.6';
+                        }
+                    }
+                    if (fixCell && month.month_fix_label) {
+                        fixCell.innerHTML = `<small><span class="badge bg-success">✓</span> ${month.month_fix_label}</small>`;
+                    }
+                    if (resolvedCell && month.month_resolved_at) {
+                        resolvedCell.innerHTML = `<small>${formatDateTime(month.month_resolved_at)}<br/>by ${month.month_resolved_by || 'Unknown'}</small>`;
+                    }
+                } else if (month.month_status === 'Open') {
+                    // Month is still open
+                    if (fixCell) {
+                        fixCell.innerHTML = `<small class="text-muted">Not resolved</small>`;
+                    }
+                    if (resolvedCell) {
+                        resolvedCell.innerHTML = `<small class="text-muted">-</small>`;
+                    }
+                }
+            });
+        }
+        
         drawer.classList.add('open');
         document.getElementById('drawerOverlay').classList.add('open');
     }
@@ -540,11 +558,11 @@
         return `<div class="text-muted">No suggested fixes available for this exception type.</div>`;
     }
 
-    function applyFixToSelected(event, fixLabel, actionType) {
+    async function applyFixToSelected(event, fixLabel, actionType) {
         event.stopPropagation();
         
-        // Get selected exception rows
-        const selectedCheckboxes = document.querySelectorAll('.exception-row-checkbox:checked');
+        // Get selected exception rows (exclude already disabled/resolved ones)
+        const selectedCheckboxes = document.querySelectorAll('.exception-row-checkbox:checked:not(:disabled)');
         if (selectedCheckboxes.length === 0) {
             alert('Please select at least one exception row to apply the fix.');
             return;
@@ -554,26 +572,61 @@
         if (!drawerTitle) return;
 
         const arCodeId = drawerTitle.textContent.split(' - ')[0];
-        const state = exceptionState[String(arCodeId)] || { status: 'Open', fixLabel: null, actionType: null };
-
-        state.status = 'Resolved';
-        state.fixLabel = fixLabel;
-        state.actionType = actionType;
-        state.resolvedAt = new Date().toISOString();
-        if (!state.originalFixLabel) {
-            state.originalFixLabel = fixLabel;
-        }
-        state.updatedFixLabel = fixLabel;
-        exceptionState[String(arCodeId)] = state;
-
-        updateWorkflowUI(state);
-        updateArCodeStatusBadge(arCodeId, state.status);
-        persistExceptionState(arCodeId, state);
+        const resolvedAt = new Date().toISOString();
         
-        // Show the resolution tracker
-        const tracker = document.getElementById('resolutionTracker');
-        if (tracker) {
-            tracker.classList.remove('d-none');
+        // Save each selected month to SharePoint individually
+        for (const checkbox of selectedCheckboxes) {
+            const monthIndex = checkbox.dataset.monthIndex;
+            const auditMonth = checkbox.dataset.auditMonth;
+            
+            // Get month data from the current drawer data
+            const monthData = currentDrawerData?.monthly_details?.[monthIndex];
+            if (!monthData) continue;
+            
+            // Prepare month record for SharePoint
+            const monthRecord = {
+                run_id: '{{ run_id }}',
+                property_id: {{ property_id|int }},
+                lease_interval_id: {{ lease_interval_id|int }},
+                ar_code_id: arCodeId,
+                audit_month: auditMonth,
+                exception_type: monthData.status_label || monthData.status,
+                status: 'Resolved',
+                fix_label: fixLabel,
+                action_type: actionType,
+                variance: monthData.variance || 0,
+                expected_total: monthData.expected_total || 0,
+                actual_total: monthData.actual_total || 0,
+                resolved_at: resolvedAt
+            };
+            
+            // Save to SharePoint
+            const result = await saveExceptionMonth(monthRecord);
+            
+            if (result.ok) {
+                // Update UI for this month
+                const fixCell = document.getElementById(`fixApplied-${monthIndex}`);
+                const resolvedCell = document.getElementById(`resolvedOn-${monthIndex}`);
+                
+                if (fixCell) {
+                    fixCell.innerHTML = `<small><span class="badge bg-success">✓</span> ${fixLabel}</small>`;
+                }
+                if (resolvedCell) {
+                    resolvedCell.innerHTML = `<small>${formatDateTime(resolvedAt)}</small>`;
+                }
+                
+                // Uncheck and disable checkbox (gray it out to show resolved)
+                checkbox.checked = false;
+                checkbox.disabled = true;
+                
+                // Mark the entire row as resolved visually
+                const row = checkbox.closest('tr');
+                if (row) {
+                    row.classList.remove('table-danger');
+                    row.classList.add('table-secondary');
+                    row.style.opacity = '0.6';
+                }
+            }
         }
     }
     
@@ -616,96 +669,11 @@
 
     function updateWorkflowUI(state) {
         const statusMeta = getStatusMeta(state.status);
-        const statusEl = document.getElementById('workflowStatus');
         const drawerStatusBadge = document.getElementById('drawerStatusBadge');
-        const tracker = document.getElementById('resolutionTracker');
-        const trackerStatus = document.getElementById('trackerStatus');
-        const trackerFix = document.getElementById('trackerFix');
-        const trackerOriginal = document.getElementById('trackerOriginal');
-        const trackerUpdated = document.getElementById('trackerUpdated');
-        const trackerOriginalRow = document.getElementById('trackerOriginalRow');
-        const trackerUpdatedRow = document.getElementById('trackerUpdatedRow');
-        const trackerNext = document.getElementById('trackerNext');
-        const trackerResolved = document.getElementById('trackerResolved');
-        const trackerResolvedRow = document.getElementById('trackerResolvedRow');
-        const openEntrataBtn = document.getElementById('openEntrataBtn');
-        const changeFixRow = document.getElementById('changeFixRow');
 
-        if (statusEl) statusEl.textContent = state.status;
         if (drawerStatusBadge) {
             drawerStatusBadge.textContent = statusMeta.label;
             drawerStatusBadge.className = `badge bg-${statusMeta.color}`;
-        }
-
-        if (tracker) {
-            tracker.classList.remove('d-none');
-        }
-        if (trackerStatus) {
-            trackerStatus.textContent = statusMeta.label;
-            trackerStatus.className = `badge bg-${statusMeta.color}`;
-        }
-        if (trackerFix) trackerFix.textContent = state.fixLabel || '-';
-
-        const hasSelectionChanged = !!(state.originalFixLabel && state.updatedFixLabel && state.originalFixLabel !== state.updatedFixLabel);
-        if (trackerOriginal) trackerOriginal.textContent = state.originalFixLabel || '-';
-        if (trackerUpdated) trackerUpdated.textContent = state.updatedFixLabel || '-';
-        if (trackerOriginalRow) {
-            trackerOriginalRow.classList.toggle('d-none', !hasSelectionChanged);
-        }
-        if (trackerUpdatedRow) {
-            trackerUpdatedRow.classList.toggle('d-none', !hasSelectionChanged);
-        }
-
-        const nextStep = state.status === 'Resolved'
-            ? 'Complete'
-            : state.actionType === 'external'
-                ? 'Complete in Entrata'
-                : state.actionType === 'internal'
-                    ? 'Flag for admin/ops'
-                    : state.actionType === 'one_time'
-                        ? 'No further action'
-                        : 'Complete in Entrata';
-        if (trackerNext) trackerNext.textContent = nextStep;
-
-        if (trackerResolved) {
-            if (state.resolvedAt) {
-                trackerResolved.textContent = formatDateTime(state.resolvedAt);
-                if (trackerResolvedRow) trackerResolvedRow.classList.remove('d-none');
-            } else {
-                trackerResolved.textContent = '-';
-                if (trackerResolvedRow) trackerResolvedRow.classList.add('d-none');
-            }
-        }
-
-        if (openEntrataBtn) {
-            if (state.actionType === 'external' && state.status !== 'Resolved') {
-                openEntrataBtn.classList.remove('d-none');
-            } else {
-                openEntrataBtn.classList.add('d-none');
-            }
-        }
-
-        if (changeFixRow) {
-            changeFixRow.classList.toggle('d-none', !state.fixLabel);
-        }
-
-        const alertBox = document.querySelector('.alert.alert-warning');
-        if (alertBox) {
-            const existingBadge = alertBox.querySelector('.workflow-fix-badge');
-            if (state.fixLabel) {
-                const badge = existingBadge || document.createElement('div');
-                badge.className = 'workflow-fix-badge';
-                badge.textContent = `✅ ${state.status} Fix: ${state.fixLabel}`;
-                if (!existingBadge) {
-                    alertBox.appendChild(badge);
-                }
-            } else if (existingBadge) {
-                existingBadge.remove();
-            }
-        }
-
-        if (state.fixLabel) {
-            collapseSuggestedFixes();
         }
     }
 
@@ -766,32 +734,14 @@
             updated_fix_label: state.updatedFixLabel,
             action_type: state.actionType,
             resolved_at: state.resolvedAt,
+            resolved_months: JSON.stringify(state.resolvedMonths || []),
             updated_at: new Date().toISOString(),
             updated_by: "{{ current_user.email if current_user and current_user.email else '' }}"
         });
     }
 
-    async function loadExceptionStates() {
-        try {
-            const response = await fetch(`/api/exception-states/{{ run_id }}/{{ property_id|int }}/{{ lease_interval_id|int }}`);
-            if (!response.ok) return;
-            const data = await response.json();
-            (data.states || []).forEach(item => {
-                if (!item.ar_code_id) return;
-                exceptionState[String(item.ar_code_id)] = {
-                    status: normalizeWorkflowStatus(item.status || 'Open'),
-                    fixLabel: item.fix_label || null,
-                    originalFixLabel: item.original_fix_label || item.fix_label || null,
-                    updatedFixLabel: item.updated_fix_label || item.fix_label || null,
-                    actionType: item.action_type || null,
-                    resolvedAt: item.resolved_at || null,
-                    exceptionType: item.exception_type || null
-                };
-            });
-        } catch (err) {
-            console.warn('Failed to load exception states', err);
-        }
-    }
+    // OLD: loadExceptionStates() - No longer needed
+    // We now use per-month ExceptionMonths tracking instead of AR-code level ExceptionStates
 
     async function saveExceptionState(state) {
         try {
@@ -803,6 +753,78 @@
         } catch (err) {
             console.warn('Failed to save exception state', err);
         }
+    }
+
+    async function saveExceptionMonth(monthData) {
+        /**
+         * Save resolution status for a single month.
+         * monthData should contain:
+         * - run_id, property_id, lease_interval_id, ar_code_id
+         * - audit_month (e.g., "2024-01")
+         * - status ("Open" or "Resolved")
+         * - fix_label, action_type
+         * - variance, expected_total, actual_total
+         */
+        try {
+            const response = await fetch('/api/exception-months', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(monthData)
+            });
+            
+            const result = await response.json();
+            
+            if (result.ok && result.ar_code_status) {
+                // Update the AR code row badge with new status
+                updateArCodeStatusFromServer(result.ar_code_status);
+            }
+            
+            return result;
+        } catch (err) {
+            console.error('Failed to save exception month', err);
+            return { ok: false, error: err.message };
+        }
+    }
+    
+    function updateArCodeStatusFromServer(statusInfo) {
+        /**
+         * Update AR code row status badge based on server calculation.
+         * statusInfo contains: {status, total_months, resolved_months, open_months, status_label}
+         */
+        const arCodeId = currentArCodeId;
+        if (!arCodeId) return;
+        
+        // Update the table row badge by finding the row
+        const row = document.querySelector(`tr[data-ar-code-id="${arCodeId}"]`);
+        if (row) {
+            const badge = row.querySelector('.ar-status-badge');
+            if (badge) {
+                // Update badge text and color
+                badge.textContent = statusInfo.status_label;
+                badge.className = 'badge ar-status-badge bg-' + getStatusBadgeColor(statusInfo.status);
+            }
+        }
+        
+        // Update the drawer status badge
+        const drawerBadge = document.getElementById('drawerStatusBadge');
+        if (drawerBadge) {
+            drawerBadge.textContent = statusInfo.status_label;
+            drawerBadge.className = 'badge bg-' + getStatusBadgeColor(statusInfo.status);
+        }
+        
+        // Update the arCodeData to reflect the new status
+        const dataIndex = arCodeData.findIndex(item => String(item.ar_code_id) === String(arCodeId));
+        if (dataIndex !== -1) {
+            arCodeData[dataIndex].status_label = statusInfo.status_label;
+            arCodeData[dataIndex].status_color = getStatusBadgeColor(statusInfo.status);
+        }
+    }
+    
+    function getStatusBadgeColor(status) {
+        if (status === 'Resolved') return 'success';
+        if (status === 'Open') return 'danger';
+        if (status === 'Passed') return 'light-success';
+        return 'secondary';
     }
     
     function formatDateTime(dateStr) {
@@ -857,8 +879,8 @@
     .drawer {
         position: fixed;
         top: 0;
-        right: -800px;
-        width: 800px;
+        right: -1100px;
+        width: 1100px;
         height: 100vh;
         background: white;
         box-shadow: -2px 0 10px rgba(0,0,0,0.1);
@@ -948,8 +970,22 @@
     .btn-suggested-primary {
         background-color: #0d6efd;
         border-color: #0d6efd;
-        color: #fff;
-        font-weight: 700;
+    }
+
+    .exception-row-checkbox:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        accent-color: #198754; /* Green checkmark color */
+    }
+    
+    /* Make the entire table row look resolved when checkbox is disabled */
+    .table-danger:has(.exception-row-checkbox:disabled) {
+        background-color: #f8f9fa !important; /* Light gray instead of red */
+        opacity: 0.7;
+    }
+    
+    .table-danger:has(.exception-row-checkbox:disabled) td {
+        color: #6c757d; /* Gray text */
     }
 
     .btn-suggested-primary:hover {
@@ -972,6 +1008,11 @@
 
     .suggested-fixes.collapsed .suggested-fix:not(.selected) {
         display: none;
+    }
+
+    .bg-light-success {
+        background-color: #d4edda !important;
+        color: #155724 !important;
     }
 
     .workflow-fix-badge {

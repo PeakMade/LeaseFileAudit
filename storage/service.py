@@ -207,6 +207,7 @@ class StorageService:
                     'updated_fix_label': fields.get('UpdatedFixLabel', ''),
                     'action_type': fields.get('ActionType', ''),
                     'resolved_at': fields.get('ResolvedAt', ''),
+                    'resolved_months': fields.get('ResolvedMonths', ''),
                     'updated_at': fields.get('UpdatedAt', ''),
                     'updated_by': fields.get('UpdatedBy', '')
                 })
@@ -267,6 +268,7 @@ class StorageService:
                 'UpdatedFixLabel': state.get('updated_fix_label'),
                 'ActionType': state.get('action_type'),
                 'ResolvedAt': state.get('resolved_at'),
+                'ResolvedMonths': state.get('resolved_months'),
                 'UpdatedAt': state.get('updated_at'),
                 'UpdatedBy': state.get('updated_by')
             }
@@ -295,6 +297,254 @@ class StorageService:
         except Exception as e:
             logger.error(f"[STORAGE] Error upserting exception state: {e}", exc_info=True)
             return False
+
+    def load_exception_months_from_sharepoint_list(self, run_id: str, property_id: int, 
+                                                   lease_interval_id: int, ar_code_id: str) -> List[Dict[str, Any]]:
+        """
+        Load individual month exception states from SharePoint List 'ExceptionMonths'.
+        Each row represents one month of one AR code exception.
+        
+        Returns list of month records with their resolution status.
+        """
+        if not self._can_use_sharepoint_lists():
+            logger.debug("[STORAGE] SharePoint list not configured, returning empty exception months")
+            return []
+
+        try:
+            logger.info(f"[STORAGE] 📊 Loading exception months for AR Code {ar_code_id}")
+            site_id = self._get_site_id()
+            if not site_id:
+                return []
+
+            list_id = self._get_sharepoint_list_id("ExceptionMonths")
+            if not list_id:
+                logger.warning("[STORAGE] ExceptionMonths list not found - may need to create it")
+                return []
+
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Filter for this specific AR code's months
+            filter_query = (
+                f"fields/RunId eq '{run_id}' and "
+                f"fields/PropertyId eq {int(property_id)} and "
+                f"fields/LeaseIntervalId eq {int(lease_interval_id)} and "
+                f"fields/ArCodeId eq '{ar_code_id}'"
+            )
+            logger.info(f"[STORAGE] 🔍 Query params: run_id={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}, ar_code_id={ar_code_id}")
+            logger.info(f"[STORAGE] 🔍 ExceptionMonths filter: {filter_query}")
+            params = {'$expand': 'fields', '$filter': filter_query}
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] ❌ Failed to query exception months: {response.status_code} - {response.text}")
+                return []
+
+            items_data = response.json()
+            items = items_data.get('value', [])
+            logger.info(f"[STORAGE] 📦 SharePoint returned {len(items)} items for AR Code {ar_code_id}")
+            results = []
+            
+            for item in items:
+                fields = item.get('fields', {})
+                results.append({
+                    'item_id': item.get('id'),  # SharePoint internal ID for updates
+                    'composite_key': fields.get('CompositeKey', ''),
+                    'run_id': fields.get('RunId', ''),
+                    'property_id': fields.get('PropertyId', None),
+                    'lease_interval_id': fields.get('LeaseIntervalId', None),
+                    'ar_code_id': fields.get('ArCodeId', ''),
+                    'audit_month': fields.get('AuditMonth', ''),
+                    'exception_type': fields.get('ExceptionType', ''),
+                    'status': fields.get('Status', 'Open'),
+                    'fix_label': fields.get('FixLabel', ''),
+                    'action_type': fields.get('ActionType', ''),
+                    'variance': fields.get('Variance', 0),
+                    'expected_total': fields.get('ExpectedTotal', 0),
+                    'actual_total': fields.get('ActualTotal', 0),
+                    'resolved_at': fields.get('ResolvedAt', ''),
+                    'resolved_by': fields.get('ResolvedBy', ''),
+                    'updated_at': fields.get('UpdatedAt', ''),
+                    'updated_by': fields.get('UpdatedBy', '')
+                })
+            
+            logger.info(f"[STORAGE] Loaded {len(results)} exception month(s) for AR Code {ar_code_id}")
+            return results
+
+        except Exception as e:
+            logger.error(f"[STORAGE] Error loading exception months: {e}", exc_info=True)
+            return []
+
+    def upsert_exception_month_to_sharepoint_list(self, month_data: Dict[str, Any]) -> bool:
+        """
+        Upsert a single month's exception state into SharePoint List 'ExceptionMonths'.
+        Creates new record if doesn't exist, updates if it does.
+        
+        Args:
+            month_data: Dictionary containing month exception details including:
+                - run_id, property_id, lease_interval_id, ar_code_id
+                - audit_month (e.g., "2024-01")
+                - exception_type, status, fix_label, action_type
+                - variance, expected_total, actual_total
+                - resolved_at, resolved_by
+        """
+        if not self._can_use_sharepoint_lists():
+            logger.debug("[STORAGE] SharePoint list not configured, skipping exception month upsert")
+            return False
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return False
+
+            list_id = self._get_sharepoint_list_id("ExceptionMonths")
+            if not list_id:
+                logger.error("[STORAGE] ExceptionMonths list not found - cannot save month data")
+                return False
+
+            # Build composite key for this specific month
+            composite_key = (
+                f"{month_data.get('run_id')}:{month_data.get('property_id')}:"
+                f"{month_data.get('lease_interval_id')}:{month_data.get('ar_code_id')}:"
+                f"{month_data.get('audit_month')}"
+            )
+            logger.info(f"[STORAGE] Upserting ExceptionMonth: {composite_key}")
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+
+            # Check if record already exists
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            filter_query = f"fields/CompositeKey eq '{composite_key}'"
+            params = {'$expand': 'fields', '$filter': filter_query}
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] Failed to query exception month: {response.status_code} - {response.text}")
+                return False
+
+            # Prepare fields payload
+            fields_payload = {
+                'CompositeKey': composite_key,
+                'RunId': month_data.get('run_id'),
+                'PropertyId': int(month_data.get('property_id', 0)),
+                'LeaseIntervalId': int(month_data.get('lease_interval_id', 0)),
+                'ArCodeId': month_data.get('ar_code_id'),
+                'AuditMonth': month_data.get('audit_month'),
+                'ExceptionType': month_data.get('exception_type', ''),
+                'Status': month_data.get('status', 'Open'),
+                'FixLabel': month_data.get('fix_label', ''),
+                'ActionType': month_data.get('action_type', ''),
+                'Variance': float(month_data.get('variance', 0)),
+                'ExpectedTotal': float(month_data.get('expected_total', 0)),
+                'ActualTotal': float(month_data.get('actual_total', 0)),
+                'ResolvedAt': month_data.get('resolved_at', ''),
+                'ResolvedBy': month_data.get('resolved_by', ''),
+                'UpdatedAt': month_data.get('updated_at', ''),
+                'UpdatedBy': month_data.get('updated_by', '')
+            }
+            
+            logger.info(f"[STORAGE] 💾 Saving fields: RunId={fields_payload['RunId']}, PropertyId={fields_payload['PropertyId']}, LeaseIntervalId={fields_payload['LeaseIntervalId']}, ArCodeId={fields_payload['ArCodeId']}, Status={fields_payload['Status']}")
+
+            items_data = response.json()
+            items = items_data.get('value', [])
+            
+            if items:
+                # Update existing record
+                item_id = items[0]['id']
+                update_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items/{item_id}/fields"
+                update_response = requests.patch(update_url, headers=headers, json=fields_payload, timeout=30)
+                
+                if update_response.status_code in [200, 204]:
+                    logger.info(f"[STORAGE] ✅ Exception month updated: {month_data.get('audit_month')}")
+                    return True
+                else:
+                    logger.error(f"[STORAGE] Failed to update exception month: {update_response.status_code} - {update_response.text}")
+                    return False
+            else:
+                # Create new record
+                create_payload = {'fields': fields_payload}
+                create_response = requests.post(items_url, headers=headers, json=create_payload, timeout=30)
+                
+                if create_response.status_code in [200, 201]:
+                    logger.info(f"[STORAGE] ✅ Exception month created: {month_data.get('audit_month')}")
+                    return True
+                else:
+                    logger.error(f"[STORAGE] Failed to create exception month: {create_response.status_code} - {create_response.text}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"[STORAGE] Error upserting exception month: {e}", exc_info=True)
+            return False
+
+    def calculate_ar_code_status(self, run_id: str, property_id: int, 
+                                 lease_interval_id: int, ar_code_id: str) -> Dict[str, Any]:
+        """
+        Calculate overall AR code status based on individual month statuses.
+        
+        Returns:
+            {
+                'status': 'Open' | 'Resolved' | 'Passed',
+                'total_months': 4,
+                'resolved_months': 2,
+                'open_months': 2,
+                'status_label': 'Open (2 of 4 resolved)'
+            }
+        """
+        logger.info(f"[STATUS_CALC] Calculating status for AR Code {ar_code_id} (Run: {run_id}, Property: {property_id}, Lease: {lease_interval_id})")
+        
+        months = self.load_exception_months_from_sharepoint_list(
+            run_id, property_id, lease_interval_id, ar_code_id
+        )
+        
+        logger.info(f"[STATUS_CALC] Loaded {len(months) if months else 0} months for AR Code {ar_code_id}")
+        if months:
+            for month in months:
+                logger.info(f"[STATUS_CALC]   Month: {month.get('audit_month')}, Status: {month.get('status')}, Fix: {month.get('fix_label')}")
+        
+        if not months:
+            # No months saved yet - this means exceptions exist but haven't been addressed
+            # Return Open status with 0 resolved months
+            # Note: We don't return "Passed" here because we don't know if there are exceptions
+            # The caller (views.py) will determine if it's truly "Passed" based on exception_count
+            result = {
+                'status': 'Open',
+                'total_months': 0,
+                'resolved_months': 0,
+                'open_months': 0,
+                'status_label': 'Open'
+            }
+            logger.info(f"[STATUS_CALC] No months saved yet - returning Open (not Passed)")
+            return result
+        
+        total_months = len(months)
+        resolved_months = sum(1 for m in months if m.get('status') == 'Resolved')
+        open_months = total_months - resolved_months
+        
+        logger.info(f"[STATUS_CALC] Total: {total_months}, Resolved: {resolved_months}, Open: {open_months}")
+        
+        if open_months > 0:
+            status = 'Open'
+            status_label = f'Open ({resolved_months} of {total_months} resolved)'
+        else:
+            status = 'Resolved'
+            status_label = 'Resolved'
+        
+        result = {
+            'status': status,
+            'total_months': total_months,
+            'resolved_months': resolved_months,
+            'open_months': open_months,
+            'status_label': status_label
+        }
+        
+        logger.info(f"[STATUS_CALC] Final status for AR Code {ar_code_id}: {result}")
+        return result
     
     def _upload_file_to_sharepoint(self, file_content: str, file_path: str) -> bool:
         """Upload file to SharePoint document library."""

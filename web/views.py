@@ -6,6 +6,7 @@ from werkzeug.utils import secure_filename
 from pathlib import Path
 import pandas as pd
 import logging
+from datetime import datetime
 
 from audit_engine import (
     ExcelSourceLoader,
@@ -711,6 +712,79 @@ def upsert_exception_state():
     return jsonify({'ok': ok})
 
 
+@bp.route('/api/exception-months/<run_id>/<int:property_id>/<int:lease_interval_id>/<ar_code_id>', methods=['GET'])
+@require_auth
+def get_exception_months(run_id: str, property_id: int, lease_interval_id: int, ar_code_id: str):
+    """Get all exception months for a specific AR code."""
+    storage = get_storage_service()
+    months = storage.load_exception_months_from_sharepoint_list(
+        run_id, property_id, lease_interval_id, ar_code_id
+    )
+    return jsonify({'months': months})
+
+
+@bp.route('/api/exception-months', methods=['POST'])
+@require_auth
+def upsert_exception_month():
+    """
+    Upsert a single month's exception state.
+    
+    Expected payload:
+    {
+        "run_id": "run_20260127_135019",
+        "property_id": 101,
+        "lease_interval_id": 2345,
+        "ar_code_id": "AR001",
+        "audit_month": "2024-01",
+        "exception_type": "Scheduled Not Billed",
+        "status": "Resolved",
+        "fix_label": "Add to next billing cycle",
+        "action_type": "bill_next_cycle",
+        "variance": -500.00,
+        "expected_total": 500.00,
+        "actual_total": 0.00,
+        "resolved_at": "2026-02-09T14:30:00",
+        "resolved_by": "user@company.com"
+    }
+    """
+    payload = request.get_json(silent=True) or {}
+    required = ['run_id', 'property_id', 'lease_interval_id', 'ar_code_id', 'audit_month']
+    missing = [key for key in required if key not in payload]
+    if missing:
+        return jsonify({'ok': False, 'error': f"Missing fields: {', '.join(missing)}"}), 400
+
+    # Add timestamp and user info
+    user = get_current_user()
+    payload['updated_at'] = datetime.now().isoformat()
+    payload['updated_by'] = user.get('email', 'unknown') if user else 'unknown'
+    
+    if payload.get('status') == 'Resolved' and not payload.get('resolved_at'):
+        payload['resolved_at'] = datetime.now().isoformat()
+        payload['resolved_by'] = user.get('email', 'unknown') if user else 'unknown'
+
+    storage = get_storage_service()
+    ok = storage.upsert_exception_month_to_sharepoint_list(payload)
+    
+    # Also recalculate overall AR code status
+    status_info = storage.calculate_ar_code_status(
+        payload['run_id'],
+        payload['property_id'],
+        payload['lease_interval_id'],
+        payload['ar_code_id']
+    )
+    
+    return jsonify({'ok': ok, 'ar_code_status': status_info})
+
+
+@bp.route('/api/exception-months/ar-status/<run_id>/<int:property_id>/<int:lease_interval_id>/<ar_code_id>', methods=['GET'])
+@require_auth
+def get_ar_code_status_api(run_id: str, property_id: int, lease_interval_id: int, ar_code_id: str):
+    """Get calculated AR code status based on month-level statuses."""
+    storage = get_storage_service()
+    status_info = storage.calculate_ar_code_status(run_id, property_id, lease_interval_id, ar_code_id)
+    return jsonify(status_info)
+
+
 @bp.route('/property/<property_id>')
 @bp.route('/property/<property_id>/<run_id>')
 @require_auth
@@ -894,9 +968,9 @@ def _get_status_label(status: str) -> str:
 def _get_status_color(status: str) -> str:
     """Get brand color class for status."""
     colors = {
-        "SCHEDULED_NOT_BILLED": "brand-danger",  # magenta
-        "BILLED_NOT_SCHEDULED": "brand-accent",  # orange
-        "AMOUNT_MISMATCH": "brand-primary"  # cyan
+        "SCHEDULED_NOT_BILLED": "secondary",  # grey
+        "BILLED_NOT_SCHEDULED": "secondary",  # grey
+        "AMOUNT_MISMATCH": "secondary"  # grey
     }
     return colors.get(status, "secondary")
 
@@ -1368,23 +1442,79 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     'recommendation': monthly.get('recommendation')
                 })
         
-        # Load exception states to get workflow status (Open, Resolved)
-        exception_states = storage.load_exception_states_from_sharepoint_list(run_id, int(float(property_id)), int(float(lease_interval_id)))
+        # Load per-month exception states from SharePoint
+        # This allows tracking which specific months have been resolved
+        ar_month_states = {}  # {ar_code_id: {month: {status, fix_label, ...}}}
         
-        # Build map of AR code -> most severe workflow status
+        for ar_code_id in ar_code_unified.keys():
+            exception_months = storage.load_exception_months_from_sharepoint_list(
+                run_id, int(float(property_id)), int(float(lease_interval_id)), ar_code_id
+            )
+            
+            logger.info(f"[LEASE_VIEW] Loaded {len(exception_months)} exception months from SharePoint for AR Code {ar_code_id}")
+            
+            ar_month_states[ar_code_id] = {}
+            for month_record in exception_months:
+                audit_month = month_record.get('audit_month')
+                logger.info(f"[LEASE_VIEW] SharePoint month record: {audit_month} -> Status: {month_record.get('status')}, Fix: {month_record.get('fix_label')}")
+                ar_month_states[ar_code_id][audit_month] = month_record
+        
+        # Merge month-level resolution statuses into monthly details
+        for ar_code_id, ar_data in ar_code_unified.items():
+            month_states = ar_month_states.get(ar_code_id, {})
+            
+            logger.info(f"[LEASE_VIEW] Merging states for AR Code {ar_code_id}, has {len(month_states)} states from SharePoint")
+            
+            for monthly in ar_data['monthly_details']:
+                audit_month = monthly['audit_month']
+                
+                logger.debug(f"[LEASE_VIEW] Looking for match: monthly audit_month={audit_month}, type={type(audit_month)}")
+                
+                # Normalize audit_month format for comparison (handle both date and string formats)
+                if isinstance(audit_month, str):
+                    # Could be "2025-11-01" or "2025-11" or other format
+                    audit_month_normalized = audit_month[:10]  # Take first 10 chars (YYYY-MM-DD)
+                else:
+                    audit_month_normalized = str(audit_month)
+                
+                # Try exact match first, then try normalized match
+                month_state = month_states.get(audit_month)
+                if not month_state:
+                    # Try to find by normalized format
+                    for sp_month, sp_state in month_states.items():
+                        sp_month_normalized = sp_month[:10] if isinstance(sp_month, str) else str(sp_month)
+                        if sp_month_normalized == audit_month_normalized:
+                            month_state = sp_state
+                            logger.info(f"[LEASE_VIEW] Matched {audit_month} with SharePoint {sp_month} (normalized match)")
+                            break
+                
+                # If this month has exception state data, overlay it
+                if month_state:
+                    monthly['month_status'] = month_state.get('status', 'Open')
+                    monthly['month_fix_label'] = month_state.get('fix_label', '')
+                    monthly['month_action_type'] = month_state.get('action_type', '')
+                    monthly['month_resolved_at'] = month_state.get('resolved_at', '')
+                    monthly['month_resolved_by'] = month_state.get('resolved_by', '')
+                    logger.info(f"[LEASE_VIEW] Applied state to {audit_month}: status={monthly['month_status']}, fix={monthly['month_fix_label']}")
+                else:
+                    # No state saved yet - default to Open for exceptions, N/A for matched
+                    if monthly['status'] != 'matched':
+                        monthly['month_status'] = 'Open'
+                        logger.debug(f"[LEASE_VIEW] No state found for {audit_month}, defaulting to Open")
+                    else:
+                        monthly['month_status'] = 'N/A'  # Matched months don't need resolution
+                    monthly['month_fix_label'] = ''
+                    monthly['month_action_type'] = ''
+                    monthly['month_resolved_at'] = ''
+                    monthly['month_resolved_by'] = ''
+        
+        # Calculate overall AR code status based on month-level statuses
         ar_status_map = {}
-        status_priority = {'Open': 2, 'Resolved': 1, 'Passed': 0}
-        for state in exception_states:
-            ar_code = state.get('ar_code_id')
-            status = state.get('status', 'Open')
-            # Normalize old "In Progress" to "Open"
-            if status and str(status).lower() in ['in progress', 'in_progress']:
-                status = 'Open'
-            if ar_code:
-                current_priority = status_priority.get(ar_status_map.get(ar_code, 'Passed'), 0)
-                new_priority = status_priority.get(status, 0)
-                if new_priority > current_priority:
-                    ar_status_map[ar_code] = status
+        for ar_code_id, ar_data in ar_code_unified.items():
+            status_info = storage.calculate_ar_code_status(
+                run_id, int(float(property_id)), int(float(lease_interval_id)), ar_code_id
+            )
+            ar_status_map[ar_code_id] = status_info
         
         # Determine overall status for each AR code
         all_ar_codes = []
@@ -1404,22 +1534,35 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 key=_sort_audit_month
             )
             
-            # Determine overall status from exception states or default
+            # Determine overall status from calculated month statuses
             ar_code_id = ar_data['ar_code_id']
-            if ar_code_id in ar_status_map:
-                workflow_status = ar_status_map[ar_code_id]
-                if workflow_status == 'Resolved':
+            has_exceptions = ar_data.get('has_exceptions', False)
+            
+            # Only AR codes with NO exceptions should be "Passed"
+            if not has_exceptions:
+                ar_data['status_label'] = 'Passed'
+                ar_data['status_color'] = 'light-success'
+                logger.info(f"[AR_STATUS] AR Code {ar_code_id} has no exceptions - setting to Passed")
+            elif ar_code_id in ar_status_map:
+                status_info = ar_status_map[ar_code_id]
+                overall_status = status_info['status']
+                
+                logger.info(f"[AR_STATUS] AR Code {ar_code_id}: status_info={status_info}, overall_status={overall_status}")
+                
+                if overall_status == 'Resolved':
                     ar_data['status_label'] = 'Resolved'
                     ar_data['status_color'] = 'success'
-                else:  # Open
-                    ar_data['status_label'] = 'Open'
+                    logger.info(f"[AR_STATUS] Setting AR Code {ar_code_id} to Resolved")
+                else:  # Open (with or without progress)
+                    # Show progress: "Open" or "Open (2 of 4 resolved)"
+                    ar_data['status_label'] = status_info['status_label']
                     ar_data['status_color'] = 'danger'
-            elif ar_data['has_exceptions']:
+                    logger.info(f"[AR_STATUS] Setting AR Code {ar_code_id} to {status_info['status_label']}")
+            else:
+                # Fallback: has exceptions but no status calculated - default to Open
                 ar_data['status_label'] = 'Open'
                 ar_data['status_color'] = 'danger'
-            else:
-                ar_data['status_label'] = 'Passed'
-                ar_data['status_color'] = 'success'
+                logger.info(f"[AR_STATUS] AR Code {ar_code_id} has exceptions but no saved months - setting to Open")
             
             all_ar_codes.append(ar_data)
         
