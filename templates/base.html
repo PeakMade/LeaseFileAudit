@@ -604,6 +604,9 @@
                 overlay.setAttribute('aria-hidden', 'false');
             }
 
+            // Expose globally for onclick handlers
+            window.showPageLoadingOverlay = showOverlay;
+
             document.addEventListener('click', function (event) {
                 const link = event.target.closest('a[href]');
                 if (!link) return;

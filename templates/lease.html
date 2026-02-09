@@ -227,8 +227,6 @@
         content += '<th class="align-middle">Month</th>';
         content += '<th colspan="2" class="text-center text-info">Expected</th>';
         content += '<th colspan="2" class="text-center text-primary">Actual</th>';
-        content += '<th class="text-center">Fix Applied</th>';
-        content += '<th class="text-center">Resolved On</th>';
         content += '</tr>';
         content += '<tr>';
         content += '<th></th>';
@@ -237,8 +235,6 @@
         content += '<th class="text-end text-info">Amount</th>';
         content += '<th class="text-primary">Post Date</th>';
         content += '<th class="text-end text-primary">Amount</th>';
-        content += '<th></th>';
-        content += '<th></th>';
         content += '</tr>';
         content += '</thead>';
         content += '<tbody>';
@@ -281,7 +277,12 @@
                         content += `<td><small>${formatDate(exp.period_start, 'MM/DD/YYYY')} - ${formatDate(exp.period_end, 'MM/DD/YYYY')}</small></td>`;
                         content += `<td class="text-end">$${formatNumber(exp.amount)}</td>`;
                     } else {
-                        content += '<td colspan="2" class="text-muted text-center"><em>No scheduled charges</em></td>';
+                        // No scheduled charges - this is BILLED_NOT_SCHEDULED (billed without schedule)
+                        if (i === 0 && isException && month.status === 'BILLED_NOT_SCHEDULED') {
+                            content += `<td rowspan="${maxRows}" colspan="2" class="text-center align-middle expected-fix-cell" id="expectedFix-${monthIndex}"><em class="text-muted">No scheduled charges</em></td>`;
+                        } else if (i === 0) {
+                            content += `<td rowspan="${maxRows}" colspan="2" class="text-muted text-center align-middle"><em>No scheduled charges</em></td>`;
+                        }
                     }
                     
                     // Actual columns
@@ -290,20 +291,19 @@
                         content += `<td>${formatDate(act.post_date, 'MM/DD/YYYY')}</td>`;
                         content += `<td class="text-end">$${formatNumber(act.amount)}</td>`;
                     } else {
-                        content += '<td colspan="2" class="text-muted text-center"><em>No actual transactions</em></td>';
-                    }
-                    
-                    // Fix Applied and Resolved On columns (only first row)
-                    if (i === 0) {
-                        content += `<td rowspan="${maxRows}" class="align-middle fix-applied-cell" id="fixApplied-${monthIndex}"></td>`;
-                        content += `<td rowspan="${maxRows}" class="align-middle text-center resolved-on-cell" id="resolvedOn-${monthIndex}"></td>`;
+                        // No actual transactions - this is SCHEDULED_NOT_BILLED (scheduled but not billed)
+                        if (i === 0 && isException && month.status === 'SCHEDULED_NOT_BILLED') {
+                            content += `<td rowspan="${maxRows}" colspan="2" class="text-center align-middle actual-fix-cell" id="actualFix-${monthIndex}"><em class="text-muted">No actual transactions</em></td>`;
+                        } else if (i === 0) {
+                            content += `<td rowspan="${maxRows}" colspan="2" class="text-muted text-center align-middle"><em>No actual transactions</em></td>`;
+                        }
                     }
                     
                     content += '</tr>';
                 }
             });
         } else {
-            content += '<tr><td colspan="6" class="text-center text-muted">No monthly details available</td></tr>';
+            content += '<tr><td colspan="4" class="text-center text-muted">No monthly details available</td></tr>';
         }
         
         content += '</tbody>';
@@ -339,8 +339,11 @@
                 if (month.status === 'matched') return;
                 
                 const checkbox = document.querySelector(`.exception-row-checkbox[data-month-index="${monthIndex}"]`);
-                const fixCell = document.getElementById(`fixApplied-${monthIndex}`);
-                const resolvedCell = document.getElementById(`resolvedOn-${monthIndex}`);
+                // Determine which cell to update based on exception type
+                const isBilledNotScheduled = month.status === 'BILLED_NOT_SCHEDULED';
+                const fixCell = isBilledNotScheduled 
+                    ? document.getElementById(`expectedFix-${monthIndex}`)
+                    : document.getElementById(`actualFix-${monthIndex}`);
                 
                 // Check if this month has been resolved (from SharePoint)
                 if (month.month_status === 'Resolved') {
@@ -358,18 +361,20 @@
                         }
                     }
                     if (fixCell && month.month_fix_label) {
-                        fixCell.innerHTML = `<small><span class="badge bg-success">✓</span> ${month.month_fix_label}</small>`;
-                    }
-                    if (resolvedCell && month.month_resolved_at) {
-                        resolvedCell.innerHTML = `<small>${formatDateTime(month.month_resolved_at)}<br/>by ${month.month_resolved_by || 'Unknown'}</small>`;
+                        let resolvedInfo = '';
+                        if (month.month_resolved_at) {
+                            resolvedInfo = `<br/><small style="font-size: 0.7rem; color: #6c757d;">${formatDateTime(month.month_resolved_at)} by ${month.month_resolved_by || 'Unknown'}</small>`;
+                        }
+                        fixCell.innerHTML = `<span class="badge bg-success">✓</span> ${month.month_fix_label}${resolvedInfo}`;
                     }
                 } else if (month.month_status === 'Open') {
-                    // Month is still open
+                    // Month is still open - show the original placeholder text
                     if (fixCell) {
-                        fixCell.innerHTML = `<small class="text-muted">Not resolved</small>`;
-                    }
-                    if (resolvedCell) {
-                        resolvedCell.innerHTML = `<small class="text-muted">-</small>`;
+                        if (isBilledNotScheduled) {
+                            fixCell.innerHTML = '<em class="text-muted">No scheduled charges</em>';
+                        } else {
+                            fixCell.innerHTML = '<em class="text-muted">No actual transactions</em>';
+                        }
                     }
                 }
             });
@@ -610,15 +615,15 @@
             const result = await saveExceptionMonth(monthRecord);
             
             if (result.ok) {
-                // Update UI for this month
-                const fixCell = document.getElementById(`fixApplied-${monthIndex}`);
-                const resolvedCell = document.getElementById(`resolvedOn-${monthIndex}`);
+                // Update UI for this month - determine which cell based on exception type
+                const isBilledNotScheduled = monthData.status === 'BILLED_NOT_SCHEDULED';
+                const fixCell = isBilledNotScheduled 
+                    ? document.getElementById(`expectedFix-${monthIndex}`)
+                    : document.getElementById(`actualFix-${monthIndex}`);
                 
                 if (fixCell) {
-                    fixCell.innerHTML = `<small><span class="badge bg-success">✓</span> ${fixLabel}</small>`;
-                }
-                if (resolvedCell) {
-                    resolvedCell.innerHTML = `<small>${formatDateTime(resolvedAt)}</small>`;
+                    const resolvedInfo = `<br/><small style="font-size: 0.7rem; color: #6c757d;">${formatDateTime(resolvedAt)} by {{ user.name if user else 'Unknown' }}</small>`;
+                    fixCell.innerHTML = `<span class="badge bg-success">✓</span> ${fixLabel}${resolvedInfo}`;
                 }
                 
                 // Uncheck and disable checkbox (gray it out to show resolved)
