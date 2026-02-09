@@ -127,6 +127,7 @@
     <script>
     const arCodeData = {{ all_ar_codes|tojson|safe }};
     const exceptionState = {};
+    const hasCustomerId = {{ 'true' if has_customer_id else 'false' }};
 
     function getExceptionKey(data, exceptionType) {
         return `{{ run_id }}:{{ property_id }}:{{ lease_interval_id }}:${data.ar_code_id}:${exceptionType || 'UNKNOWN'}`;
@@ -161,7 +162,9 @@
                 fixLabel: storedState?.fixLabel || null,
                 actionType: storedState?.actionType || null,
                 resolvedAt: storedState?.resolvedAt || null,
-                exceptionType: exceptionType
+                exceptionType: exceptionType,
+                originalFixLabel: storedState?.originalFixLabel || storedState?.fixLabel || null,
+                updatedFixLabel: storedState?.updatedFixLabel || storedState?.fixLabel || null
             };
         }
         return exceptionState[key];
@@ -185,6 +188,7 @@
         const title = document.getElementById('drawerTitle');
         const body = document.getElementById('drawerBody');
         const statusMeta = getStatusMeta(state.status);
+        const hasSelectionChanged = !!(state.originalFixLabel && state.updatedFixLabel && state.originalFixLabel !== state.updatedFixLabel);
         
         title.textContent = `${data.ar_code_id} - ${data.ar_code_name || 'Unknown'}`;
         
@@ -309,21 +313,24 @@
                 </div>
             `;
 
-            const showTracker = state.fixLabel ? '' : 'd-none';
-            const showOpenEntrata = state.actionType === 'external' ? '' : 'd-none';
+                const showTracker = state.fixLabel ? '' : 'd-none';
+                const showOpenEntrata = state.actionType === 'external' ? '' : 'd-none';
+                const changeFixVisibility = state.fixLabel ? '' : 'd-none';
+                const originalFixRow = hasSelectionChanged ? '' : 'd-none';
+                const updatedFixRow = hasSelectionChanged ? '' : 'd-none';
+
+                const openEntrataMarkup = hasCustomerId
+                ? `<a href="{{ entrata_url }}" target="_blank" class="btn btn-sm btn-outline-primary ${showOpenEntrata}" id="openEntrataBtn">
+                    <i class="fas fa-external-link-alt"></i> Open in Entrata
+                   </a>`
+                : `<button class="btn btn-sm btn-outline-primary ${showOpenEntrata}" id="openEntrataBtn" disabled title="Customer ID not available - button disabled">
+                    <i class="fas fa-external-link-alt"></i> Open in Entrata
+                   </button>`;
 
             content += `
                 <hr class="my-4" />
                 <h5 class="mb-3"><i class="fas fa-tasks"></i> Exception Workflow</h5>
-                <div class="card mb-3 border-danger">
-                    <div class="card-header bg-danger text-white">
-                        <strong><i class="fas fa-info-circle"></i> What Happened?</strong>
-                    </div>
-                    <div class="card-body">
-                        <p class="mb-2"><strong>Summary:</strong> ${statusLabel} across ${data.exception_count} month${data.exception_count > 1 ? 's' : ''}</p>
-                        <p class="mb-0"><strong>AR Code:</strong> ${data.ar_code_id} - ${data.ar_code_name || 'Unknown'}</p>
-                    </div>
-                </div>
+                <p class="text-muted mb-3"><strong>${statusLabel}</strong> detected across ${data.exception_count} month${data.exception_count > 1 ? 's' : ''}</p>
                 <div class="card mb-3 border-primary">
                     <div class="card-header" style="background-color: #00a8c8; color: white;">
                         <strong><i class="fas fa-lightbulb"></i> Suggested Fixes</strong>
@@ -331,6 +338,11 @@
                     <div class="card-body">
                         <div id="suggestedFixes" class="suggested-fixes">
                             ${buildSuggestedFixes(status)}
+                        </div>
+                        <div class="d-flex justify-content-end mt-2 ${changeFixVisibility}" id="changeFixRow">
+                            <button class="btn btn-sm btn-outline-secondary" id="changeFixBtn" onclick="expandSuggestedFixes(event)">
+                                <i class="fas fa-undo"></i> Change selection
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -340,13 +352,13 @@
                             <div class="text-uppercase text-muted small">Resolution Tracker</div>
                             <span class="badge bg-${statusMeta.color}" id="trackerStatus">${state.status}</span>
                         </div>
-                        <div class="mb-1"><strong>Fix Chosen:</strong> <span id="trackerFix">${state.fixLabel || '-'}</span></div>
+                        <div class="mb-1"><strong>Fix Chosen (Current):</strong> <span id="trackerFix">${state.fixLabel || '-'}</span></div>
+                        <div class="mb-1 ${originalFixRow}" id="trackerOriginalRow"><strong>Original Fix:</strong> <span id="trackerOriginal">${state.originalFixLabel || '-'}</span></div>
+                        <div class="mb-1 ${updatedFixRow}" id="trackerUpdatedRow"><strong>Updated Fix:</strong> <span id="trackerUpdated">${state.updatedFixLabel || '-'}</span></div>
                         <div class="mb-3"><strong>Next Step:</strong> <span id="trackerNext">${nextStep}</span></div>
                         ${resolvedLine}
                         <div class="d-flex gap-2">
-                            <a href="{{ entrata_url }}" target="_blank" class="btn btn-sm btn-outline-primary ${showOpenEntrata}" id="openEntrataBtn">
-                                <i class="fas fa-external-link-alt"></i> Open in Entrata
-                            </a>
+                            ${openEntrataMarkup}
                             <button class="btn btn-sm btn-success" onclick="markResolved(event)">
                                 <i class="fas fa-check-circle"></i> Mark as Resolved
                             </button>
@@ -362,6 +374,7 @@
         if (state.fixLabel) {
             collapseSuggestedFixes();
         }
+        highlightSelectedFix(state.fixLabel);
     }
     
     function closeDrawer() {
@@ -382,7 +395,7 @@
     function buildSuggestedFixes(status) {
         if (status === 'SCHEDULED_NOT_BILLED') {
             return `
-                <div class="suggested-fix mb-2" onclick="selectFix(this, 0)">
+                <div class="suggested-fix mb-2" data-fix-label="Post missing charge in Entrata" onclick="selectFix(this, 0)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">1</span>
                         <div class="flex-grow-1">
@@ -394,7 +407,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix mb-2" onclick="selectFix(this, 1)">
+                <div class="suggested-fix mb-2" data-fix-label="Correct schedule dates" onclick="selectFix(this, 1)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">2</span>
                         <div class="flex-grow-1">
@@ -406,7 +419,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix" onclick="selectFix(this, 2)">
+                <div class="suggested-fix" data-fix-label="Mark as expected exception" onclick="selectFix(this, 2)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">3</span>
                         <div class="flex-grow-1">
@@ -422,7 +435,7 @@
         }
         if (status === 'BILLED_NOT_SCHEDULED') {
             return `
-                <div class="suggested-fix mb-2" onclick="selectFix(this, 0)">
+                <div class="suggested-fix mb-2" data-fix-label="Add recurring charge to schedule" onclick="selectFix(this, 0)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">1</span>
                         <div class="flex-grow-1">
@@ -434,7 +447,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix mb-2" onclick="selectFix(this, 1)">
+                <div class="suggested-fix mb-2" data-fix-label="Reverse incorrect charge" onclick="selectFix(this, 1)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">2</span>
                         <div class="flex-grow-1">
@@ -446,7 +459,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix" onclick="selectFix(this, 2)">
+                <div class="suggested-fix" data-fix-label="Mark as one-time charge" onclick="selectFix(this, 2)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">3</span>
                         <div class="flex-grow-1">
@@ -462,7 +475,7 @@
         }
         if (status === 'AMOUNT_MISMATCH') {
             return `
-                <div class="suggested-fix mb-2" onclick="selectFix(this, 0)">
+                <div class="suggested-fix mb-2" data-fix-label="Correct scheduled amount" onclick="selectFix(this, 0)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">1</span>
                         <div class="flex-grow-1">
@@ -474,7 +487,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix mb-2" onclick="selectFix(this, 1)">
+                <div class="suggested-fix mb-2" data-fix-label="Adjust posted transaction" onclick="selectFix(this, 1)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">2</span>
                         <div class="flex-grow-1">
@@ -486,7 +499,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix" onclick="selectFix(this, 2)">
+                <div class="suggested-fix" data-fix-label="Document variance reason" onclick="selectFix(this, 2)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">3</span>
                         <div class="flex-grow-1">
@@ -513,13 +526,13 @@
         const arCodeId = drawerTitle.textContent.split(' - ')[0];
         const state = exceptionState[String(arCodeId)] || { status: 'Open', fixLabel: null, actionType: null };
 
-        const shouldResolveImmediately = actionType === 'one_time';
-        state.status = shouldResolveImmediately ? 'Resolved' : 'In Progress';
+        state.status = 'In Progress';
         state.fixLabel = fixLabel;
         state.actionType = actionType;
-        if (state.status === 'Resolved') {
-            state.resolvedAt = new Date().toISOString();
+        if (!state.originalFixLabel) {
+            state.originalFixLabel = fixLabel;
         }
+        state.updatedFixLabel = fixLabel;
         exceptionState[String(arCodeId)] = state;
 
         updateWorkflowUI(state);
@@ -549,10 +562,15 @@
         const tracker = document.getElementById('resolutionTracker');
         const trackerStatus = document.getElementById('trackerStatus');
         const trackerFix = document.getElementById('trackerFix');
+        const trackerOriginal = document.getElementById('trackerOriginal');
+        const trackerUpdated = document.getElementById('trackerUpdated');
+        const trackerOriginalRow = document.getElementById('trackerOriginalRow');
+        const trackerUpdatedRow = document.getElementById('trackerUpdatedRow');
         const trackerNext = document.getElementById('trackerNext');
         const trackerResolved = document.getElementById('trackerResolved');
         const trackerResolvedRow = document.getElementById('trackerResolvedRow');
         const openEntrataBtn = document.getElementById('openEntrataBtn');
+        const changeFixRow = document.getElementById('changeFixRow');
 
         if (statusEl) statusEl.textContent = state.status;
         if (drawerStatusBadge) {
@@ -568,6 +586,16 @@
             trackerStatus.className = `badge bg-${statusMeta.color}`;
         }
         if (trackerFix) trackerFix.textContent = state.fixLabel || '-';
+
+        const hasSelectionChanged = !!(state.originalFixLabel && state.updatedFixLabel && state.originalFixLabel !== state.updatedFixLabel);
+        if (trackerOriginal) trackerOriginal.textContent = state.originalFixLabel || '-';
+        if (trackerUpdated) trackerUpdated.textContent = state.updatedFixLabel || '-';
+        if (trackerOriginalRow) {
+            trackerOriginalRow.classList.toggle('d-none', !hasSelectionChanged);
+        }
+        if (trackerUpdatedRow) {
+            trackerUpdatedRow.classList.toggle('d-none', !hasSelectionChanged);
+        }
 
         const nextStep = state.status === 'Resolved'
             ? 'Complete'
@@ -596,6 +624,10 @@
             } else {
                 openEntrataBtn.classList.add('d-none');
             }
+        }
+
+        if (changeFixRow) {
+            changeFixRow.classList.toggle('d-none', !state.fixLabel);
         }
 
         const alertBox = document.querySelector('.alert.alert-warning');
@@ -627,6 +659,26 @@
         });
     }
 
+    function expandSuggestedFixes(event) {
+        if (event) event.stopPropagation();
+        const container = document.getElementById('suggestedFixes');
+        if (!container) return;
+        container.classList.remove('collapsed');
+        container.querySelectorAll('button').forEach(btn => {
+            btn.disabled = false;
+        });
+    }
+
+    function highlightSelectedFix(fixLabel) {
+        if (!fixLabel) return;
+        document.querySelectorAll('.suggested-fix').forEach(fix => {
+            const label = fix.getAttribute('data-fix-label');
+            if (label && label === fixLabel) {
+                fix.classList.add('selected');
+            }
+        });
+    }
+
     function updateArCodeStatusBadge(arCodeId, status) {
         const index = arCodeData.findIndex(item => String(item.ar_code_id) === String(arCodeId));
         if (index === -1) return;
@@ -651,6 +703,8 @@
             exception_type: exceptionType || 'UNKNOWN',
             status: state.status,
             fix_label: state.fixLabel,
+            original_fix_label: state.originalFixLabel,
+            updated_fix_label: state.updatedFixLabel,
             action_type: state.actionType,
             resolved_at: state.resolvedAt,
             updated_at: new Date().toISOString(),
@@ -668,6 +722,8 @@
                 exceptionState[String(item.ar_code_id)] = {
                     status: normalizeWorkflowStatus(item.status || 'Open'),
                     fixLabel: item.fix_label || null,
+                    originalFixLabel: item.original_fix_label || item.fix_label || null,
+                    updatedFixLabel: item.updated_fix_label || item.fix_label || null,
                     actionType: item.action_type || null,
                     resolvedAt: item.resolved_at || null,
                     exceptionType: item.exception_type || null
