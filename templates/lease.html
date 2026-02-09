@@ -353,10 +353,14 @@
                         }
                     }
                     if (fixCell && month.month_fix_label) {
-                        fixCell.innerHTML = `<small><span class="badge bg-success">✓</span> ${month.month_fix_label}</small>`;
+                        const historicalBadge = month.is_historical ? 
+                            `<span class="badge bg-info ms-1" title="Auto-applied from previous audit run ${month.resolution_run_id || ''}">Historical</span>` : '';
+                        fixCell.innerHTML = `<small><span class="badge bg-success">✓</span> ${month.month_fix_label}${historicalBadge}</small>`;
                     }
                     if (resolvedCell && month.month_resolved_at) {
-                        resolvedCell.innerHTML = `<small>${formatDateTime(month.month_resolved_at)}<br/>by ${month.month_resolved_by || 'Unknown'}</small>`;
+                        const historicalNote = month.is_historical ? 
+                            `<br/><span class="text-info" style="font-size: 0.85em;">📜 From previous run</span>` : '';
+                        resolvedCell.innerHTML = `<small>${formatDateTime(month.month_resolved_at)}<br/>by ${month.month_resolved_by || 'Unknown'}${historicalNote}</small>`;
                     }
                 } else if (month.month_status === 'Open') {
                     // Month is still open

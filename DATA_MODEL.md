@@ -135,12 +135,19 @@ Month-by-month comparison of expected vs actual charges for an AR code.
   - Persists fix decisions across app restarts
   - Allows collaboration between multiple users
   - Drives AR code status calculation
+  - **Cross-run historical matching**: Auto-applies resolutions from previous audit runs
 - **Parent**: ArCode
 - **Key Fields**: 
   - `composite_key`: Unique identifier (run:property:lease:ar_code:month)
   - `status`: "Open" or "Resolved"
   - `fix_label`: Which fix was applied
   - `resolved_by`, `resolved_at`: Audit trail
+- **Historical Resolution Matching**:
+  - When a new audit run finds an exception, the system queries SharePoint for ANY previous resolution of the same exception (matching property_id, lease_interval_id, ar_code_id, audit_month)
+  - If found, the historical resolution is automatically displayed with a "Historical" badge
+  - Shows original resolution date/time and who resolved it
+  - Does NOT create a new SharePoint row - displays the existing resolution
+  - Prevents re-resolving the same exception across multiple audit runs
 
 ## Data Flow
 
@@ -154,20 +161,23 @@ Month-by-month comparison of expected vs actual charges for an AR code.
 
 ### Exception Resolution Workflow
 1. **User opens lease** → Views ArCode with exceptions
-2. **User applies fix to month(s)** → JavaScript calls `/api/exception-months` (POST)
-3. **ExceptionMonth saved to SharePoint** → Creates/updates record with fix details
-4. **Status recalculated** → Backend queries all ExceptionMonth records
-5. **Badge updated** → UI reflects new status (Open → Resolved when all months fixed)
+2. **Historical resolutions auto-apply** → System queries SharePoint for resolutions from ANY previous audit run
+3. **User sees historical fixes** → Months resolved in past runs show with "Historical" badge
+4. **User applies new fixes to remaining months** → JavaScript calls `/api/exception-months` (POST)
+5. **ExceptionMonth saved to SharePoint** → Creates/updates record with fix details
+6. **Status recalculated** → Backend queries all ExceptionMonth records (current + historical)
+7. **Badge updated** → UI reflects new status (Open → Resolved when all months fixed)
 
 ### Status Calculation Logic
 ```python
 # storage/service.py - calculate_ar_code_status()
+# Queries SharePoint for resolutions from ANY audit run (cross-run matching)
 if exception_count == 0:
     status = "Passed"  # No exceptions found
-elif all months have fixes:
+elif all months have fixes (including historical):
     status = "Resolved"  # All exceptions addressed
 else:
-    status = "Open (X of Y resolved)"  # Partial progress
+    status = "Open"  # Some months still need resolution
 ```
 
 ## Storage Architecture
@@ -184,6 +194,8 @@ else:
 - **Contents**: ExceptionMonth records
 - **Scope**: Cross-run, multi-user, persisted resolution states
 - **Indexed Columns**: `RunId`, `PropertyId`, `LeaseIntervalId`, `ArCodeId` (for efficient filtering)
+- **Query Strategy**: Queries WITHOUT run_id filter to enable cross-run historical resolution matching
+- **Deduplication**: When multiple resolutions exist for the same month (from different runs), keeps the most recent one
 
 ## Key Relationships
 

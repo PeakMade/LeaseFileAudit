@@ -304,6 +304,10 @@ class StorageService:
         Load individual month exception states from SharePoint List 'ExceptionMonths'.
         Each row represents one month of one AR code exception.
         
+        CROSS-RUN MATCHING: Queries for resolutions from ANY previous audit run,
+        not just the current run. This allows historical resolutions to auto-apply
+        to new audits of the same exception.
+        
         Returns list of month records with their resolution status.
         """
         if not self._can_use_sharepoint_lists():
@@ -311,7 +315,7 @@ class StorageService:
             return []
 
         try:
-            logger.info(f"[STORAGE] 📊 Loading exception months for AR Code {ar_code_id}")
+            logger.info(f"[STORAGE] 📊 Loading exception months for AR Code {ar_code_id} (checking ALL runs)")
             site_id = self._get_site_id()
             if not site_id:
                 return []
@@ -327,14 +331,14 @@ class StorageService:
                 'Content-Type': 'application/json'
             }
             
-            # Filter for this specific AR code's months
+            # Filter WITHOUT run_id to find resolutions from ANY audit run
+            # This enables cross-run historical resolution matching
             filter_query = (
-                f"fields/RunId eq '{run_id}' and "
                 f"fields/PropertyId eq {int(property_id)} and "
                 f"fields/LeaseIntervalId eq {int(lease_interval_id)} and "
                 f"fields/ArCodeId eq '{ar_code_id}'"
             )
-            logger.info(f"[STORAGE] 🔍 Query params: run_id={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}, ar_code_id={ar_code_id}")
+            logger.info(f"[STORAGE] 🔍 Query params: property_id={property_id}, lease_interval_id={lease_interval_id}, ar_code_id={ar_code_id} (cross-run)")
             logger.info(f"[STORAGE] 🔍 ExceptionMonths filter: {filter_query}")
             params = {'$expand': 'fields', '$filter': filter_query}
             response = requests.get(items_url, headers=headers, params=params, timeout=30)
@@ -346,18 +350,22 @@ class StorageService:
             items_data = response.json()
             items = items_data.get('value', [])
             logger.info(f"[STORAGE] 📦 SharePoint returned {len(items)} items for AR Code {ar_code_id}")
-            results = []
             
+            # First pass: collect all records and group by month
+            all_records = []
             for item in items:
                 fields = item.get('fields', {})
-                results.append({
+                audit_month = fields.get('AuditMonth', '')
+                record_run_id = fields.get('RunId', '')
+                
+                record = {
                     'item_id': item.get('id'),  # SharePoint internal ID for updates
                     'composite_key': fields.get('CompositeKey', ''),
-                    'run_id': fields.get('RunId', ''),
+                    'run_id': record_run_id,
                     'property_id': fields.get('PropertyId', None),
                     'lease_interval_id': fields.get('LeaseIntervalId', None),
                     'ar_code_id': fields.get('ArCodeId', ''),
-                    'audit_month': fields.get('AuditMonth', ''),
+                    'audit_month': audit_month,
                     'exception_type': fields.get('ExceptionType', ''),
                     'status': fields.get('Status', 'Open'),
                     'fix_label': fields.get('FixLabel', ''),
@@ -368,10 +376,37 @@ class StorageService:
                     'resolved_at': fields.get('ResolvedAt', ''),
                     'resolved_by': fields.get('ResolvedBy', ''),
                     'updated_at': fields.get('UpdatedAt', ''),
-                    'updated_by': fields.get('UpdatedBy', '')
-                })
+                    'updated_by': fields.get('UpdatedBy', ''),
+                    'is_historical': record_run_id != run_id,  # Flag if from a previous run
+                    'is_current_run': record_run_id == run_id  # Flag if from current run
+                }
+                all_records.append(record)
             
-            logger.info(f"[STORAGE] Loaded {len(results)} exception month(s) for AR Code {ar_code_id}")
+            # Second pass: deduplicate - prioritize current run over historical
+            results = []
+            seen_months = set()
+            
+            # Process current run records first (they take priority)
+            for record in all_records:
+                if record['is_current_run'] and record['audit_month'] not in seen_months:
+                    results.append(record)
+                    seen_months.add(record['audit_month'])
+                    logger.debug(f"[STORAGE] ✅ Using CURRENT run resolution for {record['audit_month']}")
+            
+            # Then add historical records for months not yet seen
+            for record in all_records:
+                if not record['is_current_run'] and record['audit_month'] not in seen_months:
+                    results.append(record)
+                    seen_months.add(record['audit_month'])
+                    logger.debug(f"[STORAGE] 📜 Using HISTORICAL run resolution for {record['audit_month']}")
+                elif not record['is_current_run'] and record['audit_month'] in seen_months:
+                    logger.debug(f"[STORAGE] ⏭️ Skipping duplicate historical resolution for {record['audit_month']}")
+            
+            logger.info(f"[STORAGE] Loaded {len(results)} unique exception month(s) for AR Code {ar_code_id}")
+            if results:
+                historical_count = sum(1 for r in results if r.get('is_historical'))
+                if historical_count > 0:
+                    logger.info(f"[STORAGE] ✨ {historical_count} historical resolution(s) auto-applied from previous runs")
             return results
 
         except Exception as e:
@@ -520,7 +555,7 @@ class StorageService:
         
         if open_months > 0:
             status = 'Open'
-            status_label = f'Open ({resolved_months} of {total_months} resolved)'
+            status_label = 'Open'
         else:
             status = 'Resolved'
             status_label = 'Resolved'

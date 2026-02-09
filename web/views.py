@@ -94,9 +94,13 @@ def calculate_cumulative_metrics() -> dict:
             latest_data = storage.load_run(most_recent_run_id)
             latest_buckets = latest_data['bucket_results']
             
+            logger.info(f"[METRICS] Loaded bucket_results with {len(latest_buckets)} rows")
+            
             current_exceptions = latest_buckets[
                 latest_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
             ]
+            
+            logger.info(f"[METRICS] Found {len(current_exceptions)} exception rows")
             
             current_undercharge = current_exceptions.apply(
                 lambda row: max(0, row[CanonicalField.EXPECTED_TOTAL.value] - row[CanonicalField.ACTUAL_TOTAL.value]),
@@ -107,6 +111,8 @@ def calculate_cumulative_metrics() -> dict:
                 lambda row: max(0, row[CanonicalField.ACTUAL_TOTAL.value] - row[CanonicalField.EXPECTED_TOTAL.value]),
                 axis=1
             ).sum()
+            
+            logger.info(f"[METRICS] Calculated undercharge=${current_undercharge}, overcharge=${current_overcharge}")
             
             total_leases_audited = latest_buckets[CanonicalField.LEASE_INTERVAL_ID.value].nunique()
         except Exception as e:
@@ -1497,7 +1503,9 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     monthly['month_action_type'] = month_state.get('action_type', '')
                     monthly['month_resolved_at'] = month_state.get('resolved_at', '')
                     monthly['month_resolved_by'] = month_state.get('resolved_by', '')
-                    logger.info(f"[LEASE_VIEW] Applied state to {audit_month}: status={monthly['month_status']}, fix={monthly['month_fix_label']}")
+                    monthly['is_historical'] = month_state.get('is_historical', False)
+                    monthly['resolution_run_id'] = month_state.get('run_id', '')
+                    logger.info(f"[LEASE_VIEW] Applied state to {audit_month}: status={monthly['month_status']}, fix={monthly['month_fix_label']}, historical={monthly.get('is_historical', False)}")
                 else:
                     # No state saved yet - default to Open for exceptions, N/A for matched
                     if monthly['status'] != 'matched':
@@ -1509,6 +1517,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     monthly['month_action_type'] = ''
                     monthly['month_resolved_at'] = ''
                     monthly['month_resolved_by'] = ''
+                    monthly['is_historical'] = False
+                    monthly['resolution_run_id'] = ''
         
         # Calculate overall AR code status based on month-level statuses
         ar_status_map = {}
