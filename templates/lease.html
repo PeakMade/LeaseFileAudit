@@ -597,7 +597,8 @@
                 variance: monthData.variance || 0,
                 expected_total: monthData.expected_total || 0,
                 actual_total: monthData.actual_total || 0,
-                resolved_at: resolvedAt
+                resolved_at: resolvedAt,
+                exception_count: currentDrawerData?.exception_count || 0
             };
             
             // Save to SharePoint

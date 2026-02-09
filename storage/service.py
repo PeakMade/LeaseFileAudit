@@ -483,9 +483,13 @@ class StorageService:
             return False
 
     def calculate_ar_code_status(self, run_id: str, property_id: int, 
-                                 lease_interval_id: int, ar_code_id: str) -> Dict[str, Any]:
+                                 lease_interval_id: int, ar_code_id: str, 
+                                 exception_count: int = 0) -> Dict[str, Any]:
         """
         Calculate overall AR code status based on individual month statuses.
+        
+        Args:
+            exception_count: Total number of exception months from audit data (not just saved ones)
         
         Returns:
             {
@@ -496,7 +500,7 @@ class StorageService:
                 'status_label': 'Open (2 of 4 resolved)'
             }
         """
-        logger.info(f"[STATUS_CALC] Calculating status for AR Code {ar_code_id} (Run: {run_id}, Property: {property_id}, Lease: {lease_interval_id})")
+        logger.info(f"[STATUS_CALC] Calculating status for AR Code {ar_code_id} (Run: {run_id}, Property: {property_id}, Lease: {lease_interval_id}, Total Exceptions: {exception_count})")
         
         months = self.load_exception_months_from_sharepoint_list(
             run_id, property_id, lease_interval_id, ar_code_id
@@ -507,22 +511,8 @@ class StorageService:
             for month in months:
                 logger.info(f"[STATUS_CALC]   Month: {month.get('audit_month')}, Status: {month.get('status')}, Fix: {month.get('fix_label')}")
         
-        if not months:
-            # No months saved yet - this means exceptions exist but haven't been addressed
-            # Return Open status with 0 resolved months
-            # Note: We don't return "Passed" here because we don't know if there are exceptions
-            # The caller (views.py) will determine if it's truly "Passed" based on exception_count
-            result = {
-                'status': 'Open',
-                'total_months': 0,
-                'resolved_months': 0,
-                'open_months': 0,
-                'status_label': 'Open'
-            }
-            logger.info(f"[STATUS_CALC] No months saved yet - returning Open (not Passed)")
-            return result
-        
-        total_months = len(months)
+        # Use the actual exception count from audit data as total, not just saved SharePoint records
+        total_months = exception_count if exception_count > 0 else len(months)
         resolved_months = sum(1 for m in months if m.get('status') == 'Resolved')
         open_months = total_months - resolved_months
         

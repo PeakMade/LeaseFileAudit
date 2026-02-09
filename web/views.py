@@ -766,11 +766,13 @@ def upsert_exception_month():
     ok = storage.upsert_exception_month_to_sharepoint_list(payload)
     
     # Also recalculate overall AR code status
+    exception_count = payload.get('exception_count', 0)  # Get from payload if provided
     status_info = storage.calculate_ar_code_status(
         payload['run_id'],
         payload['property_id'],
         payload['lease_interval_id'],
-        payload['ar_code_id']
+        payload['ar_code_id'],
+        exception_count=exception_count
     )
     
     return jsonify({'ok': ok, 'ar_code_status': status_info})
@@ -1512,7 +1514,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         ar_status_map = {}
         for ar_code_id, ar_data in ar_code_unified.items():
             status_info = storage.calculate_ar_code_status(
-                run_id, int(float(property_id)), int(float(lease_interval_id)), ar_code_id
+                run_id, int(float(property_id)), int(float(lease_interval_id)), ar_code_id,
+                exception_count=ar_data.get('exception_count', 0)
             )
             ar_status_map[ar_code_id] = status_info
         
