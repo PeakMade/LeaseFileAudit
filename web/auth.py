@@ -24,7 +24,10 @@ def get_easy_auth_user() -> Optional[Dict[str, Any]]:
     When authentication is enabled in Azure App Service, it injects several
     headers into each request:
     - X-MS-CLIENT-PRINCIPAL: Base64-encoded JSON with user claims
-    - X-MS-TOKEN-AAD-ACCESS-TOKEN: Azure AD access token
+    
+    NOTE: This function only extracts user identity information. For API access
+    tokens, use get_access_token() which returns app-only tokens via client
+    credentials flow (not the delegated user token from Easy Auth).
     
     Returns:
         Dict with user information or None if not authenticated:
@@ -33,7 +36,6 @@ def get_easy_auth_user() -> Optional[Dict[str, Any]]:
             'name': str,             # Display name
             'email': str,            # Email address
             'claims': dict,          # All claims from token
-            'access_token': str,     # Azure AD access token (if present)
             'identity_provider': str # Identity provider (e.g., 'aad')
         }
     """
@@ -97,37 +99,31 @@ def get_easy_auth_user() -> Optional[Dict[str, Any]]:
 
 def get_access_token() -> Optional[str]:
     """
-    Extract the Azure AD access token from Easy Auth headers.
+    Get an app-only access token for backend operations.
     
-    This token can be used to authenticate to other Azure services
-    like SharePoint, Graph API, etc.
+    Uses client credentials flow to obtain a token that authenticates
+    as the application itself (not as a specific user). This provides:
+    - Longer token lifetime (no expiration issues)
+    - More reliable SharePoint/Graph API access
+    - Application-level permissions
     
-    NOTE: Easy Auth does NOT auto-refresh this token. If it's expired,
-    client-side JavaScript will call /.auth/refresh and reload the page.
+    User authentication is still handled by Easy Auth for tracking
+    who is using the application.
     
     Returns:
-        Access token string or None if not available
+        Access token string or None if acquisition fails
     """
-    access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
+    # Use the existing app-only token function from activity_logging
+    from activity_logging.sharepoint import _get_app_only_token
     
-    if access_token:
-        try:
-            # Decode JWT without verification to check expiry (for logging only)
-            decoded = jwt.decode(access_token, options={"verify_signature": False})
-            exp_timestamp = decoded.get('exp')
-            
-            if exp_timestamp:
-                exp_datetime = datetime.fromtimestamp(exp_timestamp)
-                now = datetime.now()
-                time_until_expiry = exp_datetime - now
-                
-                # Only log debug info, not warnings - client JS will handle refresh
-                logger.debug(f"[AUTH] Access token expires at: {exp_datetime.isoformat()}")
-                logger.debug(f"[AUTH] Time until expiry: {time_until_expiry}")
-        except Exception as e:
-            logger.debug(f"[AUTH] Could not decode JWT for expiry check: {e}")
+    token = _get_app_only_token()
     
-    return access_token
+    if token:
+        logger.debug(f"[AUTH] Successfully obtained app-only access token")
+    else:
+        logger.warning(f"[AUTH] Failed to obtain app-only access token")
+    
+    return token
 
 
 def get_current_user() -> Optional[Dict[str, Any]]:
@@ -184,28 +180,6 @@ def require_auth(f):
                 'error': 'Unauthorized',
                 'message': 'Authentication required. Please ensure Azure App Service authentication is enabled.'
             }), 401
-        
-        # Check if access token is expired - force re-login if needed
-        access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
-        if access_token:
-            try:
-                decoded = jwt.decode(access_token, options={"verify_signature": False})
-                exp_timestamp = decoded.get('exp')
-                
-                if exp_timestamp:
-                    exp_datetime = datetime.fromtimestamp(exp_timestamp)
-                    now = datetime.now()
-                    
-                    if exp_datetime < now:
-                        logger.warning(f"[AUTH] Access token expired for {user['name']}, forcing re-login")
-                        # Build redirect URL to force fresh login
-                        from flask import redirect
-                        from urllib.parse import quote
-                        current_url = request.url
-                        login_url = f"/.auth/login/aad?post_login_redirect_uri={quote(current_url)}"
-                        return redirect(login_url)
-            except Exception as e:
-                logger.debug(f"[AUTH] Could not check token expiry: {e}")
         
         # Store user in Flask's g object for access in the view
         g.user = user
