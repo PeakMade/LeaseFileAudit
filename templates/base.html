@@ -230,7 +230,7 @@
         
         .user-dropdown {
             position: absolute;
-            top: calc(100% + 8px);
+            top: 100%;
             right: 0;
             background: white;
             border: 1px solid #e0e0e0;
@@ -239,10 +239,23 @@
             padding: 12px;
             min-width: 250px;
             display: none;
-            z-index: 1000;
+            z-index: 999;
+            margin-top: 4px;
         }
         
-        .user-badge:hover .user-dropdown {
+        /* Invisible bridge to keep hover active */
+        .user-dropdown::before {
+            content: '';
+            position: absolute;
+            top: -4px;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: transparent;
+        }
+        
+        .user-badge:hover .user-dropdown,
+        .user-dropdown:hover {
             display: block;
         }
         
