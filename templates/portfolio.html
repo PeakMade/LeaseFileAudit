@@ -74,7 +74,7 @@
                             <tbody>
                                 {% for property in properties %}
                                 <tr style="cursor: pointer; transition: background-color 0.15s;" 
-                                    onclick="window.location.href='{{ url_for('main.property_view', property_id=property.property_id, run_id=run_id) }}'">
+                                    onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href='{{ url_for('main.property_view', property_id=property.property_id, run_id=run_id) }}'">
                                     <td><strong>{{ property.property_name if property.property_name else '-' }}</strong></td>
                                     <td>{{ property.property_id|int }}</td>
                                     <td class="text-center">{{ property.total_lease_intervals }}</td>

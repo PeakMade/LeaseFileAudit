@@ -225,16 +225,16 @@
         content += '<tr>';
         content += '<th style="width: 30px;"></th>';
         content += '<th class="align-middle">Month</th>';
-        content += '<th colspan="2" class="text-center text-info">Expected</th>';
-        content += '<th colspan="2" class="text-center text-primary">Actual</th>';
+        content += '<th colspan="2" class="text-center text-dark">Expected</th>';
+        content += '<th colspan="2" class="text-center text-dark">Actual</th>';
         content += '</tr>';
         content += '<tr>';
         content += '<th></th>';
         content += '<th></th>';
-        content += '<th class="text-info">Period</th>';
-        content += '<th class="text-end text-info">Amount</th>';
-        content += '<th class="text-primary">Post Date</th>';
-        content += '<th class="text-end text-primary">Amount</th>';
+        content += '<th class="text-dark">Period</th>';
+        content += '<th class="text-end text-dark">Amount</th>';
+        content += '<th class="text-dark">Post Date</th>';
+        content += '<th class="text-end text-dark">Amount</th>';
         content += '</tr>';
         content += '</thead>';
         content += '<tbody>';
@@ -420,7 +420,7 @@
                         <div class="flex-grow-1">
                             <strong>Correct schedule dates</strong>
                             <p class="mb-1 text-muted small">The schedule may have incorrect start/end dates. Review and adjust the recurring charge schedule.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Correct schedule dates', 'external')">
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Correct schedule dates', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -432,7 +432,7 @@
                         <div class="flex-grow-1">
                             <strong>Mark as expected exception</strong>
                             <p class="mb-1 text-muted small">This may be expected (move-out, MTM, concession, etc.). Document the reason and mark as resolved.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Mark as expected exception', 'one_time')">
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Mark as expected exception', 'one_time')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -460,7 +460,7 @@
                         <div class="flex-grow-1">
                             <strong>Reverse incorrect charge</strong>
                             <p class="mb-1 text-muted small">The charge was posted in error. Reverse the transaction in Entrata.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Reverse incorrect charge', 'external')">
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Reverse incorrect charge', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -472,7 +472,7 @@
                         <div class="flex-grow-1">
                             <strong>Mark as one-time charge</strong>
                             <p class="mb-1 text-muted small">This is a legitimate one-time charge. Document and mark as resolved.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Mark as one-time charge', 'one_time')">
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Mark as one-time charge', 'one_time')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -500,7 +500,7 @@
                         <div class="flex-grow-1">
                             <strong>Adjust posted transaction</strong>
                             <p class="mb-1 text-muted small">The posted amount is incorrect. Reverse and repost with correct amount.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Adjust posted transaction', 'external')">
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Adjust posted transaction', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -512,7 +512,7 @@
                         <div class="flex-grow-1">
                             <strong>Document variance reason</strong>
                             <p class="mb-1 text-muted small">Amount difference is expected (proration, adjustment, etc.). Document and resolve.</p>
-                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="applyFix(event, 'Document variance reason', 'internal')">
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Document variance reason', 'internal')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -528,39 +528,39 @@
     function buildSuggestedFixButtons(status) {
         if (status === 'SCHEDULED_NOT_BILLED') {
             return `
-                <button class="btn btn-primary" onclick="applyFixToSelected(event, 'Post missing charge in Entrata', 'external')">
+                <button class="btn btn-suggested-primary" onclick="applyFixToSelected(event, 'Post missing charge in Entrata', 'external')">
                     Post missing charge in Entrata
                 </button>
-                <button class="btn btn-outline-primary" onclick="applyFixToSelected(event, 'Correct schedule dates', 'external')">
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Correct schedule dates', 'external')">
                     Correct schedule dates
                 </button>
-                <button class="btn btn-outline-primary" onclick="applyFixToSelected(event, 'Mark as expected exception', 'one_time')">
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Mark as expected exception', 'one_time')">
                     Mark as expected exception
                 </button>
             `;
         }
         if (status === 'BILLED_NOT_SCHEDULED') {
             return `
-                <button class="btn btn-primary" onclick="applyFixToSelected(event, 'Add recurring charge to schedule', 'external')">
+                <button class="btn btn-suggested-primary" onclick="applyFixToSelected(event, 'Add recurring charge to schedule', 'external')">
                     Add recurring charge to schedule
                 </button>
-                <button class="btn btn-outline-primary" onclick="applyFixToSelected(event, 'Reverse incorrect charge', 'external')">
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Reverse incorrect charge', 'external')">
                     Reverse incorrect charge
                 </button>
-                <button class="btn btn-outline-primary" onclick="applyFixToSelected(event, 'Mark as one-time charge', 'one_time')">
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Mark as one-time charge', 'one_time')">
                     Mark as one-time charge
                 </button>
             `;
         }
         if (status === 'AMOUNT_MISMATCH') {
             return `
-                <button class="btn btn-primary" onclick="applyFixToSelected(event, 'Correct scheduled amount', 'external')">
+                <button class="btn btn-suggested-primary" onclick="applyFixToSelected(event, 'Correct scheduled amount', 'external')">
                     Correct scheduled amount
                 </button>
-                <button class="btn btn-outline-primary" onclick="applyFixToSelected(event, 'Adjust posted transaction', 'external')">
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Adjust posted transaction', 'external')">
                     Adjust posted transaction
                 </button>
-                <button class="btn btn-outline-primary" onclick="applyFixToSelected(event, 'Document variance reason', 'internal')">
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Document variance reason', 'internal')">
                     Document variance reason
                 </button>
             `;
@@ -988,8 +988,15 @@
     }
 
     .btn-suggested-primary {
-        background-color: #0d6efd;
-        border-color: #0d6efd;
+        background: #0d6efd !important;
+        border-color: #0d6efd !important;
+        color: white !important;
+    }
+
+    .btn-suggested-outline {
+        background: transparent !important;
+        border-color: #0d6efd !important;
+        color: #0d6efd !important;
     }
 
     .exception-row-checkbox:disabled {
@@ -1009,9 +1016,19 @@
     }
 
     .btn-suggested-primary:hover {
-        background-color: #0b5ed7;
-        border-color: #0b5ed7;
-        color: #fff;
+        background: #0b5ed7 !important;
+        border-color: #0b5ed7 !important;
+        color: #fff !important;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(13, 110, 253, 0.3);
+    }
+
+    .btn-suggested-outline:hover {
+        background: #e7f1ff !important;
+        border-color: #0b5ed7 !important;
+        color: #0b5ed7 !important;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(13, 110, 253, 0.15);
     }
 
     .ar-status-badge[data-pending="true"] {
