@@ -1239,6 +1239,49 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             (bucket_results[CanonicalField.STATUS.value] == config.reconciliation.status_matched)
         ].copy()
         
+        # Filter out resolved exceptions by checking SharePoint
+        logger.info(f"[LEASE_VIEW] Filtering resolved exceptions for lease {lease_interval_id}")
+        resolved_keys = set()
+        
+        # Get unique AR codes from lease_buckets
+        unique_ar_codes = lease_buckets[CanonicalField.AR_CODE_ID.value].unique()
+        
+        for ar_code_id in unique_ar_codes:
+            exception_months = storage.load_exception_months_from_sharepoint_list(
+                run_id, int(float(property_id)), int(float(lease_interval_id)), ar_code_id
+            )
+            
+            # Track which months are resolved
+            for month_record in exception_months:
+                if month_record.get('status') == 'Resolved':
+                    audit_month = month_record.get('audit_month')
+                    # Normalize date format for comparison
+                    if isinstance(audit_month, str):
+                        audit_month = audit_month[:10]
+                    resolved_key = (ar_code_id, audit_month)
+                    resolved_keys.add(resolved_key)
+                    logger.info(f"[LEASE_VIEW] Marking as resolved: AR {ar_code_id}, Month {audit_month}")
+        
+        # Filter lease_buckets to exclude resolved ones
+        def is_unresolved_lease_bucket(row):
+            ar_code_id = row[CanonicalField.AR_CODE_ID.value]
+            audit_month = row[CanonicalField.AUDIT_MONTH.value]
+            
+            # Normalize audit_month for comparison
+            if isinstance(audit_month, pd.Timestamp):
+                audit_month = audit_month.strftime('%Y-%m-%d')
+            elif isinstance(audit_month, str):
+                audit_month = audit_month[:10]
+            
+            key = (ar_code_id, audit_month)
+            is_unres = key not in resolved_keys
+            if not is_unres:
+                logger.debug(f"[LEASE_VIEW] Filtering out resolved exception: {key}")
+            return is_unres
+        
+        lease_buckets = lease_buckets[lease_buckets.apply(is_unresolved_lease_bucket, axis=1)].copy()
+        logger.info(f"[LEASE_VIEW] After filtering resolved: {len(lease_buckets)} unresolved exceptions remain")
+        
         # Get expected and actual detail for this lease
         expected_detail = run_data["expected_detail"]
         actual_detail = run_data["actual_detail"]
