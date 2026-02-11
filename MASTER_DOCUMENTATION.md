@@ -1,5 +1,8 @@
 # Lease File Audit - Master Documentation
 
+> **📝 IMPORTANT**: This documentation must be updated whenever code changes are made.  
+> See [CONTRIBUTING.md](CONTRIBUTING.md) for the documentation update process.
+
 ## Table of Contents
 1. [Application Overview](#application-overview)
 2. [Architecture & Technology Stack](#architecture--technology-stack)
@@ -718,6 +721,16 @@ class ReconciliationConfig:
 
 ## Development Workflow
 
+### ⚠️ DOCUMENTATION-FIRST RULE
+
+**CRITICAL**: Before committing ANY code change, you MUST update this master documentation if your change affects:
+- Data flow or reconciliation logic
+- Features, functionality, or configuration
+- SharePoint schema, environment variables, or deployment
+- Project structure or API endpoints
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for detailed guidelines.
+
 ### Making Code Changes
 
 1. **Create Feature Branch**
@@ -729,23 +742,51 @@ class ReconciliationConfig:
    - Edit files
    - Test locally with `python run.py`
 
-3. **Commit & Push**
+3. **Update Documentation** (BEFORE committing!)
+   ```bash
+   # Open this file and update relevant sections
+   code MASTER_DOCUMENTATION.md
+   
+   # Update change log at bottom
+   # Add troubleshooting tips if fixing bugs
+   # Update configuration examples if adding env vars
+   ```
+
+4. **Commit Code + Documentation Together**
    ```bash
    git add .
-   git commit -m "Description of changes"
+   git add MASTER_DOCUMENTATION.md  # Include docs!
+   git commit -m "feat: Description of changes
+
+   - Implemented feature X
+   - Updated MASTER_DOCUMENTATION.md:
+     - Section Y (added example)
+     - Section Z (updated config)
+   "
    git push origin feature/description
    ```
 
-4. **Merge to Main** (triggers auto-deploy)
+5. **Merge to Main** (triggers auto-deploy)
    ```bash
    git checkout main
    git merge feature/description
    git push origin main
    ```
 
-5. **Monitor Deployment**
+6. **Monitor Deployment**
    - Azure Portal → App Service → Deployment Center
    - Check logs for errors
+
+### Setup Documentation Reminder Hook
+
+To get automatic reminders to update documentation:
+
+```powershell
+# Run once after cloning repository
+.\setup-hooks.ps1
+```
+
+This installs a pre-commit hook that will prompt you to update MASTER_DOCUMENTATION.md when committing code changes.
 
 ### Testing Workflow
 
@@ -1013,7 +1054,9 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-02-11**: Implemented documentation-first rule with pre-commit hooks and CONTRIBUTING.md
 - **2026-02-11**: Fixed duplicate loop in resolved exception filtering, added comprehensive logging
+- **2026-02-11**: Added comprehensive master documentation
 - **2026-01-27**: Implemented month-level exception tracking
 - **2026-01-21**: Added SharePoint storage integration
 - **2025-12**: Initial build with three-tier reconciliation
