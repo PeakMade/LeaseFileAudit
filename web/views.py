@@ -93,8 +93,7 @@ def calculate_cumulative_metrics() -> dict:
         match_rate = (matched / total_buckets * 100) if total_buckets > 0 else 0
         
         # Calculate undercharge/overcharge from most recent run
-        # Need to load most recent run's bucket_results for detailed calculation
-        # But we can approximate from the variances for now
+        # Load most recent run's bucket_results for detailed calculation
         most_recent_run_id = most_recent_metrics['run_id']
         try:
             latest_data = storage.load_run(most_recent_run_id)
@@ -106,27 +105,74 @@ def calculate_cumulative_metrics() -> dict:
                 latest_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
             ]
             
-            logger.info(f"[METRICS] Found {len(current_exceptions)} exception rows")
+            # Filter out resolved exceptions to match portfolio table behavior
+            resolved_keys = set()
+            unique_properties = current_exceptions[CanonicalField.PROPERTY_ID.value].unique()
             
-            current_undercharge = current_exceptions.apply(
-                lambda row: max(0, row[CanonicalField.EXPECTED_TOTAL.value] - row[CanonicalField.ACTUAL_TOTAL.value]),
-                axis=1
-            ).sum()
+            for property_id in unique_properties:
+                property_exceptions = current_exceptions[
+                    current_exceptions[CanonicalField.PROPERTY_ID.value] == property_id
+                ]
+                unique_lease_ids = property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value].unique()
+                
+                for lease_id in unique_lease_ids:
+                    lease_exceptions = property_exceptions[
+                        property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
+                    ]
+                    unique_ar_codes = lease_exceptions[CanonicalField.AR_CODE_ID.value].unique()
+                    
+                    for ar_code_id in unique_ar_codes:
+                        exception_months = storage.load_exception_months_from_sharepoint_list(
+                            most_recent_run_id, int(float(property_id)), int(float(lease_id)), ar_code_id
+                        )
+                        
+                        for month_record in exception_months:
+                            if month_record.get('status') == 'Resolved':
+                                audit_month = month_record.get('audit_month')
+                                if isinstance(audit_month, str):
+                                    audit_month = audit_month[:10]
+                                resolved_key = (property_id, lease_id, ar_code_id, audit_month)
+                                resolved_keys.add(resolved_key)
             
-            current_overcharge = current_exceptions.apply(
-                lambda row: max(0, row[CanonicalField.ACTUAL_TOTAL.value] - row[CanonicalField.EXPECTED_TOTAL.value]),
-                axis=1
-            ).sum()
+            def is_unresolved_bucket(row):
+                if row[CanonicalField.STATUS.value] == config.reconciliation.status_matched:
+                    return False
+                
+                property_id = row[CanonicalField.PROPERTY_ID.value]
+                lease_id = row[CanonicalField.LEASE_INTERVAL_ID.value]
+                ar_code_id = row[CanonicalField.AR_CODE_ID.value]
+                audit_month = row[CanonicalField.AUDIT_MONTH.value]
+                
+                if isinstance(audit_month, pd.Timestamp):
+                    audit_month = audit_month.strftime('%Y-%m-%d')
+                elif isinstance(audit_month, str):
+                    audit_month = audit_month[:10]
+                
+                key = (property_id, lease_id, ar_code_id, audit_month)
+                return key not in resolved_keys
+            
+            current_exceptions = current_exceptions[current_exceptions.apply(is_unresolved_bucket, axis=1)]
+            
+            logger.info(f"[METRICS] Found {len(current_exceptions)} unresolved exception rows")
+            
+            variances = current_exceptions[CanonicalField.VARIANCE.value]
+            current_undercharge = variances[variances < 0].abs().sum()
+            current_overcharge = variances[variances > 0].sum()
             
             logger.info(f"[METRICS] Calculated undercharge=${current_undercharge}, overcharge=${current_overcharge}")
             
             total_leases_audited = latest_buckets[CanonicalField.LEASE_INTERVAL_ID.value].nunique()
+            open_exceptions_count = len(current_exceptions)
+            total_buckets = len(latest_buckets)
+            matched = total_buckets - open_exceptions_count
+            match_rate = (matched / total_buckets * 100) if total_buckets > 0 else 0
         except Exception as e:
             logger.warning(f"[METRICS] Error loading most recent run details: {e}")
             # Fall back to approximations
             current_undercharge = 0
             current_overcharge = 0
             total_leases_audited = 0
+            open_exceptions_count = int(current_variances)
         
         # Historical metrics - sum across all runs (not deduplicated, but fast)
         # This is an approximation - true deduplication would require loading all CSVs
@@ -143,7 +189,7 @@ def calculate_cumulative_metrics() -> dict:
             'current_undercharge': float(current_undercharge),
             'current_overcharge': float(current_overcharge),
             'current_variance': float(current_net_variance),
-            'open_exceptions': int(current_variances),
+            'open_exceptions': int(open_exceptions_count),
             'total_audits': int(total_leases_audited),
             'match_rate': float(match_rate),
             'money_recovered': float(money_recovered),
