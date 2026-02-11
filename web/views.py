@@ -106,8 +106,12 @@ def calculate_cumulative_metrics() -> dict:
             ]
             
             # Filter out resolved exceptions to match portfolio table behavior
+            # Also track historical undercharge/overcharge from resolved exceptions
             resolved_keys = set()
+            resolved_exceptions_data = []  # Track variance data for historical calculation
             unique_properties = current_exceptions[CanonicalField.PROPERTY_ID.value].unique()
+            
+            logger.info(f"[METRICS] Checking {len(unique_properties)} properties for resolved exceptions")
             
             for property_id in unique_properties:
                 property_exceptions = current_exceptions[
@@ -126,13 +130,33 @@ def calculate_cumulative_metrics() -> dict:
                             most_recent_run_id, int(float(property_id)), int(float(lease_id)), ar_code_id
                         )
                         
+                        logger.debug(f"[METRICS] Property {property_id}, Lease {lease_id}, AR {ar_code_id}: {len(exception_months)} months from SharePoint")
+                        
                         for month_record in exception_months:
                             if month_record.get('status') == 'Resolved':
                                 audit_month = month_record.get('audit_month')
                                 if isinstance(audit_month, str):
                                     audit_month = audit_month[:10]
+                                
+                                # Find the matching bucket to get variance
+                                matching_bucket = lease_exceptions[
+                                    (lease_exceptions[CanonicalField.AR_CODE_ID.value] == ar_code_id) &
+                                    (lease_exceptions[CanonicalField.AUDIT_MONTH.value].astype(str).str[:10] == audit_month)
+                                ]
+                                
+                                if not matching_bucket.empty:
+                                    variance = matching_bucket.iloc[0][CanonicalField.VARIANCE.value]
+                                    resolved_exceptions_data.append({
+                                        'variance': variance,
+                                        'audit_month': audit_month
+                                    })
+                                    logger.debug(f"[METRICS] Found resolved exception: AR {ar_code_id}, Month {audit_month}, Variance ${variance}")
+                                
                                 resolved_key = (property_id, lease_id, ar_code_id, audit_month)
                                 resolved_keys.add(resolved_key)
+            
+            logger.info(f"[METRICS] Found {len(resolved_keys)} resolved exception months to filter out")
+            logger.info(f"[METRICS] Collected {len(resolved_exceptions_data)} resolved exceptions for historical calculation")
             
             def is_unresolved_bucket(row):
                 if row[CanonicalField.STATUS.value] == config.reconciliation.status_matched:
@@ -173,6 +197,7 @@ def calculate_cumulative_metrics() -> dict:
             current_overcharge = 0
             total_leases_audited = 0
             open_exceptions_count = int(current_variances)
+            resolved_exceptions_data = []  # No resolved data available
         
         # Historical metrics - sum across all runs (not deduplicated, but fast)
         # This is an approximation - true deduplication would require loading all CSVs
@@ -185,6 +210,12 @@ def calculate_cumulative_metrics() -> dict:
         
         current_net_variance = current_overcharge - current_undercharge
         
+        # Calculate historical undercharge/overcharge from resolved exceptions
+        historical_undercharge = sum(abs(exc['variance']) for exc in resolved_exceptions_data if exc['variance'] < 0)
+        historical_overcharge = sum(exc['variance'] for exc in resolved_exceptions_data if exc['variance'] > 0)
+        
+        logger.info(f"[METRICS] Historical undercharge=${historical_undercharge}, overcharge=${historical_overcharge} (from {len(resolved_exceptions_data)} resolved exceptions)")
+        
         return {
             'current_undercharge': float(current_undercharge),
             'current_overcharge': float(current_overcharge),
@@ -193,8 +224,8 @@ def calculate_cumulative_metrics() -> dict:
             'total_audits': int(total_leases_audited),
             'match_rate': float(match_rate),
             'money_recovered': float(money_recovered),
-            'historical_undercharge': 0,  # Would require full CSV analysis
-            'historical_overcharge': 0,   # Would require full CSV analysis
+            'historical_undercharge': float(historical_undercharge),
+            'historical_overcharge': float(historical_overcharge),
             'most_recent_run': {
                 'run_id': most_recent_metrics['run_id'],
                 'timestamp': most_recent_metrics['timestamp'],
