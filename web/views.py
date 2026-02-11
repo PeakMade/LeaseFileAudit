@@ -1111,8 +1111,14 @@ def property_view(property_id: str, run_id: str = None):
         lease_summary = sorted(lease_summary, key=lambda x: (not x['has_exceptions'], -x['total_variance']))
         
         # Calculate property KPIs
+        # Combine matched buckets with unresolved exceptions only (exclude resolved exceptions)
+        matched_buckets = all_property_buckets[
+            all_property_buckets[CanonicalField.STATUS.value] == config.reconciliation.status_matched
+        ]
+        kpis_input = pd.concat([matched_buckets, property_buckets], ignore_index=True)
+        
         property_kpis = calculate_kpis(
-            all_property_buckets,
+            kpis_input,  # Use filtered dataset (matched + unresolved exceptions only)
             run_data["findings"],
             property_id=None  # Already filtered, don't filter again
         )
