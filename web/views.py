@@ -243,13 +243,87 @@ def calculate_cumulative_metrics() -> dict:
     
     # Get most recent run for current state
     most_recent = all_runs[0]
-    latest_data = storage.load_run(most_recent['run_id'])
+    most_recent_run_id = most_recent['run_id']
+    latest_data = storage.load_run(most_recent_run_id)
     latest_buckets = latest_data['bucket_results']
     
     # Current state from most recent audit
     current_exceptions = latest_buckets[
         latest_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
     ]
+    
+    # Filter out resolved exceptions to match fast path behavior
+    resolved_keys = set()
+    resolved_exceptions_data = []  # Track variance data for historical calculation
+    unique_properties = current_exceptions[CanonicalField.PROPERTY_ID.value].unique()
+    
+    logger.info(f"[METRICS-SLOW] Checking {len(unique_properties)} properties for resolved exceptions")
+    
+    for property_id in unique_properties:
+        property_exceptions = current_exceptions[
+            current_exceptions[CanonicalField.PROPERTY_ID.value] == property_id
+        ]
+        unique_lease_ids = property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value].unique()
+        
+        for lease_id in unique_lease_ids:
+            lease_exceptions = property_exceptions[
+                property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
+            ]
+            unique_ar_codes = lease_exceptions[CanonicalField.AR_CODE_ID.value].unique()
+            
+            for ar_code_id in unique_ar_codes:
+                exception_months = storage.load_exception_months_from_sharepoint_list(
+                    most_recent_run_id, int(float(property_id)), int(float(lease_id)), ar_code_id
+                )
+                
+                logger.debug(f"[METRICS-SLOW] Property {property_id}, Lease {lease_id}, AR {ar_code_id}: {len(exception_months)} months from SharePoint")
+                
+                for month_record in exception_months:
+                    if month_record.get('status') == 'Resolved':
+                        audit_month = month_record.get('audit_month')
+                        if isinstance(audit_month, str):
+                            audit_month = audit_month[:10]
+                        
+                        # Find the matching bucket to get variance
+                        matching_bucket = lease_exceptions[
+                            (lease_exceptions[CanonicalField.AR_CODE_ID.value] == ar_code_id) &
+                            (lease_exceptions[CanonicalField.AUDIT_MONTH.value].astype(str).str[:10] == audit_month)
+                        ]
+                        
+                        if not matching_bucket.empty:
+                            variance = matching_bucket.iloc[0][CanonicalField.VARIANCE.value]
+                            resolved_exceptions_data.append({
+                                'variance': variance,
+                                'audit_month': audit_month
+                            })
+                            logger.debug(f"[METRICS-SLOW] Found resolved exception: AR {ar_code_id}, Month {audit_month}, Variance ${variance}")
+                        
+                        resolved_key = (property_id, lease_id, ar_code_id, audit_month)
+                        resolved_keys.add(resolved_key)
+    
+    logger.info(f"[METRICS-SLOW] Found {len(resolved_keys)} resolved exception months to filter out")
+    logger.info(f"[METRICS-SLOW] Collected {len(resolved_exceptions_data)} resolved exceptions for historical calculation")
+    
+    def is_unresolved_bucket(row):
+        if row[CanonicalField.STATUS.value] == config.reconciliation.status_matched:
+            return False
+        
+        property_id = row[CanonicalField.PROPERTY_ID.value]
+        lease_id = row[CanonicalField.LEASE_INTERVAL_ID.value]
+        ar_code_id = row[CanonicalField.AR_CODE_ID.value]
+        audit_month = row[CanonicalField.AUDIT_MONTH.value]
+        
+        if isinstance(audit_month, pd.Timestamp):
+            audit_month = audit_month.strftime('%Y-%m-%d')
+        elif isinstance(audit_month, str):
+            audit_month = audit_month[:10]
+        
+        key = (property_id, lease_id, ar_code_id, audit_month)
+        return key not in resolved_keys
+    
+    current_exceptions = current_exceptions[current_exceptions.apply(is_unresolved_bucket, axis=1)]
+    
+    logger.info(f"[METRICS-SLOW] Found {len(current_exceptions)} unresolved exception rows")
     
     # Proper undercharge/overcharge calculation:
     # Undercharge = expected > actual (we billed/collected less than scheduled)
@@ -265,6 +339,8 @@ def calculate_cumulative_metrics() -> dict:
         lambda row: max(0, row[CanonicalField.ACTUAL_TOTAL.value] - row[CanonicalField.EXPECTED_TOTAL.value]),
         axis=1
     ).sum()
+    
+    logger.info(f"[METRICS-SLOW] Calculated undercharge=${current_undercharge}, overcharge=${current_overcharge}")
     
     # Count unique leases audited (not buckets)
     total_leases_audited = latest_buckets[CanonicalField.LEASE_INTERVAL_ID.value].nunique()
@@ -318,8 +394,14 @@ def calculate_cumulative_metrics() -> dict:
     # Note: We only have variance in history, need to derive expected/actual
     # For historical: if variance < 0, it means actual < expected (undercharged)
     #                 if variance > 0, it means actual > expected (overcharged)
+    # Also include resolved exceptions from current run
     historical_undercharge = sum(abs(exc['variance']) for exc in all_exception_data if exc['variance'] < 0)
+    historical_undercharge += sum(abs(exc['variance']) for exc in resolved_exceptions_data if exc['variance'] < 0)
+    
     historical_overcharge = sum(exc['variance'] for exc in all_exception_data if exc['variance'] > 0)
+    historical_overcharge += sum(exc['variance'] for exc in resolved_exceptions_data if exc['variance'] > 0)
+    
+    logger.info(f"[METRICS-SLOW] Historical undercharge=${historical_undercharge}, overcharge=${historical_overcharge} (from {len(all_exception_data)} historical + {len(resolved_exceptions_data)} resolved exceptions)")
     
     # Calculate recovery - exceptions that existed historically but not in current
     current_exception_keys = set()
