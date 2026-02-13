@@ -375,6 +375,7 @@ class StorageService:
                     'actual_total': fields.get('ActualTotal', 0),
                     'resolved_at': fields.get('ResolvedAt', ''),
                     'resolved_by': fields.get('ResolvedBy', ''),
+                    'resolved_by_name': fields.get('ResolvedByName', ''),
                     'updated_at': fields.get('UpdatedAt', ''),
                     'updated_by': fields.get('UpdatedBy', ''),
                     'is_historical': record_run_id != run_id,  # Flag if from a previous run
@@ -424,7 +425,7 @@ class StorageService:
                 - audit_month (e.g., "2024-01")
                 - exception_type, status, fix_label, action_type
                 - variance, expected_total, actual_total
-                - resolved_at, resolved_by
+                - resolved_at, resolved_by (email), resolved_by_name (display name)
         """
         if not self._can_use_sharepoint_lists():
             logger.debug("[STORAGE] SharePoint list not configured, skipping exception month upsert")
@@ -480,11 +481,12 @@ class StorageService:
                 'ActualTotal': float(month_data.get('actual_total', 0)),
                 'ResolvedAt': month_data.get('resolved_at', ''),
                 'ResolvedBy': month_data.get('resolved_by', ''),
+                'ResolvedByName': month_data.get('resolved_by_name', ''),
                 'UpdatedAt': month_data.get('updated_at', ''),
                 'UpdatedBy': month_data.get('updated_by', '')
             }
             
-            logger.info(f"[STORAGE] 💾 Saving fields: RunId={fields_payload['RunId']}, PropertyId={fields_payload['PropertyId']}, LeaseIntervalId={fields_payload['LeaseIntervalId']}, ArCodeId={fields_payload['ArCodeId']}, Status={fields_payload['Status']}")
+            logger.info(f"[STORAGE] 💾 Saving fields: RunId={fields_payload['RunId']}, PropertyId={fields_payload['PropertyId']}, LeaseIntervalId={fields_payload['LeaseIntervalId']}, ArCodeId={fields_payload['ArCodeId']}, Status={fields_payload['Status']}, ResolvedBy={fields_payload['ResolvedBy']}, ResolvedByName={fields_payload['ResolvedByName']}")
 
             items_data = response.json()
             items = items_data.get('value', [])

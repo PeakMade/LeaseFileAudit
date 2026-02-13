@@ -389,7 +389,8 @@
                     if (fixCell && month.month_fix_label) {
                         let resolvedInfo = '';
                         if (month.month_resolved_at) {
-                            resolvedInfo = `<br/><small style="font-size: 0.7rem; color: #6c757d;">${formatDateTime(month.month_resolved_at)} by ${month.month_resolved_by || 'Unknown'}</small>`;
+                            const resolvedByName = month.month_resolved_by_name || month.month_resolved_by || 'Unknown';
+                            resolvedInfo = `<br/><small style="font-size: 0.7rem; color: #6c757d;">${formatDateTime(month.month_resolved_at)} by ${resolvedByName}</small>`;
                         }
                         fixCell.innerHTML = `<span class="badge bg-success">✓</span> ${month.month_fix_label}${resolvedInfo}`;
                     }

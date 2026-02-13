@@ -980,7 +980,8 @@ def upsert_exception_month():
         "expected_total": 500.00,
         "actual_total": 0.00,
         "resolved_at": "2026-02-09T14:30:00",
-        "resolved_by": "user@company.com"
+        "resolved_by": "user@company.com",
+        "resolved_by_name": "User Name"
     }
     """
     payload = request.get_json(silent=True) or {}
@@ -994,9 +995,13 @@ def upsert_exception_month():
     payload['updated_at'] = datetime.now().isoformat()
     payload['updated_by'] = user.get('email', 'unknown') if user else 'unknown'
     
+    logger.info(f"[EXCEPTION_MONTH] User info: {user}")
+    
     if payload.get('status') == 'Resolved' and not payload.get('resolved_at'):
         payload['resolved_at'] = datetime.now().isoformat()
-        payload['resolved_by'] = user.get('name', user.get('email', 'unknown')) if user else 'unknown'
+        payload['resolved_by'] = user.get('email', 'unknown') if user else 'unknown'
+        payload['resolved_by_name'] = user.get('name', 'Unknown') if user else 'Unknown'
+        logger.info(f"[EXCEPTION_MONTH] Setting resolved_by={payload['resolved_by']}, resolved_by_name={payload['resolved_by_name']}")
 
     storage = get_storage_service()
     ok = storage.upsert_exception_month_to_sharepoint_list(payload)
@@ -1831,6 +1836,7 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     monthly['month_action_type'] = month_state.get('action_type', '')
                     monthly['month_resolved_at'] = month_state.get('resolved_at', '')
                     monthly['month_resolved_by'] = month_state.get('resolved_by', '')
+                    monthly['month_resolved_by_name'] = month_state.get('resolved_by_name', '')
                     monthly['is_historical'] = month_state.get('is_historical', False)
                     monthly['resolution_run_id'] = month_state.get('run_id', '')
                     logger.info(f"[LEASE_VIEW] Applied state to {audit_month}: status={monthly['month_status']}, fix={monthly['month_fix_label']}, historical={monthly.get('is_historical', False)}")
@@ -1845,6 +1851,7 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     monthly['month_action_type'] = ''
                     monthly['month_resolved_at'] = ''
                     monthly['month_resolved_by'] = ''
+                    monthly['month_resolved_by_name'] = ''
                     monthly['is_historical'] = False
                     monthly['resolution_run_id'] = ''
             
