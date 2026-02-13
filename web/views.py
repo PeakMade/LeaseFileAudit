@@ -1848,21 +1848,27 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     monthly['is_historical'] = False
                     monthly['resolution_run_id'] = ''
             
-            # Recalculate exception_count to exclude resolved months
+            # Keep track of both total exceptions and unresolved exceptions
             # Count only unresolved exceptions (status != 'matched' and month_status != 'Resolved')
             unresolved_count = sum(
                 1 for monthly in ar_data['monthly_details']
                 if monthly.get('status') != 'matched' and monthly.get('month_status') != 'Resolved'
             )
-            ar_data['exception_count'] = unresolved_count
-            logger.info(f"[LEASE_VIEW] AR Code {ar_code_id}: Updated exception_count to {unresolved_count} (excluding resolved months)")
+            # Count ALL exceptions (both resolved and unresolved) for status calculation
+            total_exception_count = sum(
+                1 for monthly in ar_data['monthly_details']
+                if monthly.get('status') != 'matched'
+            )
+            ar_data['exception_count'] = unresolved_count  # Display count (unresolved only)
+            ar_data['total_exception_count'] = total_exception_count  # For status calculation (all exceptions)
+            logger.info(f"[LEASE_VIEW] AR Code {ar_code_id}: {unresolved_count} unresolved, {total_exception_count} total exceptions")
         
         # Calculate overall AR code status based on month-level statuses
         ar_status_map = {}
         for ar_code_id, ar_data in ar_code_unified.items():
             status_info = storage.calculate_ar_code_status(
                 run_id, int(float(property_id)), int(float(lease_interval_id)), ar_code_id,
-                exception_count=ar_data.get('exception_count', 0)
+                exception_count=ar_data.get('total_exception_count', 0)  # Pass TOTAL count, not just unresolved
             )
             ar_status_map[ar_code_id] = status_info
         

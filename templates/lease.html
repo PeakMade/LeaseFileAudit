@@ -129,6 +129,7 @@
     let currentArCodeId = null;    // Track currently open AR code ID
     const exceptionState = {};
     const hasCustomerId = {{ 'true' if has_customer_id else 'false' }};
+    const currentUserName = "{{ user.name if user else 'Unknown' }}";
 
     function getExceptionKey(data, exceptionType) {
         return `{{ run_id }}:{{ property_id }}:{{ lease_interval_id }}:${data.ar_code_id}:${exceptionType || 'UNKNOWN'}`;
@@ -633,7 +634,7 @@
                 expected_total: monthData.expected_total || 0,
                 actual_total: monthData.actual_total || 0,
                 resolved_at: resolvedAt,
-                exception_count: currentDrawerData?.exception_count || 0
+                exception_count: currentDrawerData?.total_exception_count || currentDrawerData?.exception_count || 0
             };
             
             // Save to SharePoint
@@ -647,7 +648,7 @@
                     : document.getElementById(`actualFix-${monthIndex}`);
                 
                 if (fixCell) {
-                    const resolvedInfo = `<br/><small style="font-size: 0.7rem; color: #6c757d;">${formatDateTime(resolvedAt)} by {{ user.name if user else 'Unknown' }}</small>`;
+                    const resolvedInfo = `<br/><small style="font-size: 0.7rem; color: #6c757d;">${formatDateTime(resolvedAt)} by ${currentUserName}</small>`;
                     fixCell.innerHTML = `<span class="badge bg-success">✓</span> ${fixLabel}${resolvedInfo}`;
                 }
                 
