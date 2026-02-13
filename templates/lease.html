@@ -635,6 +635,8 @@
                 expected_total: monthData.expected_total || 0,
                 actual_total: monthData.actual_total || 0,
                 resolved_at: resolvedAt,
+                resolved_by: '{{ user.email if user else "unknown" }}',
+                resolved_by_name: '{{ user.name if user else "Unknown" }}',
                 exception_count: currentDrawerData?.total_exception_count || currentDrawerData?.exception_count || 0
             };
             

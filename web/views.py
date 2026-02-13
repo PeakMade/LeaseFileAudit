@@ -997,8 +997,9 @@ def upsert_exception_month():
     
     logger.info(f"[EXCEPTION_MONTH] User info: {user}")
     
-    if payload.get('status') == 'Resolved' and not payload.get('resolved_at'):
-        payload['resolved_at'] = datetime.now().isoformat()
+    if payload.get('status') == 'Resolved':
+        if not payload.get('resolved_at'):
+            payload['resolved_at'] = datetime.now().isoformat()
         payload['resolved_by'] = user.get('email', 'unknown') if user else 'unknown'
         payload['resolved_by_name'] = user.get('name', 'Unknown') if user else 'Unknown'
         logger.info(f"[EXCEPTION_MONTH] Setting resolved_by={payload['resolved_by']}, resolved_by_name={payload['resolved_by_name']}")
