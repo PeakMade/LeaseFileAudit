@@ -996,7 +996,7 @@ def upsert_exception_month():
     
     if payload.get('status') == 'Resolved' and not payload.get('resolved_at'):
         payload['resolved_at'] = datetime.now().isoformat()
-        payload['resolved_by'] = user.get('email', 'unknown') if user else 'unknown'
+        payload['resolved_by'] = user.get('name', user.get('email', 'unknown')) if user else 'unknown'
 
     storage = get_storage_service()
     ok = storage.upsert_exception_month_to_sharepoint_list(payload)
