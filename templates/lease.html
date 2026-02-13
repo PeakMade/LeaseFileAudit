@@ -206,14 +206,28 @@
         content += '</div>';
 
         // Exception Workflow section - moved to top
-        if (data.exception_count > 0) {
-            const exception = (data.monthly_details || []).find(m => m.status !== 'matched');
+        if (data.exception_count > 0 || (data.monthly_details || []).some(m => m.status !== 'matched' && m.month_status === 'Resolved')) {
+            // Count total exceptions (including resolved) and open exceptions
+            const allExceptions = (data.monthly_details || []).filter(m => m.status !== 'matched');
+            const resolvedExceptions = allExceptions.filter(m => m.month_status === 'Resolved');
+            const openExceptions = allExceptions.filter(m => m.month_status !== 'Resolved');
+            
+            const exception = openExceptions[0] || allExceptions[0];
             const status = exception ? exception.status : null;
             const statusLabel = exception ? exception.status_label : 'Exception';
+            
+            let headerText = '';
+            if (openExceptions.length > 0 && resolvedExceptions.length > 0) {
+                headerText = `<strong>${statusLabel}</strong> detected across ${allExceptions.length} month${allExceptions.length > 1 ? 's' : ''} (${resolvedExceptions.length} resolved)`;
+            } else if (openExceptions.length > 0) {
+                headerText = `<strong>${statusLabel}</strong> detected across ${openExceptions.length} month${openExceptions.length > 1 ? 's' : ''}`;
+            } else {
+                headerText = `All ${resolvedExceptions.length} exception month${resolvedExceptions.length > 1 ? 's have' : ' has'} been resolved`;
+            }
 
             content += `
                 <h5 class="mb-3"><i class="fas fa-tasks"></i> Exception Workflow</h5>
-                <p class="text-muted mb-3"><strong>${statusLabel}</strong> detected across ${data.exception_count} month${data.exception_count > 1 ? 's' : ''}</p>
+                <p class="text-muted mb-3">${headerText}</p>
             `;
         }
         
@@ -246,10 +260,22 @@
                 const actTrans = month.actual_transactions || [];
                 const maxRows = Math.max(expTrans.length, actTrans.length, 1);
                 const isException = month.status !== 'matched';
-                const rowClass = isException ? 'table-danger' : '';
+                const isResolved = month.month_status === 'Resolved';
+                
+                // Determine row styling based on exception and resolution status
+                let rowClass = '';
+                let rowStyle = '';
+                if (isException) {
+                    if (isResolved) {
+                        rowClass = 'table-secondary';  // Grey background for resolved
+                        rowStyle = 'opacity: 0.6;';     // Fade out resolved exceptions
+                    } else {
+                        rowClass = 'table-danger';      // Red background for open exceptions
+                    }
+                }
                 
                 for (let i = 0; i < maxRows; i++) {
-                    content += `<tr class="${rowClass}">`;
+                    content += `<tr class="${rowClass}" style="${rowStyle}" data-month-index="${monthIndex}">`;
                     
                     // Checkbox column (only first row and only for exceptions)
                     if (i === 0) {
@@ -266,7 +292,12 @@
                     if (i === 0) {
                         let monthLabel = formatDate(month.audit_month, 'MMMM YYYY');
                         if (isException) {
-                            monthLabel += ` <span class="badge bg-${month.status_color}">${month.status_label}</span>`;
+                            // Show resolution status badge if resolved, otherwise show exception type badge
+                            if (isResolved) {
+                                monthLabel += ` <span class="badge bg-success">Resolved</span>`;
+                            } else {
+                                monthLabel += ` <span class="badge bg-${month.status_color}">${month.status_label}</span>`;
+                            }
                         }
                         content += `<td rowspan="${maxRows}" class="align-middle"><strong>${monthLabel}</strong></td>`;
                     }
@@ -310,24 +341,25 @@
         content += '</table>';
 
         // Suggested fixes as horizontal buttons below table
-        // Only show if there are exceptions AND at least one is not resolved
-        if (data.exception_count > 0) {
+        // Show if there are exceptions (including resolved ones)
+        if (data.exception_count > 0 || (data.monthly_details || []).some(m => m.status !== 'matched')) {
             const exceptions = (data.monthly_details || []).filter(m => m.status !== 'matched');
             const hasUnresolvedExceptions = exceptions.some(m => m.month_status !== 'Resolved');
+            const allResolved = !hasUnresolvedExceptions && exceptions.length > 0;
             
-            if (hasUnresolvedExceptions) {
-                const exception = exceptions.find(m => m.month_status !== 'Resolved');
-                const status = exception ? exception.status : null;
-                
-                content += `
-                    <div class="mb-3">
-                        <h6 class="mb-2"><i class="fas fa-lightbulb"></i> Suggested Fixes</h6>
-                        <div class="d-flex gap-2 flex-wrap" id="suggestedFixButtons">
-                            ${buildSuggestedFixButtons(status)}
-                        </div>
+            const exception = exceptions.find(m => m.month_status !== 'Resolved') || exceptions[0];
+            const status = exception ? exception.status : null;
+            
+            const allResolvedClass = allResolved ? 'all-resolved' : '';
+            
+            content += `
+                <div class="mb-3 suggested-fixes ${allResolvedClass}">
+                    <h6 class="mb-2"><i class="fas fa-lightbulb"></i> Suggested Fixes ${allResolved ? '<span class="text-muted">(All Resolved)</span>' : ''}</h6>
+                    <div class="d-flex gap-2 flex-wrap" id="suggestedFixButtons">
+                        ${buildSuggestedFixButtons(status)}
                     </div>
-                `;
-            }
+                </div>
+            `;
         }
         
         body.innerHTML = content;
@@ -351,14 +383,7 @@
                     if (checkbox) {
                         checkbox.checked = true;
                         checkbox.disabled = true;
-                        
-                        // Mark the entire row as resolved visually
-                        const row = checkbox.closest('tr');
-                        if (row) {
-                            row.classList.remove('table-danger');
-                            row.classList.add('table-secondary');
-                            row.style.opacity = '0.6';
-                        }
+                        // Row styling is already applied during table generation
                     }
                     if (fixCell && month.month_fix_label) {
                         let resolvedInfo = '';
@@ -823,6 +848,24 @@
             drawerBadge.className = 'badge bg-' + getStatusBadgeColor(statusInfo.status);
         }
         
+        // Update suggested fixes section based on resolution status
+        const suggestedFixesSection = document.querySelector('.suggested-fixes');
+        if (suggestedFixesSection) {
+            if (statusInfo.status === 'Resolved' && statusInfo.open_months === 0) {
+                suggestedFixesSection.classList.add('all-resolved');
+                const header = suggestedFixesSection.querySelector('h6');
+                if (header && !header.textContent.includes('(All Resolved)')) {
+                    header.innerHTML = '<i class="fas fa-lightbulb"></i> Suggested Fixes <span class="text-muted">(All Resolved)</span>';
+                }
+            } else {
+                suggestedFixesSection.classList.remove('all-resolved');
+                const header = suggestedFixesSection.querySelector('h6');
+                if (header) {
+                    header.innerHTML = '<i class="fas fa-lightbulb"></i> Suggested Fixes';
+                }
+            }
+        }
+        
         // Update the arCodeData to reflect the new status
         const dataIndex = arCodeData.findIndex(item => String(item.ar_code_id) === String(arCodeId));
         if (dataIndex !== -1) {
@@ -988,47 +1031,54 @@
     }
 
     .btn-suggested-primary {
-        background: #0d6efd !important;
-        border-color: #0d6efd !important;
-        color: white !important;
+        background: #ffffff;
+        border: 2px solid #0d6efd;
+        color: #0d6efd;
+        font-weight: 600;
+        transition: all 0.2s ease;
     }
 
     .btn-suggested-outline {
-        background: transparent !important;
-        border-color: #0d6efd !important;
-        color: #0d6efd !important;
+        background: #ffffff;
+        border: 2px solid #0d6efd;
+        color: #0d6efd;
+        font-weight: 600;
+        transition: all 0.2s ease;
+    }
+
+    .btn-suggested-primary:hover,
+    .btn-suggested-outline:hover {
+        background: #0d6efd;
+        border-color: #0d6efd;
+        color: #ffffff;
+    }
+
+    .suggested-fixes.all-resolved .suggested-fix {
+        opacity: 0.5;
+        pointer-events: none;
+    }
+
+    .suggested-fixes.all-resolved .btn-suggested-primary,
+    .suggested-fixes.all-resolved .btn-suggested-outline {
+        background: #e9ecef;
+        border-color: #dee2e6;
+        color: #6c757d;
+        cursor: not-allowed;
     }
 
     .exception-row-checkbox:disabled {
         opacity: 0.5;
         cursor: not-allowed;
-        accent-color: #198754; /* Green checkmark color */
+        accent-color: #198754;
     }
     
-    /* Make the entire table row look resolved when checkbox is disabled */
     .table-danger:has(.exception-row-checkbox:disabled) {
-        background-color: #f8f9fa !important; /* Light gray instead of red */
+        background-color: #f8f9fa;
         opacity: 0.7;
     }
     
     .table-danger:has(.exception-row-checkbox:disabled) td {
-        color: #6c757d; /* Gray text */
-    }
-
-    .btn-suggested-primary:hover {
-        background: #0b5ed7 !important;
-        border-color: #0b5ed7 !important;
-        color: #fff !important;
-        transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(13, 110, 253, 0.3);
-    }
-
-    .btn-suggested-outline:hover {
-        background: #e7f1ff !important;
-        border-color: #0b5ed7 !important;
-        color: #0b5ed7 !important;
-        transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(13, 110, 253, 0.15);
+        color: #6c757d;
     }
 
     .ar-status-badge[data-pending="true"] {
