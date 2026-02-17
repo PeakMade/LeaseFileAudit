@@ -3,18 +3,56 @@
 {% block title %}Portfolio Overview - Lease Audit{% endblock %}
 
 {% block content %}
-<div class="container-fluid mt-4">
-    <!-- Header -->
-    <div class="row mb-4">
+<div class="container-fluid" style="padding-top: 20px;">
+    <!-- Header Row (aligns with user badge) -->
+    <div class="row mb-3">
         <div class="col">
             <h2>PeakMade Portfolio</h2>
             <p class="text-muted small mb-0">
-                <strong>Audit Run:</strong> <code>{{ run_id }}</code><br/>
-                <strong>Executed:</strong> {{ metadata.timestamp }}<br/>
+                <strong>Audit ID:</strong> <code>{{ run_id }}</code>
+                {% if metadata.timestamp %}
+                    <br/><strong>Executed:</strong> <span id="executedTimestamp" data-timestamp="{{ metadata.timestamp }}">{{ metadata.timestamp }}</span>
+                {% endif %}
                 {% if metadata.analysis_period %}
-                <strong>Analyzing Data:</strong> {{ metadata.analysis_period }}
+                    <br/><strong>Month(s) Audited:</strong> {{ metadata.analysis_period }}
                 {% endif %}
             </p>
+            <script>
+                // Convert timestamp to user's local timezone
+                (function() {
+                    const timestampEl = document.getElementById('executedTimestamp');
+                    if (timestampEl) {
+                        const timestamp = timestampEl.getAttribute('data-timestamp');
+                        if (timestamp) {
+                            try {
+                                // Parse the ISO timestamp
+                                const date = new Date(timestamp);
+                                
+                                // Get user's timezone
+                                const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                                const tzAbbr = new Date().toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+                                
+                                // Format: MM DD YYYY HH:MM AM/PM TIMEZONE
+                                const dateStr = date.toLocaleDateString('en-US', { 
+                                    year: 'numeric', 
+                                    month: '2-digit', 
+                                    day: '2-digit' 
+                                }); // MM/DD/YYYY format
+                                
+                                const timeStr = date.toLocaleTimeString('en-US', { 
+                                    hour: 'numeric', 
+                                    minute: '2-digit',
+                                    hour12: true 
+                                });
+                                
+                                timestampEl.textContent = `${dateStr} ${timeStr} ${tzAbbr}`;
+                            } catch (e) {
+                                console.error('Error formatting timestamp:', e);
+                            }
+                        }
+                    }
+                })();
+            </script>
         </div>
     </div>
 

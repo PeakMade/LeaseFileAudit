@@ -769,8 +769,6 @@ def upload():
                 period_parts.append(str(audit_year))
             period_msg = f" (Period: {' '.join(period_parts)})"
         
-        flash(f'Audit completed successfully! Run ID: {run_id}{period_msg}', 'success')
-        
         # Log successful audit completion to SharePoint
         user = get_current_user()
         if user and config.auth.can_log_to_sharepoint():
@@ -997,9 +995,8 @@ def upsert_exception_month():
     
     logger.info(f"[EXCEPTION_MONTH] User info: {user}")
     
-    if payload.get('status') == 'Resolved':
-        if not payload.get('resolved_at'):
-            payload['resolved_at'] = datetime.now().isoformat()
+    if payload.get('status') == 'Resolved' and not payload.get('resolved_at'):
+        payload['resolved_at'] = datetime.now().isoformat()
         payload['resolved_by'] = user.get('email', 'unknown') if user else 'unknown'
         payload['resolved_by_name'] = user.get('name', 'Unknown') if user else 'Unknown'
         logger.info(f"[EXCEPTION_MONTH] Setting resolved_by={payload['resolved_by']}, resolved_by_name={payload['resolved_by_name']}")
