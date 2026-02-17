@@ -3,6 +3,22 @@
 {% block title %}Lease {{ lease_interval_id|int }} - Lease Audit{% endblock %}
 
 {% block content %}
+<!-- Action Buttons (positioned next to user badge) -->
+<div class="action-buttons-container">
+    {% if has_customer_id %}
+    <a href="{{ entrata_url }}" target="_blank" class="btn btn-primary" title="Open resident profile in Entrata (Customer ID: {{ customer_id }})">
+        <i class="fas fa-external-link-alt"></i> Open in Entrata
+    </a>
+    {% else %}
+    <button class="btn btn-primary" disabled title="Customer ID not available - button disabled">
+        <i class="fas fa-external-link-alt"></i> Open in Entrata
+    </button>
+    {% endif %}
+    <a href="{{ url_for('main.property_view', property_id=property_id, run_id=run_id) }}" class="btn btn-secondary">
+        <i class="fas fa-arrow-left"></i> Back to Property
+    </a>
+</div>
+
 <div class="container-fluid mt-4">
     <!-- Header -->
     <div class="row mb-4">
@@ -12,20 +28,6 @@
             {% else %}
                 <h2>Lease Interval ID: {{ lease_interval_id|int }}</h2>
             {% endif %}
-        </div>
-        <div class="col-auto">
-            {% if has_customer_id %}
-            <a href="{{ entrata_url }}" target="_blank" class="btn btn-primary me-2" title="Open resident profile in Entrata (Customer ID: {{ customer_id }})">
-                <i class="fas fa-external-link-alt"></i> Open in Entrata
-            </a>
-            {% else %}
-            <button class="btn btn-primary me-2" disabled title="Customer ID not available - button disabled">
-                <i class="fas fa-external-link-alt"></i> Open in Entrata
-            </button>
-            {% endif %}
-            <a href="{{ url_for('main.property_view', property_id=property_id, run_id=run_id) }}" class="btn btn-secondary">
-                <i class="fas fa-arrow-left"></i> Back to Property
-            </a>
         </div>
     </div>
 

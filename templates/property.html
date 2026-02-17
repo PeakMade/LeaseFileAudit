@@ -3,6 +3,13 @@
 {% block title %}Property {{ property_id|int }} - Lease Audit{% endblock %}
 
 {% block content %}
+<!-- Action Buttons (positioned next to user badge) -->
+<div class="action-buttons-container">
+    <a href="{{ url_for('main.portfolio', run_id=run_id) }}" class="btn btn-secondary">
+        <i class="fas fa-arrow-left"></i> Back to Portfolio
+    </a>
+</div>
+
 <div class="container-fluid mt-4">
     <div class="row mb-2 align-items-center">
         <div class="col">
@@ -43,11 +50,7 @@
                 {% endfor %}
             </select>
         </div>
-        <div class="col-auto">
-            <a href="{{ url_for('main.portfolio', run_id=run_id) }}" class="btn btn-secondary btn-sm">
-                <i class="fas fa-arrow-left"></i> Back to Portfolio
-            </a>
-        </div>
+    </div>
     </div>
     
     <script>

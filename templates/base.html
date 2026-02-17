@@ -202,6 +202,26 @@
             z-index: 1000;
         }
         
+        /* Action buttons container */
+        .action-buttons-container {
+            position: absolute;
+            top: 90px;
+            right: 280px;
+            display: flex;
+            gap: 10px;
+            z-index: 999;
+        }
+        
+        .action-buttons-container .btn {
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            border-radius: 6px;
+        }
+        
+        .action-buttons-container .btn i {
+            font-size: 0.8rem;
+        }
+        
         .user-badge:hover {
             box-shadow: 0 4px 12px rgba(0,0,0,0.12);
             border-color: #00a8c8;
@@ -501,7 +521,7 @@
     
     {% block extra_css %}{% endblock %}
 </head>
-<body style="margin: 0; padding: 0; overflow-x: hidden; position: relative;">
+<body style="margin: 0; padding: 0; overflow-x: hidden; position: relative; background-color: #f4f4f4;">
     <div id="pageLoadingOverlay" class="page-loading-overlay" aria-hidden="true">
         <div class="page-scan" role="status" aria-label="Loading">
             <div class="scan-sheet">
