@@ -26,6 +26,7 @@ from storage.service import StorageService
 from config import config
 from web.auth import require_auth, optional_auth, get_current_user, get_access_token
 from activity_logging.sharepoint import log_user_activity
+from app import cache  # Import cache instance
 import os
 
 logger = logging.getLogger(__name__)
@@ -46,10 +47,88 @@ def get_storage_service() -> StorageService:
     )
 
 
+@cache.memoize(timeout=600)  # Cache for 10 minutes
+def cached_load_run(run_id: str):
+    """
+    Cached wrapper for load_run() to avoid repeated CSV downloads.
+    Cache key includes run_id automatically.
+    """
+    logger.info(f"[CACHE] ⏬ Cache MISS: Loading run {run_id} from storage")
+    storage = get_storage_service()
+    return storage.load_run(run_id)
+
+
+@cache.memoize(timeout=300)  # Cache for 5 minutes
+def cached_load_property_exception_months(run_id: str, property_id: int):
+    """
+    Cached bulk fetch of all exception months for a property.
+    Replaces hundreds of individual API calls with ONE cached result.
+    """
+    logger.info(f"[CACHE] ⏬ Cache MISS: Bulk loading exception months for property {property_id}")
+    storage = get_storage_service()
+    return storage.load_property_exception_months_bulk(run_id, property_id)
+
+
+def _normalize_key_value(value, cast_type=str):
+    """Normalize key values for consistent tuple matching across CSV and SharePoint sources."""
+    if value is None:
+        return ""
+    if cast_type is int:
+        return int(float(value))
+    if cast_type is str:
+        return str(value)
+    return value
+
+
+def _normalize_audit_month(value):
+    """Normalize audit month to YYYY-MM-DD for key comparisons."""
+    if isinstance(value, pd.Timestamp):
+        return value.strftime('%Y-%m-%d')
+    if isinstance(value, str):
+        return value[:10]
+    return value
+
+
+def _build_resolved_key(property_id, lease_id, ar_code_id, audit_month):
+    """Create normalized key for resolved month matching (portfolio/metrics)."""
+    return (
+        _normalize_key_value(property_id, int),
+        _normalize_key_value(lease_id, int),
+        _normalize_key_value(ar_code_id, str),
+        _normalize_audit_month(audit_month)
+    )
+
+
+def _build_property_resolved_key(lease_id, ar_code_id, audit_month):
+    """Create normalized key for property-level resolved month matching."""
+    return (
+        _normalize_key_value(lease_id, int),
+        _normalize_key_value(ar_code_id, str),
+        _normalize_audit_month(audit_month)
+    )
+
+
+def clear_run_cache(run_id: str = None):
+    """
+    Clear cached data, optionally for a specific run.
+    Call this after uploads or status updates.
+    """
+    if run_id:
+        # Clear specific run (Flask-Caching doesn't support selective clearing easily,
+        # so we clear all and log)
+        logger.info(f"[CACHE] 🧹 Clearing cache for run {run_id}")
+    else:
+        logger.info(f"[CACHE] 🧹 Clearing ALL caches")
+    
+    cache.clear()
+
+
+@cache.cached(timeout=300)  # Cache run list for 5 minutes
 def get_available_runs() -> list:
     """Get all available runs sorted by date (most recent first)."""
+    logger.info("[CACHE] ⏬ Cache MISS: Loading available runs list from SharePoint")
     storage = get_storage_service()
-    runs = storage.list_runs(limit=1000)  # Get all runs
+    runs = storage.list_runs(limit=50)  # Only load 50 most recent runs
     
     # Format runs for dropdown
     formatted_runs = []
@@ -67,11 +146,14 @@ def get_available_runs() -> list:
         }
         formatted_runs.append(run_info)
     
+    logger.info(f"[CACHE] ✅ Loaded {len(formatted_runs)} available runs")
     return formatted_runs
 
 
+@cache.cached(timeout=300)  # Cache metrics for 5 minutes
 def calculate_cumulative_metrics() -> dict:
     """Calculate cumulative portfolio metrics across all audit runs."""
+    logger.info("[CACHE] ⏬ Cache MISS: Calculating cumulative metrics")
     storage = get_storage_service()
     
     # Try to load metrics from SharePoint list first (fast path)
@@ -105,55 +187,48 @@ def calculate_cumulative_metrics() -> dict:
                 latest_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
             ]
             
-            # Filter out resolved exceptions to match portfolio table behavior
-            # Also track historical undercharge/overcharge from resolved exceptions
+            # 🚀 BULK FETCH: Get resolved exceptions for all properties at once
             resolved_keys = set()
             resolved_exceptions_data = []  # Track variance data for historical calculation
             unique_properties = current_exceptions[CanonicalField.PROPERTY_ID.value].unique()
             
-            logger.info(f"[METRICS] Checking {len(unique_properties)} properties for resolved exceptions")
+            logger.info(f"[METRICS] Bulk fetching resolved exceptions for {len(unique_properties)} properties")
             
+            # Bulk fetch all exception months for all properties
             for property_id in unique_properties:
-                property_exceptions = current_exceptions[
-                    current_exceptions[CanonicalField.PROPERTY_ID.value] == property_id
-                ]
-                unique_lease_ids = property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value].unique()
+                # Use cached bulk fetch
+                bulk_exception_data = cached_load_property_exception_months(
+                    most_recent_run_id, int(float(property_id))
+                )
                 
-                for lease_id in unique_lease_ids:
-                    lease_exceptions = property_exceptions[
-                        property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
-                    ]
-                    unique_ar_codes = lease_exceptions[CanonicalField.AR_CODE_ID.value].unique()
-                    
-                    for ar_code_id in unique_ar_codes:
-                        exception_months = storage.load_exception_months_from_sharepoint_list(
-                            most_recent_run_id, int(float(property_id)), int(float(lease_id)), ar_code_id
-                        )
-                        
-                        logger.debug(f"[METRICS] Property {property_id}, Lease {lease_id}, AR {ar_code_id}: {len(exception_months)} months from SharePoint")
-                        
-                        for month_record in exception_months:
-                            if month_record.get('status') == 'Resolved':
-                                audit_month = month_record.get('audit_month')
-                                if isinstance(audit_month, str):
-                                    audit_month = audit_month[:10]
-                                
-                                # Find the matching bucket to get variance
-                                matching_bucket = lease_exceptions[
-                                    (lease_exceptions[CanonicalField.AR_CODE_ID.value] == ar_code_id) &
-                                    (lease_exceptions[CanonicalField.AUDIT_MONTH.value].astype(str).str[:10] == audit_month)
-                                ]
-                                
-                                if not matching_bucket.empty:
-                                    variance = matching_bucket.iloc[0][CanonicalField.VARIANCE.value]
-                                    resolved_exceptions_data.append({
-                                        'variance': variance,
-                                        'audit_month': audit_month
-                                    })
-                                    logger.debug(f"[METRICS] Found resolved exception: AR {ar_code_id}, Month {audit_month}, Variance ${variance}")
-                                
-                                resolved_key = (property_id, lease_id, ar_code_id, audit_month)
-                                resolved_keys.add(resolved_key)
+                # Process all resolved exceptions from bulk data
+                for (lease_id, ar_code_id), month_records in bulk_exception_data.items():
+                    for month_record in month_records:
+                        if month_record.get('status') == 'Resolved':
+                            audit_month = month_record.get('audit_month')
+                            if isinstance(audit_month, str):
+                                audit_month = audit_month[:10]
+                            
+                            # Find the matching bucket to get variance
+                            property_exceptions = current_exceptions[
+                                current_exceptions[CanonicalField.PROPERTY_ID.value] == property_id
+                            ]
+                            matching_bucket = property_exceptions[
+                                (property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id) &
+                                (property_exceptions[CanonicalField.AR_CODE_ID.value] == ar_code_id) &
+                                (property_exceptions[CanonicalField.AUDIT_MONTH.value].astype(str).str[:10] == audit_month)
+                            ]
+                            
+                            if not matching_bucket.empty:
+                                variance = matching_bucket.iloc[0][CanonicalField.VARIANCE.value]
+                                resolved_exceptions_data.append({
+                                    'variance': variance,
+                                    'audit_month': audit_month
+                                })
+                                logger.debug(f"[METRICS] Found resolved exception: AR {ar_code_id}, Month {audit_month}, Variance ${variance}")
+                            
+                            resolved_key = _build_resolved_key(property_id, lease_id, ar_code_id, audit_month)
+                            resolved_keys.add(resolved_key)
             
             logger.info(f"[METRICS] Found {len(resolved_keys)} resolved exception months to filter out")
             logger.info(f"[METRICS] Collected {len(resolved_exceptions_data)} resolved exceptions for historical calculation")
@@ -162,17 +237,12 @@ def calculate_cumulative_metrics() -> dict:
                 if row[CanonicalField.STATUS.value] == config.reconciliation.status_matched:
                     return False
                 
-                property_id = row[CanonicalField.PROPERTY_ID.value]
-                lease_id = row[CanonicalField.LEASE_INTERVAL_ID.value]
-                ar_code_id = row[CanonicalField.AR_CODE_ID.value]
-                audit_month = row[CanonicalField.AUDIT_MONTH.value]
-                
-                if isinstance(audit_month, pd.Timestamp):
-                    audit_month = audit_month.strftime('%Y-%m-%d')
-                elif isinstance(audit_month, str):
-                    audit_month = audit_month[:10]
-                
-                key = (property_id, lease_id, ar_code_id, audit_month)
+                key = _build_resolved_key(
+                    row[CanonicalField.PROPERTY_ID.value],
+                    row[CanonicalField.LEASE_INTERVAL_ID.value],
+                    row[CanonicalField.AR_CODE_ID.value],
+                    row[CanonicalField.AUDIT_MONTH.value]
+                )
                 return key not in resolved_keys
             
             current_exceptions = current_exceptions[current_exceptions.apply(is_unresolved_bucket, axis=1)]
@@ -298,7 +368,7 @@ def calculate_cumulative_metrics() -> dict:
                             })
                             logger.debug(f"[METRICS-SLOW] Found resolved exception: AR {ar_code_id}, Month {audit_month}, Variance ${variance}")
                         
-                        resolved_key = (property_id, lease_id, ar_code_id, audit_month)
+                        resolved_key = _build_resolved_key(property_id, lease_id, ar_code_id, audit_month)
                         resolved_keys.add(resolved_key)
     
     logger.info(f"[METRICS-SLOW] Found {len(resolved_keys)} resolved exception months to filter out")
@@ -308,17 +378,12 @@ def calculate_cumulative_metrics() -> dict:
         if row[CanonicalField.STATUS.value] == config.reconciliation.status_matched:
             return False
         
-        property_id = row[CanonicalField.PROPERTY_ID.value]
-        lease_id = row[CanonicalField.LEASE_INTERVAL_ID.value]
-        ar_code_id = row[CanonicalField.AR_CODE_ID.value]
-        audit_month = row[CanonicalField.AUDIT_MONTH.value]
-        
-        if isinstance(audit_month, pd.Timestamp):
-            audit_month = audit_month.strftime('%Y-%m-%d')
-        elif isinstance(audit_month, str):
-            audit_month = audit_month[:10]
-        
-        key = (property_id, lease_id, ar_code_id, audit_month)
+        key = _build_resolved_key(
+            row[CanonicalField.PROPERTY_ID.value],
+            row[CanonicalField.LEASE_INTERVAL_ID.value],
+            row[CanonicalField.AR_CODE_ID.value],
+            row[CanonicalField.AUDIT_MONTH.value]
+        )
         return key not in resolved_keys
     
     current_exceptions = current_exceptions[current_exceptions.apply(is_unresolved_bucket, axis=1)]
@@ -748,6 +813,10 @@ def upload():
             file_path  # Pass the original Excel file path
         )
         
+        # 🧹 CLEAR CACHE after new upload
+        logger.info(f"[CACHE] Clearing cache after new upload (run_id: {run_id})")
+        clear_run_cache(run_id)
+        
         # Clean up temp file if using SharePoint
         if storage.use_sharepoint:
             import shutil
@@ -833,8 +902,9 @@ def portfolio(run_id: str = None):
         if not run_id:
             run_id = cumulative['most_recent_run']['run_id']
         
-        # Get most recent run data for property breakdown
-        run_data = storage.load_run(run_id)
+        # 🚀 USE CACHED LOAD_RUN instead of direct call
+        logger.info(f"[PORTFOLIO] Loading run data (cached)")
+        run_data = cached_load_run(run_id)
         
         # Add analysis period to metadata
         metadata = run_data["metadata"].copy()
@@ -843,7 +913,6 @@ def portfolio(run_id: str = None):
             metadata['analysis_period'] = analysis_period
         
         # Filter bucket_results to exclude resolved exceptions
-        # Load all exception months for this run and track resolved ones
         logger.info(f"[PORTFOLIO] Filtering resolved exceptions for run {run_id}")
         bucket_results = run_data["bucket_results"].copy()
         exception_buckets = bucket_results[
@@ -853,49 +922,38 @@ def portfolio(run_id: str = None):
         resolved_keys = set()
         unique_properties = exception_buckets[CanonicalField.PROPERTY_ID.value].unique()
         
+        # 🚀 BULK FETCH: Load all exception months for each property in ONE call
+        logger.info(f"[PORTFOLIO] Bulk fetching exception months for {len(unique_properties)} properties")
+        property_exception_data = {}
         for property_id in unique_properties:
-            property_exceptions = exception_buckets[
-                exception_buckets[CanonicalField.PROPERTY_ID.value] == property_id
-            ]
-            unique_lease_ids = property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value].unique()
-            
-            for lease_id in unique_lease_ids:
-                lease_exceptions = property_exceptions[
-                    property_exceptions[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
-                ]
-                unique_ar_codes = lease_exceptions[CanonicalField.AR_CODE_ID.value].unique()
-                
-                for ar_code_id in unique_ar_codes:
-                    exception_months = storage.load_exception_months_from_sharepoint_list(
-                        run_id, int(float(property_id)), int(float(lease_id)), ar_code_id
-                    )
-                    
-                    for month_record in exception_months:
-                        if month_record.get('status') == 'Resolved':
-                            audit_month = month_record.get('audit_month')
-                            if isinstance(audit_month, str):
-                                audit_month = audit_month[:10]
-                            resolved_key = (property_id, lease_id, ar_code_id, audit_month)
-                            resolved_keys.add(resolved_key)
+            property_exception_data[property_id] = cached_load_property_exception_months(run_id, int(float(property_id)))
         
-        logger.info(f"[PORTFOLIO] Found {len(resolved_keys)} resolved exception months")
+        # Now process the bulk data without making individual API calls
+        for property_id in unique_properties:
+            bulk_data = property_exception_data[property_id]
+            
+            for (lease_id, ar_code_id), month_records in bulk_data.items():
+                for month_record in month_records:
+                    if month_record.get('status') == 'Resolved':
+                        audit_month = month_record.get('audit_month')
+                        if isinstance(audit_month, str):
+                            audit_month = audit_month[:10]
+                        resolved_key = _build_resolved_key(property_id, lease_id, ar_code_id, audit_month)
+                        resolved_keys.add(resolved_key)
+        
+        logger.info(f"[PORTFOLIO] Found {len(resolved_keys)} resolved exception months (using bulk fetch)")
         
         # Filter out resolved exceptions from bucket_results
         def is_unresolved_bucket(row):
             if row[CanonicalField.STATUS.value] == config.reconciliation.status_matched:
                 return True  # Keep all matched records
             
-            property_id = row[CanonicalField.PROPERTY_ID.value]
-            lease_id = row[CanonicalField.LEASE_INTERVAL_ID.value]
-            ar_code_id = row[CanonicalField.AR_CODE_ID.value]
-            audit_month = row[CanonicalField.AUDIT_MONTH.value]
-            
-            if isinstance(audit_month, pd.Timestamp):
-                audit_month = audit_month.strftime('%Y-%m-%d')
-            elif isinstance(audit_month, str):
-                audit_month = audit_month[:10]
-            
-            key = (property_id, lease_id, ar_code_id, audit_month)
+            key = _build_resolved_key(
+                row[CanonicalField.PROPERTY_ID.value],
+                row[CanonicalField.LEASE_INTERVAL_ID.value],
+                row[CanonicalField.AR_CODE_ID.value],
+                row[CanonicalField.AUDIT_MONTH.value]
+            )
             return key not in resolved_keys
         
         filtered_bucket_results = bucket_results[bucket_results.apply(is_unresolved_bucket, axis=1)].copy()
@@ -1004,6 +1062,15 @@ def upsert_exception_month():
     storage = get_storage_service()
     ok = storage.upsert_exception_month_to_sharepoint_list(payload)
     
+    # 🧹 CLEAR CACHE after status update
+    if ok:
+        logger.info(f"[CACHE] Clearing cache after exception status update")
+        # Clear the property-specific cache for this update
+        cache.delete_memoized(cached_load_property_exception_months, 
+                             payload['run_id'], 
+                             int(payload['property_id']))
+        logger.info(f"[CACHE] Cleared property {payload['property_id']} exception cache")
+    
     # Also recalculate overall AR code status
     exception_count = payload.get('exception_count', 0)  # Get from payload if provided
     status_info = storage.calculate_ar_code_status(
@@ -1044,7 +1111,8 @@ def property_view(property_id: str, run_id: str = None):
             flash('No audit runs available', 'warning')
             return redirect(url_for('main.index'))
         
-        run_data = storage.load_run(run_id)
+        # 🚀 USE CACHED LOAD_RUN
+        run_data = cached_load_run(run_id)
         
         # Add analysis period to metadata
         metadata = run_data["metadata"].copy()
@@ -1083,49 +1151,30 @@ def property_view(property_id: str, run_id: str = None):
             all_property_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
         ].copy()
         
-        # Filter out resolved exceptions by checking SharePoint
-        # Load all exception months for this property
-        logger.info(f"[PROPERTY_VIEW] Filtering resolved exceptions for property {property_id}")
-        resolved_keys = set()
+        # 🚀 BULK FETCH: Load all exception months for this property in ONE call
+        logger.info(f"[PROPERTY_VIEW] Bulk fetching exception months for property {property_id}")
+        bulk_exception_data = cached_load_property_exception_months(run_id, int(float(property_id)))
         
-        # Get unique lease IDs from property buckets
-        unique_lease_ids = property_buckets[CanonicalField.LEASE_INTERVAL_ID.value].unique()
-        for lease_id in unique_lease_ids:
-            # Get unique AR codes for this lease
-            lease_buckets = property_buckets[
-                property_buckets[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
-            ]
-            unique_ar_codes = lease_buckets[CanonicalField.AR_CODE_ID.value].unique()
-            
-            for ar_code_id in unique_ar_codes:
-                exception_months = storage.load_exception_months_from_sharepoint_list(
-                    run_id, int(float(property_id)), int(float(lease_id)), ar_code_id
-                )
-                
-                # Track which months are resolved
-                for month_record in exception_months:
-                    if month_record.get('status') == 'Resolved':
-                        audit_month = month_record.get('audit_month')
-                        # Normalize date format for comparison
-                        if isinstance(audit_month, str):
-                            audit_month = audit_month[:10]
-                        resolved_key = (lease_id, ar_code_id, audit_month)
-                        resolved_keys.add(resolved_key)
-                        logger.info(f"[PROPERTY_VIEW] Marking as resolved: Lease {lease_id}, AR {ar_code_id}, Month {audit_month}")
+        # Build resolved_keys from bulk data
+        resolved_keys = set()
+        for (lease_id, ar_code_id), month_records in bulk_exception_data.items():
+            for month_record in month_records:
+                if month_record.get('status') == 'Resolved':
+                    audit_month = month_record.get('audit_month')
+                    if isinstance(audit_month, str):
+                        audit_month = audit_month[:10]
+                    resolved_key = _build_property_resolved_key(lease_id, ar_code_id, audit_month)
+                    resolved_keys.add(resolved_key)
+        
+        logger.info(f"[PROPERTY_VIEW] Found {len(resolved_keys)} resolved exceptions (using bulk fetch)")
         
         # Filter property_buckets to exclude resolved ones
         def is_unresolved(row):
-            lease_id = row[CanonicalField.LEASE_INTERVAL_ID.value]
-            ar_code_id = row[CanonicalField.AR_CODE_ID.value]
-            audit_month = row[CanonicalField.AUDIT_MONTH.value]
-            
-            # Normalize audit_month for comparison
-            if isinstance(audit_month, pd.Timestamp):
-                audit_month = audit_month.strftime('%Y-%m-%d')
-            elif isinstance(audit_month, str):
-                audit_month = audit_month[:10]
-            
-            key = (lease_id, ar_code_id, audit_month)
+            key = _build_property_resolved_key(
+                row[CanonicalField.LEASE_INTERVAL_ID.value],
+                row[CanonicalField.AR_CODE_ID.value],
+                row[CanonicalField.AUDIT_MONTH.value]
+            )
             is_unres = key not in resolved_keys
             if not is_unres:
                 logger.debug(f"[PROPERTY_VIEW] Filtering out resolved exception: {key}")
@@ -1338,7 +1387,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
     """Lease view - detailed exceptions for a specific lease."""
     try:
         storage = get_storage_service()
-        run_data = storage.load_run(run_id)
+        # 🚀 USE CACHED LOAD_RUN
+        run_data = cached_load_run(run_id)
         
         # Get all buckets for this lease - exceptions and matches separately
         bucket_results = run_data["bucket_results"]

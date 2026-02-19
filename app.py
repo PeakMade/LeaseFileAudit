@@ -2,6 +2,7 @@
 Flask application factory for Lease File Audit.
 """
 from flask import Flask, g
+from flask_caching import Cache
 from pathlib import Path
 import logging
 import os
@@ -16,6 +17,9 @@ logging.basicConfig(
 logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
 logging.getLogger("azure.monitor.opentelemetry.exporter").setLevel(logging.WARNING)
 logging.getLogger("azure").setLevel(logging.WARNING)
+
+# Initialize cache (will be configured in create_app)
+cache = Cache()
 
 
 def create_app(config_name='default'):
@@ -35,6 +39,17 @@ def create_app(config_name='default'):
     app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
     app.config['UPLOAD_FOLDER'] = Path('instance/runs')
     app.config['TEMPLATES_AUTO_RELOAD'] = True  # Disable template caching
+    
+    # Cache configuration
+    # Use SimpleCache for single-worker deployments (current setup)
+    # For multi-worker: switch to Redis or FileSystemCache
+    app.config['CACHE_TYPE'] = 'SimpleCache'  # In-memory cache
+    app.config['CACHE_DEFAULT_TIMEOUT'] = 600  # 10 minutes default
+    
+    # Initialize cache with app
+    cache.init_app(app)
+    
+    app.logger.info(f"[CACHE] Initialized {app.config['CACHE_TYPE']} with {app.config['CACHE_DEFAULT_TIMEOUT']}s timeout")
     
     # Ensure instance folder exists
     instance_path = Path(app.instance_path)

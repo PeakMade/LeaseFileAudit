@@ -304,9 +304,16 @@ class StorageService:
         Load individual month exception states from SharePoint List 'ExceptionMonths'.
         Each row represents one month of one AR code exception.
         
-        CROSS-RUN MATCHING: Queries for resolutions from ANY previous audit run,
-        not just the current run. This allows historical resolutions to auto-apply
-        to new audits of the same exception.
+        CROSS-RUN MATCHING WITH RESOLUTION PERSISTENCE: Queries for resolutions from ANY 
+        previous audit run. If the same exception month was marked as "Resolved" in a 
+        previous run, that resolution status is automatically applied to the current run,
+        even if the exception still appears in the new audit data. This prevents resolved
+        exceptions from being counted in current undercharge/overcharge metrics.
+        
+        Deduplication priority:
+        1. RESOLVED records from any run (preserves historical resolutions)
+        2. CURRENT run records (for new/unresolved exceptions)
+        3. HISTORICAL run records (for reference)
         
         Returns list of month records with their resolution status.
         """
@@ -383,25 +390,35 @@ class StorageService:
                 }
                 all_records.append(record)
             
-            # Second pass: deduplicate - prioritize current run over historical
+            # Second pass: deduplicate - prioritize RESOLVED status over run priority
             results = []
             seen_months = set()
             
-            # Process current run records first (they take priority)
+            # FIRST: Process any RESOLVED records from ANY run (auto-apply historical resolutions)
+            for record in all_records:
+                if record['status'] == 'Resolved' and record['audit_month'] not in seen_months:
+                    results.append(record)
+                    seen_months.add(record['audit_month'])
+                    if record['is_historical']:
+                        logger.debug(f"[STORAGE] ✨ Auto-applied HISTORICAL resolution for {record['audit_month']}: {record['fix_label']}")
+                    else:
+                        logger.debug(f"[STORAGE] ✅ Using CURRENT run resolution for {record['audit_month']}")
+            
+            # SECOND: Add current run records for months not yet resolved
             for record in all_records:
                 if record['is_current_run'] and record['audit_month'] not in seen_months:
                     results.append(record)
                     seen_months.add(record['audit_month'])
-                    logger.debug(f"[STORAGE] ✅ Using CURRENT run resolution for {record['audit_month']}")
+                    logger.debug(f"[STORAGE] 📝 Using CURRENT run unresolved record for {record['audit_month']}")
             
-            # Then add historical records for months not yet seen
+            # THIRD: Add any other historical records for months not yet seen
             for record in all_records:
                 if not record['is_current_run'] and record['audit_month'] not in seen_months:
                     results.append(record)
                     seen_months.add(record['audit_month'])
-                    logger.debug(f"[STORAGE] 📜 Using HISTORICAL run resolution for {record['audit_month']}")
+                    logger.debug(f"[STORAGE] 📜 Using HISTORICAL run record for {record['audit_month']}")
                 elif not record['is_current_run'] and record['audit_month'] in seen_months:
-                    logger.debug(f"[STORAGE] ⏭️ Skipping duplicate historical resolution for {record['audit_month']}")
+                    logger.debug(f"[STORAGE] ⏭️ Skipping duplicate historical record for {record['audit_month']}")
             
             logger.info(f"[STORAGE] Loaded {len(results)} unique exception month(s) for AR Code {ar_code_id}")
             if results:
@@ -413,6 +430,140 @@ class StorageService:
         except Exception as e:
             logger.error(f"[STORAGE] Error loading exception months: {e}", exc_info=True)
             return []
+
+    def load_property_exception_months_bulk(self, run_id: str, property_id: int) -> Dict[tuple, List[Dict[str, Any]]]:
+        """
+        BULK FETCH: Load all exception months for an entire property in ONE API call.
+        Solves N+1 problem by fetching all lease/AR code combinations at once.
+        
+        RESOLUTION PERSISTENCE: When the same exception month exists in multiple runs,
+        prioritizes "Resolved" status from any previous run. This auto-applies historical
+        resolutions to current audit data, preventing resolved exceptions from being
+        counted in current undercharge/overcharge metrics.
+        
+        Deduplication priority:
+        1. RESOLVED records from any run (preserves historical resolutions)
+        2. CURRENT run records (for new/unresolved exceptions)
+        3. HISTORICAL run records (for reference)
+        
+        Args:
+            run_id: Current audit run ID
+            property_id: Property to fetch data for
+            
+        Returns:
+            Dictionary keyed by (lease_interval_id, ar_code_id) containing month records
+            Example: {(123456, '55052'): [{month1}, {month2}], ...}
+        """
+        if not self._can_use_sharepoint_lists():
+            logger.debug("[STORAGE] SharePoint list not configured, returning empty bulk results")
+            return {}
+
+        try:
+            logger.info(f"[CACHE] 🚀 BULK FETCH: Loading ALL exception months for property {property_id}")
+            site_id = self._get_site_id()
+            if not site_id:
+                return {}
+
+            list_id = self._get_sharepoint_list_id("ExceptionMonths")
+            if not list_id:
+                logger.warning("[STORAGE] ExceptionMonths list not found")
+                return {}
+
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Single filter for entire property (no lease or AR code filtering)
+            filter_query = f"fields/PropertyId eq {int(property_id)}"
+            params = {'$expand': 'fields', '$filter': filter_query, '$top': 5000}  # Fetch up to 5000 records
+            
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] ❌ Bulk fetch failed: {response.status_code} - {response.text}")
+                return {}
+
+            items_data = response.json()
+            items = items_data.get('value', [])
+            logger.info(f"[CACHE] ✅ Bulk fetched {len(items)} exception month records for property {property_id}")
+            
+            # Group records by (lease_id, ar_code_id)
+            grouped_results = {}
+            
+            for item in items:
+                fields = item.get('fields', {})
+                lease_id = fields.get('LeaseIntervalId')
+                ar_code_id = fields.get('ArCodeId', '')
+                audit_month = fields.get('AuditMonth', '')
+                record_run_id = fields.get('RunId', '')
+                
+                if not lease_id or not ar_code_id:
+                    continue
+                
+                record = {
+                    'item_id': item.get('id'),
+                    'composite_key': fields.get('CompositeKey', ''),
+                    'run_id': record_run_id,
+                    'property_id': fields.get('PropertyId', None),
+                    'lease_interval_id': lease_id,
+                    'ar_code_id': ar_code_id,
+                    'audit_month': audit_month,
+                    'exception_type': fields.get('ExceptionType', ''),
+                    'status': fields.get('Status', 'Open'),
+                    'fix_label': fields.get('FixLabel', ''),
+                    'action_type': fields.get('ActionType', ''),
+                    'variance': fields.get('Variance', 0),
+                    'expected_total': fields.get('ExpectedTotal', 0),
+                    'actual_total': fields.get('ActualTotal', 0),
+                    'resolved_at': fields.get('ResolvedAt', ''),
+                    'resolved_by': fields.get('ResolvedBy', ''),
+                    'resolved_by_name': fields.get('ResolvedByName', ''),
+                    'updated_at': fields.get('UpdatedAt', ''),
+                    'updated_by': fields.get('UpdatedBy', ''),
+                    'is_historical': record_run_id != run_id,
+                    'is_current_run': record_run_id == run_id
+                }
+                
+                # Group by (lease_id, ar_code_id)
+                key = (lease_id, ar_code_id)
+                if key not in grouped_results:
+                    grouped_results[key] = []
+                grouped_results[key].append(record)
+            
+            # Deduplicate months within each group (prioritize resolved historical records)
+            for key, records in grouped_results.items():
+                seen_months = set()
+                deduped = []
+                
+                # FIRST: Keep any RESOLVED records from ANY run (auto-apply historical resolutions)
+                for record in records:
+                    if record['status'] == 'Resolved' and record['audit_month'] not in seen_months:
+                        deduped.append(record)
+                        seen_months.add(record['audit_month'])
+                        logger.debug(f"[STORAGE] ✨ Auto-applied historical resolution for {record['audit_month']}: {record['fix_label']}")
+                
+                # SECOND: For remaining months, prefer current run records
+                for record in records:
+                    if record['is_current_run'] and record['audit_month'] not in seen_months:
+                        deduped.append(record)
+                        seen_months.add(record['audit_month'])
+                
+                # THIRD: Fill in any other historical records not yet seen
+                for record in records:
+                    if not record['is_current_run'] and record['audit_month'] not in seen_months:
+                        deduped.append(record)
+                        seen_months.add(record['audit_month'])
+                
+                grouped_results[key] = deduped
+            
+            logger.info(f"[CACHE] 📦 Grouped into {len(grouped_results)} lease/AR code combinations")
+            return grouped_results
+
+        except Exception as e:
+            logger.error(f"[STORAGE] Error in bulk fetch: {e}", exc_info=True)
+            return {}
 
     def upsert_exception_month_to_sharepoint_list(self, month_data: Dict[str, Any]) -> bool:
         """

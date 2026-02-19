@@ -954,6 +954,24 @@ def calculate_cumulative_metrics(run_id):
     # Cached for same run_id
 ```
 
+**Current implementation notes (2026-02):**
+- Flask-Caching is used in `web/views.py` for:
+   - `cached_load_run(run_id)`
+   - `cached_load_property_exception_months(run_id, property_id)`
+   - `get_available_runs()`
+   - `calculate_cumulative_metrics()`
+- `get_available_runs()` is intentionally limited to the most recent 50 runs to avoid expensive per-run metadata fetches.
+
+**Undercharge includes resolved exceptions (Troubleshooting):**
+- Symptom: Resolved month counts look correct, but Current Undercharge is still too high.
+- Root cause: Type mismatch in resolved-key tuple comparison (e.g., AR code as string from SharePoint vs numeric in bucket rows).
+- Fix: Normalize comparison keys before set membership checks:
+   - Property ID -> `int`
+   - Lease Interval ID -> `int`
+   - AR Code ID -> `str`
+   - Audit Month -> `YYYY-MM-DD`
+- The normalization helpers live in `web/views.py` and are used in portfolio, property, and KPI filtering paths.
+
 ### Scenario 5: Audit Period Filtering Not Working
 
 **Problem**: User selects "January 2025" but sees all months
