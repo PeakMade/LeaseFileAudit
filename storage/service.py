@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+import math
 import pandas as pd
 import requests
 from activity_logging.sharepoint import _get_app_only_token
@@ -154,6 +155,297 @@ class StorageService:
         self._list_ids[list_name] = list_id
         logger.info(f"[STORAGE] Resolved SharePoint list '{list_name}' id: {list_id}")
         return list_id
+
+    def _normalize_for_json(self, value: Any) -> Any:
+        """Normalize pandas/numpy values into JSON-serializable primitives."""
+        if value is None:
+            return None
+
+        if isinstance(value, pd.Timestamp):
+            return value.strftime('%Y-%m-%d')
+
+        if isinstance(value, datetime):
+            return value.isoformat()
+
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                return None
+            return value
+
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+
+        if isinstance(value, (int, str, bool, dict, list)):
+            return value
+
+        return str(value)
+
+    def _normalize_audit_month_value(self, value: Any) -> str:
+        """Normalize audit month to YYYY-MM-DD string for list filters and keys."""
+        normalized = self._normalize_for_json(value)
+        if normalized is None:
+            return ''
+        if isinstance(normalized, str):
+            return normalized[:10]
+        return str(normalized)[:10]
+
+    def _build_result_composite_key(self, run_id: str, result_type: str, row: Dict[str, Any], row_index: int) -> str:
+        """Build deterministic composite key for result rows persisted to SharePoint list."""
+        property_id = self._normalize_for_json(row.get('PROPERTY_ID', row.get('property_id')))
+        lease_interval_id = self._normalize_for_json(row.get('LEASE_INTERVAL_ID', row.get('lease_interval_id')))
+        ar_code_id = self._normalize_for_json(row.get('AR_CODE_ID', row.get('ar_code_id')))
+        audit_month = self._normalize_audit_month_value(row.get('AUDIT_MONTH', row.get('audit_month')))
+
+        if property_id is not None and lease_interval_id is not None and ar_code_id is not None and audit_month:
+            return f"{run_id}:{result_type}:{property_id}:{lease_interval_id}:{ar_code_id}:{audit_month}"
+
+        return f"{run_id}:{result_type}:row:{row_index}"
+
+    def _get_audit_results_list_id(self) -> Optional[str]:
+        """Resolve audit results list id with preferred name first and legacy fallback."""
+        preferred_names = ["AuditRuns", "Audit Run Results"]
+        for name in preferred_names:
+            list_id = self._get_sharepoint_list_id(name)
+            if list_id:
+                if name != "AuditRuns":
+                    logger.warning(f"[STORAGE] Using legacy list name '{name}'. Consider renaming to 'AuditRuns'.")
+                return list_id
+        return None
+
+    def _write_results_to_sharepoint_list(
+        self,
+        run_id: str,
+        bucket_results: pd.DataFrame,
+        findings: pd.DataFrame
+    ) -> bool:
+        """Persist bucket results and findings to SharePoint list 'AuditRuns'."""
+        if not self._can_use_sharepoint_lists():
+            logger.debug("[STORAGE] SharePoint lists unavailable; skipping AuditRuns write")
+            return False
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return False
+
+            list_id = self._get_audit_results_list_id()
+            if not list_id:
+                logger.warning("[STORAGE] AuditRuns/Audit Run Results list not found; skipping list-backed result persistence")
+                return False
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            # Remove existing rows for this run to prevent duplicates during re-save.
+            existing_params = {
+                '$select': 'id',
+                '$expand': 'fields',
+                '$filter': f"fields/RunId eq '{run_id}'",
+                '$top': 5000
+            }
+            existing_response = requests.get(items_url, headers=headers, params=existing_params, timeout=60)
+            if existing_response.status_code == 200:
+                existing_items = existing_response.json().get('value', [])
+                for item in existing_items:
+                    delete_url = f"{items_url}/{item['id']}"
+                    delete_response = requests.delete(delete_url, headers=headers, timeout=30)
+                    if delete_response.status_code not in [200, 202, 204]:
+                        logger.warning(
+                            f"[STORAGE] Failed deleting existing result item {item['id']}: "
+                            f"{delete_response.status_code} - {delete_response.text}"
+                        )
+            else:
+                logger.warning(
+                    f"[STORAGE] Could not query existing audit result rows for {run_id}: "
+                    f"{existing_response.status_code} - {existing_response.text}"
+                )
+
+            def _write_dataframe_rows(df: pd.DataFrame, result_type: str) -> int:
+                rows_written = 0
+                if df is None or len(df) == 0:
+                    return rows_written
+
+                for idx, (_, row) in enumerate(df.iterrows()):
+                    row_dict = {col: self._normalize_for_json(value) for col, value in row.to_dict().items()}
+                    composite_key = self._build_result_composite_key(run_id, result_type, row_dict, idx)
+
+                    property_id_val = row_dict.get('PROPERTY_ID', row_dict.get('property_id'))
+                    lease_interval_id_val = row_dict.get('LEASE_INTERVAL_ID', row_dict.get('lease_interval_id'))
+                    ar_code_id_val = row_dict.get('AR_CODE_ID', row_dict.get('ar_code_id'))
+                    audit_month_val = self._normalize_audit_month_value(row_dict.get('AUDIT_MONTH', row_dict.get('audit_month')))
+
+                    status_val = row_dict.get('status', row_dict.get('STATUS', ''))
+                    severity_val = row_dict.get('severity', row_dict.get('SEVERITY', ''))
+                    variance_val = row_dict.get('variance', row_dict.get('VARIANCE', 0))
+                    expected_total_val = row_dict.get('expected_total', row_dict.get('EXPECTED_TOTAL', 0))
+                    actual_total_val = row_dict.get('actual_total', row_dict.get('ACTUAL_TOTAL', 0))
+                    finding_title_val = row_dict.get('title', row_dict.get('TITLE', ''))
+                    impact_amount_val = row_dict.get('impact_amount', row_dict.get('IMPACT_AMOUNT', 0))
+
+                    fields_payload = {
+                        'Title': f"{result_type}:{idx}",
+                        'CompositeKey': composite_key,
+                        'RunId': run_id,
+                        'ResultType': result_type,
+                        'PropertyId': int(float(property_id_val)) if property_id_val is not None and property_id_val != '' else None,
+                        'LeaseIntervalId': int(float(lease_interval_id_val)) if lease_interval_id_val is not None and lease_interval_id_val != '' else None,
+                        'ArCodeId': str(ar_code_id_val) if ar_code_id_val is not None else '',
+                        'AuditMonth': audit_month_val,
+                        'Status': str(status_val),
+                        'Severity': str(severity_val),
+                        'FindingTitle': str(finding_title_val),
+                        'Variance': float(variance_val or 0),
+                        'ExpectedTotal': float(expected_total_val or 0),
+                        'ActualTotal': float(actual_total_val or 0),
+                        'ImpactAmount': float(impact_amount_val or 0),
+                        'MatchRule': str(row_dict.get('match_rule', row_dict.get('MATCH_RULE', ''))),
+                        'FindingId': str(row_dict.get('finding_id', row_dict.get('FINDING_ID', ''))),
+                        'Category': str(row_dict.get('category', row_dict.get('CATEGORY', ''))),
+                        'Description': str(row_dict.get('description', row_dict.get('DESCRIPTION', ''))),
+                        'ExpectedValue': str(row_dict.get('expected_value', row_dict.get('EXPECTED_VALUE', ''))),
+                        'ActualValue': str(row_dict.get('actual_value', row_dict.get('ACTUAL_VALUE', ''))),
+                        'CreatedAt': datetime.utcnow().isoformat(),
+                    }
+
+                    create_payload = {'fields': fields_payload}
+                    create_response = requests.post(items_url, headers=headers, json=create_payload, timeout=60)
+                    if create_response.status_code not in [200, 201]:
+                        logger.warning(
+                            f"[STORAGE] Failed writing {result_type} row {idx} for run {run_id}: "
+                            f"{create_response.status_code} - {create_response.text}"
+                        )
+                        continue
+
+                    rows_written += 1
+
+                return rows_written
+
+            bucket_rows_written = _write_dataframe_rows(bucket_results, 'bucket_result')
+            finding_rows_written = _write_dataframe_rows(findings, 'finding')
+            logger.info(
+                f"[STORAGE] ✅ Wrote AuditRuns rows for {run_id}: "
+                f"bucket_result={bucket_rows_written}, finding={finding_rows_written}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"[STORAGE] Error writing audit results list rows: {e}", exc_info=True)
+            return False
+
+    def _load_results_from_sharepoint_list(self, run_id: str, result_type: str) -> Optional[pd.DataFrame]:
+        """Load result rows for a run/type from SharePoint list 'AuditRuns'."""
+        if not self._can_use_sharepoint_lists():
+            return None
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return None
+
+            list_id = self._get_audit_results_list_id()
+            if not list_id:
+                return None
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            params = {
+                '$expand': 'fields',
+                '$filter': f"fields/RunId eq '{run_id}' and fields/ResultType eq '{result_type}'",
+                '$top': 5000
+            }
+
+            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Failed loading audit results for run={run_id}, type={result_type}: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return None
+
+            items = response.json().get('value', [])
+            if not items:
+                return None
+
+            rows: List[Dict[str, Any]] = []
+            for item in items:
+                fields = item.get('fields', {})
+
+                if result_type == 'bucket_result':
+                    row_payload = {
+                        'PROPERTY_ID': fields.get('PropertyId'),
+                        'LEASE_INTERVAL_ID': fields.get('LeaseIntervalId'),
+                        'AR_CODE_ID': fields.get('ArCodeId'),
+                        'AUDIT_MONTH': fields.get('AuditMonth'),
+                        'expected_total': fields.get('ExpectedTotal'),
+                        'actual_total': fields.get('ActualTotal'),
+                        'variance': fields.get('Variance'),
+                        'status': fields.get('Status'),
+                        'match_rule': fields.get('MatchRule')
+                    }
+
+                    # Legacy compatibility: recover full row from RowJson if explicit fields are missing.
+                    if row_payload.get('status') in [None, ''] and fields.get('RowJson'):
+                        try:
+                            legacy = json.loads(fields.get('RowJson'))
+                            for key, value in legacy.items():
+                                row_payload[key] = value
+                        except Exception:
+                            pass
+
+                    rows.append(row_payload)
+                elif result_type == 'finding':
+                    row_payload = {
+                        'finding_id': fields.get('FindingId'),
+                        'run_id': fields.get('RunId', run_id),
+                        'property_id': fields.get('PropertyId'),
+                        'lease_interval_id': fields.get('LeaseIntervalId'),
+                        'ar_code_id': fields.get('ArCodeId'),
+                        'audit_month': fields.get('AuditMonth'),
+                        'category': fields.get('Category'),
+                        'severity': fields.get('Severity'),
+                        'title': fields.get('FindingTitle'),
+                        'description': fields.get('Description'),
+                        'expected_value': fields.get('ExpectedValue'),
+                        'actual_value': fields.get('ActualValue'),
+                        'variance': fields.get('Variance'),
+                        'impact_amount': fields.get('ImpactAmount')
+                    }
+
+                    # Legacy compatibility: recover fields from RowJson if present.
+                    if row_payload.get('title') in [None, ''] and fields.get('RowJson'):
+                        try:
+                            legacy = json.loads(fields.get('RowJson'))
+                            for key, value in legacy.items():
+                                row_payload[key] = value
+                        except Exception:
+                            pass
+
+                    rows.append(row_payload)
+                else:
+                    rows.append({
+                        'RunId': fields.get('RunId', run_id),
+                        'ResultType': fields.get('ResultType', result_type)
+                    })
+
+            logger.info(
+                f"[STORAGE] ✅ Loaded audit results from list for run={run_id}, "
+                f"type={result_type}, rows={len(rows)}"
+            )
+            return pd.DataFrame(rows)
+        except Exception as e:
+            logger.error(f"[STORAGE] Error loading audit results list rows: {e}", exc_info=True)
+            return None
 
     def load_exception_states_from_sharepoint_list(self, run_id: str, property_id: int, lease_interval_id: int) -> List[Dict[str, Any]]:
         """Load exception workflow states from SharePoint List 'ExceptionStates'."""
@@ -1156,6 +1448,13 @@ class StorageService:
             self._write_metrics_to_sharepoint_list(run_id, bucket_results, findings, metadata)
         except Exception as e:
             logger.warning(f"[STORAGE] Failed to write metrics to SharePoint list: {e}")
+
+        # Write detailed results to SharePoint list (list-backed results DB).
+        # Keep CSVs as fallback for compatibility.
+        try:
+            self._write_results_to_sharepoint_list(run_id, bucket_results, findings)
+        except Exception as e:
+            logger.warning(f"[STORAGE] Failed to write detailed results to SharePoint list: {e}")
         
         logger.info(f"[STORAGE] ✅ Successfully saved run {run_id} - {len(files_saved)} files")
         if self.use_sharepoint:
@@ -1165,28 +1464,72 @@ class StorageService:
     
     def load_run(self, run_id: str) -> Dict[str, Any]:
         """Load complete audit run from storage."""
-        # Load CSVs
+        # Load core detail data from CSV/document storage
         expected_detail = self._load_dataframe(run_id, "inputs_normalized/expected_detail.csv")
         actual_detail = self._load_dataframe(run_id, "inputs_normalized/actual_detail.csv")
-        bucket_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
-        findings = self._load_dataframe(run_id, "outputs/findings.csv")
+
+        # Load results from SharePoint list first when available (results DB),
+        # then fall back to CSV for compatibility/backfill scenarios.
+        bucket_results = self._load_results_from_sharepoint_list(run_id, 'bucket_result')
+        if bucket_results is None:
+            bucket_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
+
+        findings = self._load_results_from_sharepoint_list(run_id, 'finding')
+        if findings is None:
+            findings = self._load_dataframe(run_id, "outputs/findings.csv")
+
         variance_detail = self._load_dataframe(run_id, "outputs/variance_detail.csv")
         
         if expected_detail is None or actual_detail is None or bucket_results is None or findings is None:
             raise ValueError(f"Run {run_id} not found or incomplete")
+
+        def _normalize_ar_code_value(value: Any) -> str:
+            if value is None or pd.isna(value):
+                return ''
+            if isinstance(value, (int, float)):
+                numeric = float(value)
+                if numeric.is_integer():
+                    return str(int(numeric))
+                return str(numeric)
+            text = str(value).strip()
+            try:
+                numeric = float(text)
+                if numeric.is_integer():
+                    return str(int(numeric))
+            except Exception:
+                pass
+            return text
         
         # Convert date columns to datetime
         date_columns = ['AUDIT_MONTH', 'PERIOD_START', 'PERIOD_END', 'POST_DATE', 'audit_month']
         for df in [expected_detail, actual_detail, bucket_results, findings]:
             for col in date_columns:
                 if col in df.columns:
-                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                    series = pd.to_datetime(df[col], errors='coerce')
+                    try:
+                        series = series.dt.tz_localize(None)
+                    except Exception:
+                        pass
+                    df[col] = series
+
+        # Normalize AR code column types across DataFrames to avoid string/number mismatches
+        # when matching bucket rows to expected/actual detail in lease views.
+        ar_code_columns = ['AR_CODE_ID', 'ar_code_id']
+        for df in [expected_detail, actual_detail, bucket_results, findings]:
+            for col in ar_code_columns:
+                if col in df.columns:
+                    df[col] = df[col].apply(_normalize_ar_code_value)
         
         # Also convert dates in variance_detail if loaded
         if variance_detail is not None:
             for col in date_columns:
                 if col in variance_detail.columns:
-                    variance_detail[col] = pd.to_datetime(variance_detail[col], errors='coerce')
+                    series = pd.to_datetime(variance_detail[col], errors='coerce')
+                    try:
+                        series = series.dt.tz_localize(None)
+                    except Exception:
+                        pass
+                    variance_detail[col] = series
         
         return {
             "expected_detail": expected_detail,

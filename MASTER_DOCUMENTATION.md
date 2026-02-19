@@ -509,6 +509,52 @@ storage.upsert_exception_month_to_sharepoint_list({
 - `ActivityType` - "Start Session", "Successful Audit", "Failed Audit"
 - `Env` - "Production", "Local"
 
+#### 4. AuditRuns
+**Purpose**: Persist detailed reconciliation outputs in SharePoint List so app reads list-backed results (not CSV-only) for bucket results and findings.
+
+**Required Columns (with SharePoint type)**:
+- `Title` — **Single line of text** (built-in; e.g., `bucket_result:0`, `finding:24`)
+- `CompositeKey` — **Single line of text**
+- `RunId` — **Single line of text**
+- `ResultType` — **Choice** (values: `bucket_result`, `finding`) *(Single line of text also works)*
+- `PropertyId` — **Number**
+- `LeaseIntervalId` — **Number**
+- `ArCodeId` — **Single line of text**
+- `AuditMonth` — **Date and Time** *(Single line of text also works)*
+- `Status` — **Single line of text**
+- `Severity` — **Single line of text**
+- `FindingTitle` — **Single line of text**
+- `Variance` — **Number**
+- `ExpectedTotal` — **Number**
+- `ActualTotal` — **Number**
+- `ImpactAmount` — **Number**
+- `MatchRule` — **Single line of text**
+- `FindingId` — **Single line of text**
+- `Category` — **Single line of text**
+- `Description` — **Multiple lines of text**
+- `ExpectedValue` — **Single line of text**
+- `ActualValue` — **Single line of text**
+- `CreatedAt` — **Date and Time**
+
+**No JSON blob requirement**:
+- `RowJson` is no longer required for reads/writes.
+- `Evidence` is also optional and not required for current UI behavior.
+- App now writes/loads explicit typed columns for both result types.
+
+**Read/write behavior**:
+- On save, app writes `bucket_results` + `findings` rows to `AuditRuns`.
+- On load, app reads `AuditRuns` first and falls back to CSV files if list rows are unavailable.
+- Existing CSV run artifacts remain as compatibility fallback.
+
+**Indexing required for reliable filtered reads**:
+- Index `RunId` (required)
+- Index `ResultType` (required)
+- Recommended additional indexes: `CompositeKey`, `PropertyId`, `LeaseIntervalId`, `ArCodeId`, `AuditMonth`
+
+**ResultType column mapping**:
+- `bucket_result` rows map to: `PROPERTY_ID`, `LEASE_INTERVAL_ID`, `AR_CODE_ID`, `AUDIT_MONTH`, `expected_total`, `actual_total`, `variance`, `status`, `match_rule`.
+- `finding` rows map to: `finding_id`, `run_id`, `property_id`, `lease_interval_id`, `ar_code_id`, `audit_month`, `category`, `severity`, `title`, `description`, `expected_value`, `actual_value`, `variance`, `impact_amount`.
+
 ### Document Library Structure
 
 ```
