@@ -972,6 +972,14 @@ def calculate_cumulative_metrics(run_id):
    - Audit Month -> `YYYY-MM-DD`
 - The normalization helpers live in `web/views.py` and are used in portfolio, property, and KPI filtering paths.
 
+**Lease summary banner nets under/over amounts (Troubleshooting):**
+- Symptom: On the lease page header, `Total Undercharge` is reduced by overcharges (for example, undercharge 1760 and overcharge 50 appears as a net-style result).
+- Expected behavior: Header totals above AR Code Details should remain independent:
+   - `Total Undercharge` = sum of unresolved month-level `max(0, expected_total - actual_total)`
+   - `Total Overcharge` = sum of unresolved month-level `max(0, actual_total - expected_total)`
+- Scope note: This fix is applied in `lease_view()` summary totals only; drawer rendering/behavior is intentionally unchanged.
+- Resolved-month exclusion behavior remains unchanged (`month_status == 'Resolved'` is still excluded from current totals).
+
 ### Scenario 5: Audit Period Filtering Not Working
 
 **Problem**: User selects "January 2025" but sees all months

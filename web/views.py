@@ -1271,7 +1271,7 @@ def property_view(property_id: str, run_id: str = None):
                     'total_variance': 0,
                     'exceptions': []
                 })
-        
+
         # Sort: exceptions first (by variance), then clean leases
         lease_summary = sorted(lease_summary, key=lambda x: (not x['has_exceptions'], -x['total_variance']))
         
@@ -1615,12 +1615,13 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         grouped_list = list(grouped_exceptions.values())
         grouped_list = sorted(grouped_list, key=lambda x: abs(x['total_variance']), reverse=True)
         
-        # Calculate lease totals with proper undercharge/overcharge logic
+        # Calculate lease totals (temporary values; final unresolved totals are
+        # recalculated after month-level resolved statuses are merged below)
         total_expected = sum(g['total_expected'] for g in grouped_list)
         total_actual = sum(g['total_actual'] for g in grouped_list)
         total_variance = total_actual - total_expected
-        total_undercharge = max(0, total_expected - total_actual)
-        total_overcharge = max(0, total_actual - total_expected)
+        total_undercharge = 0
+        total_overcharge = 0
         
         # Get property name
         PROPERTY_NAME_MAP = {
@@ -1980,6 +1981,29 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         # Sort by status priority (Open > Resolved > Passed), then by exceptions (highest to lowest), then by AR code ID
         status_sort_order = {'Open': 0, 'Resolved': 1, 'Passed': 2}
         all_ar_codes = sorted(all_ar_codes, key=lambda x: (status_sort_order.get(x['status_label'], 99), -x['exception_count'], x['ar_code_id']))
+
+        # Recalculate lease summary totals from unresolved exception months only.
+        # Keep undercharge and overcharge independent (do not net them).
+        unresolved_exception_months = []
+        for ar_data in all_ar_codes:
+            for monthly in ar_data.get('monthly_details', []):
+                if monthly.get('status') == 'matched':
+                    continue
+                if monthly.get('month_status') == 'Resolved':
+                    continue
+                unresolved_exception_months.append(monthly)
+
+        total_undercharge = sum(
+            max(0, float(monthly.get('expected_total', 0) or 0) - float(monthly.get('actual_total', 0) or 0))
+            for monthly in unresolved_exception_months
+        )
+        total_overcharge = sum(
+            max(0, float(monthly.get('actual_total', 0) or 0) - float(monthly.get('expected_total', 0) or 0))
+            for monthly in unresolved_exception_months
+        )
+
+        # Keep variance for any existing consumers, but don't use it to compute the two totals.
+        total_variance = total_actual - total_expected
         
         # Convert NaT/NaN values to None for JSON serialization
         def sanitize_for_json(obj):
