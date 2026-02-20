@@ -117,6 +117,129 @@ def _build_property_resolved_key(lease_id, ar_code_id, audit_month):
     )
 
 
+def _calculate_scoped_ar_status(
+    storage: StorageService,
+    run_id: str,
+    property_id: int,
+    lease_interval_id: int,
+    ar_code_id: str,
+) -> dict:
+    """Calculate AR status for current run scope only, excluding historical-resolved carry-forward months."""
+    bucket_results = storage.load_bucket_results(
+        run_id,
+        property_id=int(property_id),
+        lease_interval_id=int(lease_interval_id)
+    )
+
+    if bucket_results is None or bucket_results.empty:
+        return {
+            'status': 'Passed',
+            'total_months': 0,
+            'resolved_months': 0,
+            'open_months': 0,
+            'status_label': 'Passed'
+        }
+
+    status_col = CanonicalField.STATUS.value
+    ar_col = CanonicalField.AR_CODE_ID.value
+    month_col = CanonicalField.AUDIT_MONTH.value
+
+    def _norm_ar(value):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ''
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric.is_integer():
+                return str(int(numeric))
+            return str(numeric)
+        text = str(value).strip()
+        try:
+            numeric = float(text)
+            if numeric.is_integer():
+                return str(int(numeric))
+        except Exception:
+            pass
+        return text
+
+    ar_code_normalized = _norm_ar(ar_code_id)
+
+    exception_rows = bucket_results[
+        (bucket_results[status_col] != config.reconciliation.status_matched)
+        & (bucket_results[ar_col].apply(_norm_ar) == ar_code_normalized)
+    ].copy()
+
+    if exception_rows.empty:
+        return {
+            'status': 'Passed',
+            'total_months': 0,
+            'resolved_months': 0,
+            'open_months': 0,
+            'status_label': 'Passed'
+        }
+
+    state_rows = storage.load_exception_months_from_sharepoint_list(
+        run_id,
+        int(property_id),
+        int(lease_interval_id),
+        ar_code_normalized
+    )
+    state_by_month = {}
+    for row in state_rows:
+        state_by_month[_normalize_audit_month(row.get('audit_month'))] = row
+
+    scoped_month_states = []
+    for _, exception_row in exception_rows.iterrows():
+        month_key = _normalize_audit_month(exception_row.get(month_col))
+        month_state = state_by_month.get(month_key)
+
+        is_historical_resolved = bool(
+            month_state
+            and str(month_state.get('status', '')).strip().lower() == 'resolved'
+            and str(month_state.get('run_id', '')).strip() != str(run_id)
+        )
+        if is_historical_resolved:
+            continue
+
+        month_status = 'Open'
+        if month_state and str(month_state.get('status', '')).strip().lower() == 'resolved':
+            month_status = 'Resolved'
+        scoped_month_states.append(month_status)
+
+    total_months = len(scoped_month_states)
+    resolved_months = sum(1 for state in scoped_month_states if state == 'Resolved')
+    open_months = total_months - resolved_months
+
+    if total_months == 0:
+        return {
+            'status': 'Passed',
+            'total_months': 0,
+            'resolved_months': 0,
+            'open_months': 0,
+            'status_label': 'Passed'
+        }
+
+    if open_months == 0:
+        return {
+            'status': 'Resolved',
+            'total_months': total_months,
+            'resolved_months': resolved_months,
+            'open_months': 0,
+            'status_label': 'Resolved'
+        }
+
+    status_label = 'Open'
+    if resolved_months > 0:
+        status_label = f"Open ({resolved_months} of {total_months} resolved)"
+
+    return {
+        'status': 'Open',
+        'total_months': total_months,
+        'resolved_months': resolved_months,
+        'open_months': open_months,
+        'status_label': status_label
+    }
+
+
 def clear_run_cache(run_id: str = None):
     """
     Clear cached data, optionally for a specific run.
@@ -1138,14 +1261,13 @@ def upsert_exception_month():
                 f"cache invalidation skipped: {e}"
             )
     
-    # Also recalculate overall AR code status
-    exception_count = payload.get('exception_count', 0)  # Get from payload if provided
-    status_info = storage.calculate_ar_code_status(
+    # Recalculate overall AR code status using scoped current-run logic.
+    status_info = _calculate_scoped_ar_status(
+        storage,
         payload['run_id'],
-        payload['property_id'],
-        payload['lease_interval_id'],
-        payload['ar_code_id'],
-        exception_count=exception_count
+        int(payload['property_id']),
+        int(payload['lease_interval_id']),
+        payload['ar_code_id']
     )
     
     return jsonify({'ok': ok, 'ar_code_status': status_info})
@@ -1156,7 +1278,7 @@ def upsert_exception_month():
 def get_ar_code_status_api(run_id: str, property_id: int, lease_interval_id: int, ar_code_id: str):
     """Get calculated AR code status based on month-level statuses."""
     storage = get_storage_service()
-    status_info = storage.calculate_ar_code_status(run_id, property_id, lease_interval_id, ar_code_id)
+    status_info = _calculate_scoped_ar_status(storage, run_id, property_id, lease_interval_id, ar_code_id)
     return jsonify(status_info)
 
 
