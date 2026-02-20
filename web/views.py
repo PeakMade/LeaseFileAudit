@@ -905,6 +905,30 @@ def portfolio(run_id: str = None):
         # 🚀 USE CACHED LOAD_RUN instead of direct call
         logger.info(f"[PORTFOLIO] Loading run data (cached)")
         run_data = cached_load_run(run_id)
+
+        # Prefer static snapshot values for portfolio header metrics.
+        portfolio_snapshot = storage.load_run_display_snapshot_from_sharepoint_list(
+            run_id=run_id,
+            scope_type='portfolio'
+        )
+        if portfolio_snapshot:
+            logger.info(
+                f"[SNAPSHOT][PORTFOLIO] Using RunDisplaySnapshots for run {run_id}: "
+                f"exception_count={portfolio_snapshot.get('exception_count')}, "
+                f"undercharge={portfolio_snapshot.get('undercharge')}, "
+                f"overcharge={portfolio_snapshot.get('overcharge')}, "
+                f"match_rate={portfolio_snapshot.get('match_rate')}"
+            )
+            cumulative = cumulative.copy()
+            cumulative['open_exceptions'] = int(portfolio_snapshot.get('exception_count', 0) or 0)
+            cumulative['current_undercharge'] = float(portfolio_snapshot.get('undercharge', 0) or 0)
+            cumulative['current_overcharge'] = float(portfolio_snapshot.get('overcharge', 0) or 0)
+            cumulative['match_rate'] = float(portfolio_snapshot.get('match_rate', 0) or 0)
+        else:
+            logger.warning(
+                f"[SNAPSHOT][PORTFOLIO] Fallback to recalculated portfolio metrics for run {run_id} "
+                f"(snapshot not found or unavailable)"
+            )
         
         # Add analysis period to metadata
         metadata = run_data["metadata"].copy()
@@ -1125,6 +1149,24 @@ def property_view(property_id: str, run_id: str = None):
         all_property_buckets = bucket_results[
             bucket_results[CanonicalField.PROPERTY_ID.value] == float(property_id)
         ]
+
+        property_snapshot = storage.load_run_display_snapshot_from_sharepoint_list(
+            run_id=run_id,
+            scope_type='property',
+            property_id=int(float(property_id))
+        )
+        if property_snapshot:
+            logger.info(
+                f"[SNAPSHOT][PROPERTY] Using RunDisplaySnapshots for run {run_id}, property {property_id}: "
+                f"exception_count={property_snapshot.get('exception_count')}, "
+                f"undercharge={property_snapshot.get('undercharge')}, "
+                f"overcharge={property_snapshot.get('overcharge')}"
+            )
+        else:
+            logger.warning(
+                f"[SNAPSHOT][PROPERTY] Fallback to recalculated property metrics for run {run_id}, "
+                f"property {property_id} (snapshot not found or unavailable)"
+            )
         
         # Get property name from actual detail or use hardcoded mapping
         PROPERTY_NAME_MAP = {
@@ -1287,6 +1329,16 @@ def property_view(property_id: str, run_id: str = None):
             run_data["findings"],
             property_id=None  # Already filtered, don't filter again
         )
+
+        property_exception_count = len(property_buckets)
+        if property_snapshot:
+            property_exception_count = int(property_snapshot.get('exception_count', property_exception_count) or 0)
+            property_kpis['total_undercharge'] = float(
+                property_snapshot.get('undercharge', property_kpis.get('total_undercharge', 0)) or 0
+            )
+            property_kpis['total_overcharge'] = float(
+                property_snapshot.get('overcharge', property_kpis.get('total_overcharge', 0)) or 0
+            )
         
         return render_template(
             'property.html',
@@ -1296,7 +1348,7 @@ def property_view(property_id: str, run_id: str = None):
             metadata=metadata,
             kpis=property_kpis,
             lease_summary=lease_summary,
-            exception_count=len(property_buckets),
+            exception_count=property_exception_count,
             all_runs=all_runs,
             current_run_id=run_id
         )
@@ -1389,6 +1441,24 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         storage = get_storage_service()
         # 🚀 USE CACHED LOAD_RUN
         run_data = cached_load_run(run_id)
+
+        lease_snapshot = storage.load_run_display_snapshot_from_sharepoint_list(
+            run_id=run_id,
+            scope_type='lease',
+            property_id=int(float(property_id)),
+            lease_interval_id=int(float(lease_interval_id))
+        )
+        if lease_snapshot:
+            logger.info(
+                f"[SNAPSHOT][LEASE] Using RunDisplaySnapshots for run {run_id}, property {property_id}, "
+                f"lease {lease_interval_id}: undercharge={lease_snapshot.get('undercharge')}, "
+                f"overcharge={lease_snapshot.get('overcharge')}"
+            )
+        else:
+            logger.warning(
+                f"[SNAPSHOT][LEASE] Fallback to recalculated lease header totals for run {run_id}, "
+                f"property {property_id}, lease {lease_interval_id} (snapshot not found or unavailable)"
+            )
         
         # Get all buckets for this lease - exceptions and matches separately
         bucket_results = run_data["bucket_results"]
@@ -2001,6 +2071,10 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             max(0, float(monthly.get('actual_total', 0) or 0) - float(monthly.get('expected_total', 0) or 0))
             for monthly in unresolved_exception_months
         )
+
+        if lease_snapshot:
+            total_undercharge = float(lease_snapshot.get('undercharge', total_undercharge) or 0)
+            total_overcharge = float(lease_snapshot.get('overcharge', total_overcharge) or 0)
 
         # Keep variance for any existing consumers, but don't use it to compute the two totals.
         total_variance = total_actual - total_expected

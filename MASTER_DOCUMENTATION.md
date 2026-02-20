@@ -555,6 +555,40 @@ storage.upsert_exception_month_to_sharepoint_list({
 - `bucket_result` rows map to: `PROPERTY_ID`, `LEASE_INTERVAL_ID`, `AR_CODE_ID`, `AUDIT_MONTH`, `expected_total`, `actual_total`, `variance`, `status`, `match_rule`.
 - `finding` rows map to: `finding_id`, `run_id`, `property_id`, `lease_interval_id`, `ar_code_id`, `audit_month`, `category`, `severity`, `title`, `description`, `expected_value`, `actual_value`, `variance`, `impact_amount`.
 
+#### 5. RunDisplaySnapshots
+**Purpose**: Persist static, precomputed display totals/counts for portfolio/property/lease scopes so UI can load without recalculating from detail rows.
+
+**Required Columns (with SharePoint type)**:
+- `Title` — **Single line of text**
+- `SnapshotKey` — **Single line of text**
+- `RunId` — **Single line of text**
+- `ScopeType` — **Choice** (values: `portfolio`, `property`, `lease`)
+- `PropertyId` — **Number** *(required for property/lease rows)*
+- `LeaseIntervalId` — **Number** *(required for lease rows)*
+- `ExceptionCountStatic` — **Number**
+- `UnderchargeStatic` — **Number**
+- `OverchargeStatic` — **Number**
+- `MatchRateStatic` — **Number**
+- `TotalBucketsStatic` — **Number**
+- `MatchedBucketsStatic` — **Number**
+- `CreatedAt` — **Date and Time**
+
+**Indexing required**:
+- Index `SnapshotKey` (required)
+- Index `RunId` (required)
+- Index `ScopeType` (required)
+- Recommended additional indexes: `PropertyId`, `LeaseIntervalId`
+
+**Internal name compatibility**:
+- The app supports either `ExceptionCountStatic` or legacy internal name `ExceptionCountStatistic` for exception count snapshots.
+
+**Behavior**:
+- Rows are written once per upload from `bucket_results`.
+- Values are static snapshots and do not recalculate on resolution status changes.
+- Resolution status visibility remains driven by `ExceptionMonths`.
+- Portfolio/Property/Lease headers prefer `RunDisplaySnapshots`; if a row is missing, routes fall back to in-memory recalculation.
+- Debug logs use tags: `[SNAPSHOT][PORTFOLIO]`, `[SNAPSHOT][PROPERTY]`, `[SNAPSHOT][LEASE]` to show snapshot usage vs fallback.
+
 ### Document Library Structure
 
 ```

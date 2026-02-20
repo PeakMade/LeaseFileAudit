@@ -215,6 +215,341 @@ class StorageService:
                 return list_id
         return None
 
+    def _get_run_display_snapshots_list_id(self) -> Optional[str]:
+        """Resolve run display snapshots list id with preferred name first and legacy fallback."""
+        preferred_names = ["RunDisplaySnapshots", "Run Display Snapshots"]
+        for name in preferred_names:
+            list_id = self._get_sharepoint_list_id(name)
+            if list_id:
+                if name != "RunDisplaySnapshots":
+                    logger.warning(
+                        f"[STORAGE] Using legacy list name '{name}'. Consider renaming to 'RunDisplaySnapshots'."
+                    )
+                return list_id
+        return None
+
+    def _normalize_status_value(self, value: Any) -> str:
+        """Normalize status values for consistent matched/exception comparisons."""
+        if value is None:
+            return ""
+        text = str(value).strip().lower()
+        if text in {"matched", "match", "status_matched"}:
+            return "matched"
+        return text
+
+    def _safe_int(self, value: Any) -> Optional[int]:
+        """Convert numeric-like value to int, returning None if unavailable."""
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            return None
+        try:
+            return int(float(value))
+        except Exception:
+            return None
+
+    def _calculate_static_metrics(self, dataframe: pd.DataFrame) -> Dict[str, Any]:
+        """Calculate static display metrics from bucket rows without resolution overlay."""
+        if dataframe is None or len(dataframe) == 0:
+            return {
+                'exception_count': 0,
+                'undercharge': 0.0,
+                'overcharge': 0.0,
+                'total_buckets': 0,
+                'matched_buckets': 0,
+                'match_rate': 0.0,
+            }
+
+        status_column = 'status' if 'status' in dataframe.columns else 'STATUS'
+        expected_column = 'expected_total' if 'expected_total' in dataframe.columns else 'EXPECTED_TOTAL'
+        actual_column = 'actual_total' if 'actual_total' in dataframe.columns else 'ACTUAL_TOTAL'
+
+        status_series = dataframe[status_column].map(self._normalize_status_value) if status_column in dataframe.columns else pd.Series([], dtype=str)
+        matched_mask = status_series == 'matched'
+
+        total_buckets = int(len(dataframe))
+        matched_buckets = int(matched_mask.sum())
+        exception_rows = dataframe[~matched_mask].copy() if status_column in dataframe.columns else dataframe.copy()
+
+        if expected_column in exception_rows.columns and actual_column in exception_rows.columns and len(exception_rows) > 0:
+            expected_values = pd.to_numeric(exception_rows[expected_column], errors='coerce').fillna(0)
+            actual_values = pd.to_numeric(exception_rows[actual_column], errors='coerce').fillna(0)
+            undercharge = float((expected_values - actual_values).clip(lower=0).sum())
+            overcharge = float((actual_values - expected_values).clip(lower=0).sum())
+        else:
+            undercharge = 0.0
+            overcharge = 0.0
+
+        match_rate = float((matched_buckets / total_buckets) * 100) if total_buckets > 0 else 0.0
+
+        return {
+            'exception_count': int(len(exception_rows)),
+            'undercharge': undercharge,
+            'overcharge': overcharge,
+            'total_buckets': total_buckets,
+            'matched_buckets': matched_buckets,
+            'match_rate': match_rate,
+        }
+
+    def _resolve_snapshot_exception_count_field_name(self, site_id: str, list_id: str) -> str:
+        """Resolve internal SharePoint field name for snapshot exception count."""
+        default_name = 'ExceptionCountStatic'
+        legacy_name = 'ExceptionCountStatistic'
+
+        try:
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+            }
+            columns_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/columns"
+            params = {
+                '$select': 'name',
+                '$top': 200
+            }
+            response = requests.get(columns_url, headers=headers, params=params, timeout=60)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Could not read RunDisplaySnapshots columns; defaulting to {default_name}: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return default_name
+
+            column_names = {column.get('name') for column in response.json().get('value', []) if column.get('name')}
+            if default_name in column_names:
+                return default_name
+            if legacy_name in column_names:
+                logger.info(f"[STORAGE] Using legacy RunDisplaySnapshots exception field: {legacy_name}")
+                return legacy_name
+
+            logger.warning(
+                f"[STORAGE] Neither {default_name} nor {legacy_name} exists on RunDisplaySnapshots; "
+                f"defaulting to {default_name}"
+            )
+            return default_name
+        except Exception as e:
+            logger.warning(
+                f"[STORAGE] Failed resolving snapshot exception count field; defaulting to {default_name}: {e}"
+            )
+            return default_name
+
+    def _build_run_display_snapshot_rows(
+        self,
+        run_id: str,
+        bucket_results: pd.DataFrame,
+        exception_count_field_name: str = 'ExceptionCountStatic'
+    ) -> List[Dict[str, Any]]:
+        """Build static snapshot rows for portfolio/property/lease display scopes."""
+        rows: List[Dict[str, Any]] = []
+        if bucket_results is None or len(bucket_results) == 0:
+            return rows
+
+        property_column = 'PROPERTY_ID' if 'PROPERTY_ID' in bucket_results.columns else 'property_id'
+        lease_column = 'LEASE_INTERVAL_ID' if 'LEASE_INTERVAL_ID' in bucket_results.columns else 'lease_interval_id'
+
+        def _make_row(scope_type: str, subset: pd.DataFrame, property_id: Any = None, lease_interval_id: Any = None) -> Dict[str, Any]:
+            metrics = self._calculate_static_metrics(subset)
+            property_id_int = self._safe_int(property_id)
+            lease_interval_id_int = self._safe_int(lease_interval_id)
+
+            snapshot_key = f"{run_id}:{scope_type}"
+            title = f"{scope_type}:{run_id}"
+            if property_id_int is not None:
+                snapshot_key += f":{property_id_int}"
+                title += f":{property_id_int}"
+            if lease_interval_id_int is not None:
+                snapshot_key += f":{lease_interval_id_int}"
+                title += f":{lease_interval_id_int}"
+
+            return {
+                'Title': title,
+                'SnapshotKey': snapshot_key,
+                'RunId': run_id,
+                'ScopeType': scope_type,
+                'PropertyId': property_id_int,
+                'LeaseIntervalId': lease_interval_id_int,
+                exception_count_field_name: metrics['exception_count'],
+                'UnderchargeStatic': metrics['undercharge'],
+                'OverchargeStatic': metrics['overcharge'],
+                'MatchRateStatic': metrics['match_rate'],
+                'TotalBucketsStatic': metrics['total_buckets'],
+                'MatchedBucketsStatic': metrics['matched_buckets'],
+                'CreatedAt': datetime.utcnow().isoformat(),
+            }
+
+        # Portfolio-level snapshot
+        rows.append(_make_row('portfolio', bucket_results))
+
+        # Property-level snapshots
+        if property_column in bucket_results.columns:
+            for property_id, property_df in bucket_results.groupby(property_column, dropna=False):
+                rows.append(_make_row('property', property_df, property_id=property_id))
+
+                # Lease-level snapshots nested by property
+                if lease_column in property_df.columns:
+                    for lease_interval_id, lease_df in property_df.groupby(lease_column, dropna=False):
+                        rows.append(
+                            _make_row(
+                                'lease',
+                                lease_df,
+                                property_id=property_id,
+                                lease_interval_id=lease_interval_id,
+                            )
+                        )
+
+        return rows
+
+    def _write_run_display_snapshots_to_sharepoint_list(self, run_id: str, bucket_results: pd.DataFrame) -> bool:
+        """Persist static portfolio/property/lease display snapshots to RunDisplaySnapshots list."""
+        if not self._can_use_sharepoint_lists():
+            logger.debug("[STORAGE] SharePoint lists unavailable; skipping RunDisplaySnapshots write")
+            return False
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return False
+
+            list_id = self._get_run_display_snapshots_list_id()
+            if not list_id:
+                logger.warning("[STORAGE] RunDisplaySnapshots list not found; skipping snapshot persistence")
+                return False
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            # Remove existing snapshots for run to prevent duplicates.
+            existing_params = {
+                '$select': 'id',
+                '$expand': 'fields',
+                '$filter': f"fields/RunId eq '{run_id}'",
+                '$top': 5000
+            }
+            existing_response = requests.get(items_url, headers=headers, params=existing_params, timeout=60)
+            if existing_response.status_code == 200:
+                for item in existing_response.json().get('value', []):
+                    delete_url = f"{items_url}/{item['id']}"
+                    delete_response = requests.delete(delete_url, headers=headers, timeout=30)
+                    if delete_response.status_code not in [200, 202, 204]:
+                        logger.warning(
+                            f"[STORAGE] Failed deleting existing snapshot item {item['id']}: "
+                            f"{delete_response.status_code} - {delete_response.text}"
+                        )
+            else:
+                logger.warning(
+                    f"[STORAGE] Could not query existing snapshots for {run_id}: "
+                    f"{existing_response.status_code} - {existing_response.text}"
+                )
+
+            exception_count_field_name = self._resolve_snapshot_exception_count_field_name(site_id, list_id)
+            snapshot_rows = self._build_run_display_snapshot_rows(
+                run_id,
+                bucket_results,
+                exception_count_field_name=exception_count_field_name,
+            )
+            created = 0
+            for row in snapshot_rows:
+                create_response = requests.post(items_url, headers=headers, json={'fields': row}, timeout=60)
+                if create_response.status_code in [200, 201]:
+                    created += 1
+                else:
+                    logger.warning(
+                        f"[STORAGE] Failed creating snapshot row {row.get('SnapshotKey')}: "
+                        f"{create_response.status_code} - {create_response.text}"
+                    )
+
+            logger.info(f"[STORAGE] ✅ Wrote RunDisplaySnapshots rows for {run_id}: rows={created}")
+            return True
+        except Exception as e:
+            logger.error(f"[STORAGE] Error writing RunDisplaySnapshots list rows: {e}", exc_info=True)
+            return False
+
+    def load_run_display_snapshot_from_sharepoint_list(
+        self,
+        run_id: str,
+        scope_type: str,
+        property_id: Optional[int] = None,
+        lease_interval_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Load a static snapshot row for a given run/scope from RunDisplaySnapshots list."""
+        if not self._can_use_sharepoint_lists():
+            logger.debug("[STORAGE] SharePoint lists unavailable; cannot load RunDisplaySnapshots")
+            return None
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return None
+
+            list_id = self._get_run_display_snapshots_list_id()
+            if not list_id:
+                logger.warning("[STORAGE] RunDisplaySnapshots list not found; cannot load snapshots")
+                return None
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            filters = [
+                f"fields/RunId eq '{run_id}'",
+                f"fields/ScopeType eq '{scope_type}'",
+            ]
+            if property_id is not None:
+                filters.append(f"fields/PropertyId eq {int(property_id)}")
+            if lease_interval_id is not None:
+                filters.append(f"fields/LeaseIntervalId eq {int(lease_interval_id)}")
+
+            params = {
+                '$expand': 'fields',
+                '$filter': ' and '.join(filters),
+                '$top': 1
+            }
+
+            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Failed loading RunDisplaySnapshots for run={run_id}, scope={scope_type}: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return None
+
+            items = response.json().get('value', [])
+            if not items:
+                return None
+
+            fields = items[0].get('fields', {})
+            exception_count = fields.get('ExceptionCountStatic')
+            if exception_count is None:
+                exception_count = fields.get('ExceptionCountStatistic')
+
+            snapshot = {
+                'snapshot_key': fields.get('SnapshotKey'),
+                'run_id': fields.get('RunId', run_id),
+                'scope_type': fields.get('ScopeType', scope_type),
+                'property_id': fields.get('PropertyId'),
+                'lease_interval_id': fields.get('LeaseIntervalId'),
+                'exception_count': int(float(exception_count or 0)),
+                'undercharge': float(fields.get('UnderchargeStatic') or 0),
+                'overcharge': float(fields.get('OverchargeStatic') or 0),
+                'match_rate': float(fields.get('MatchRateStatic') or 0),
+                'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
+                'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
+            }
+
+            logger.info(
+                f"[STORAGE] ✅ Loaded RunDisplaySnapshot: run={run_id}, scope={scope_type}, "
+                f"property_id={property_id}, lease_interval_id={lease_interval_id}, "
+                f"snapshot_key={snapshot.get('snapshot_key')}"
+            )
+            return snapshot
+        except Exception as e:
+            logger.error(f"[STORAGE] Error loading RunDisplaySnapshots row: {e}", exc_info=True)
+            return None
+
     def _write_results_to_sharepoint_list(
         self,
         run_id: str,
@@ -1455,6 +1790,12 @@ class StorageService:
             self._write_results_to_sharepoint_list(run_id, bucket_results, findings)
         except Exception as e:
             logger.warning(f"[STORAGE] Failed to write detailed results to SharePoint list: {e}")
+
+        # Write static display snapshots (portfolio/property/lease) for fast UI loads.
+        try:
+            self._write_run_display_snapshots_to_sharepoint_list(run_id, bucket_results)
+        except Exception as e:
+            logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
         
         logger.info(f"[STORAGE] ✅ Successfully saved run {run_id} - {len(files_saved)} files")
         if self.use_sharepoint:
