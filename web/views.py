@@ -2023,30 +2023,66 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     monthly['is_historical'] = False
                     monthly['resolution_run_id'] = ''
             
-            # Keep track of both total exceptions and unresolved exceptions
-            # Count only unresolved exceptions (status != 'matched' and month_status != 'Resolved')
-            unresolved_count = sum(
-                1 for monthly in ar_data['monthly_details']
-                if monthly.get('status') != 'matched' and monthly.get('month_status') != 'Resolved'
-            )
-            # Count ALL exceptions (both resolved and unresolved) for status calculation
-            total_exception_count = sum(
-                1 for monthly in ar_data['monthly_details']
+            # Static count for this audit run:
+            # - Include unresolved months
+            # - Include months resolved during THIS run
+            # - Exclude months already resolved in PREVIOUS runs (historical carry-forward)
+            scoped_exception_months = [
+                monthly for monthly in ar_data['monthly_details']
                 if monthly.get('status') != 'matched'
+                and not (monthly.get('month_status') == 'Resolved' and monthly.get('is_historical'))
+            ]
+
+            unresolved_count = sum(
+                1 for monthly in scoped_exception_months
+                if monthly.get('month_status') != 'Resolved'
             )
-            ar_data['exception_count'] = total_exception_count  # Display count stays static for the audit run
+            total_exception_count = len(scoped_exception_months)
+
+            ar_data['exception_count'] = total_exception_count
             ar_data['unresolved_exception_count'] = unresolved_count
-            ar_data['total_exception_count'] = total_exception_count  # For status calculation (all exceptions)
-            logger.info(f"[LEASE_VIEW] AR Code {ar_code_id}: {unresolved_count} unresolved, {total_exception_count} total exceptions")
+            ar_data['total_exception_count'] = total_exception_count
+            logger.info(
+                f"[LEASE_VIEW] AR Code {ar_code_id}: {unresolved_count} unresolved, "
+                f"{total_exception_count} static exceptions (historical resolutions excluded)"
+            )
         
-        # Calculate overall AR code status based on month-level statuses
+        # Calculate overall AR code status from scoped current-run exception months.
+        # Status remains Open until ALL scoped exceptions for this AR code are resolved.
         ar_status_map = {}
         for ar_code_id, ar_data in ar_code_unified.items():
-            status_info = storage.calculate_ar_code_status(
-                run_id, int(float(property_id)), int(float(lease_interval_id)), ar_code_id,
-                exception_count=ar_data.get('total_exception_count', 0)  # Pass TOTAL count, not just unresolved
-            )
-            ar_status_map[ar_code_id] = status_info
+            total_months = int(ar_data.get('total_exception_count', 0) or 0)
+            unresolved_months = int(ar_data.get('unresolved_exception_count', 0) or 0)
+            resolved_months = max(0, total_months - unresolved_months)
+
+            if total_months == 0:
+                ar_status_map[ar_code_id] = {
+                    'status': 'Passed',
+                    'total_months': 0,
+                    'resolved_months': 0,
+                    'open_months': 0,
+                    'status_label': 'Passed',
+                }
+            elif unresolved_months == 0:
+                ar_status_map[ar_code_id] = {
+                    'status': 'Resolved',
+                    'total_months': total_months,
+                    'resolved_months': resolved_months,
+                    'open_months': 0,
+                    'status_label': 'Resolved',
+                }
+            else:
+                status_label = 'Open'
+                if resolved_months > 0:
+                    status_label = f"Open ({resolved_months} of {total_months} resolved)"
+
+                ar_status_map[ar_code_id] = {
+                    'status': 'Open',
+                    'total_months': total_months,
+                    'resolved_months': resolved_months,
+                    'open_months': unresolved_months,
+                    'status_label': status_label,
+                }
         
         # Determine overall status for each AR code
         all_ar_codes = []

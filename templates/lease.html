@@ -210,8 +210,11 @@
 
         // Exception Workflow section - moved to top
         if (data.exception_count > 0 || (data.monthly_details || []).some(m => m.status !== 'matched' && m.month_status === 'Resolved')) {
-            // Count total exceptions (including resolved) and open exceptions
-            const allExceptions = (data.monthly_details || []).filter(m => m.status !== 'matched');
+            // Scoped exceptions for this audit run:
+            // exclude months that are only resolved from historical runs.
+            const allExceptions = (data.monthly_details || []).filter(
+                m => m.status !== 'matched' && !(m.month_status === 'Resolved' && m.is_historical)
+            );
             const resolvedExceptions = allExceptions.filter(m => m.month_status === 'Resolved');
             const openExceptions = allExceptions.filter(m => m.month_status !== 'Resolved');
             
@@ -346,7 +349,9 @@
         // Suggested fixes as horizontal buttons below table
         // Show if there are exceptions (including resolved ones)
         if (data.exception_count > 0 || (data.monthly_details || []).some(m => m.status !== 'matched')) {
-            const exceptions = (data.monthly_details || []).filter(m => m.status !== 'matched');
+            const exceptions = (data.monthly_details || []).filter(
+                m => m.status !== 'matched' && !(m.month_status === 'Resolved' && m.is_historical)
+            );
             const hasUnresolvedExceptions = exceptions.some(m => m.month_status !== 'Resolved');
             const allResolved = !hasUnresolvedExceptions && exceptions.length > 0;
             

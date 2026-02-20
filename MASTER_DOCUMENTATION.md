@@ -1172,6 +1172,8 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-02-20**: Refined lease AR-code status logic to remain Open until all scoped exceptions for that lease interval AR code are resolved; status no longer flips to Resolved from cross-run historical state alone
+- **2026-02-20**: Aligned lease drawer count/status presentation with scoped run logic (exclude previously resolved historical months from current audit count while preserving current-run resolution behavior)
 - **2026-02-20**: Added app-level session lifecycle with SessionID generation, idle-timeout rollover, and Start/End Session correlation in SharePoint activity logs
 - **2026-02-20**: Updated SharePoint activity logging to populate `SessionID` on all activity events (Start Session, Successful Audit, Failed Audit, End Session)
 - **2026-02-20**: Fixed cross-run exception resolution month matching normalization so historical resolutions are applied before snapshot counts
