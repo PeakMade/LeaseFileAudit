@@ -11,7 +11,7 @@ import os
 import json
 from datetime import datetime
 from typing import Optional, Dict, Any
-from flask import request
+from flask import request, session
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,8 @@ class SharePointLogger:
         activity_type: str,
         app_name: str = None,
         user_role: str = 'user',
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None
     ) -> bool:
         """
         Log a user activity to SharePoint.
@@ -145,6 +146,9 @@ class SharePointLogger:
                     'LoginTimestamp': datetime.utcnow().isoformat() + 'Z',
                 }
             }
+
+            if session_id:
+                item_data['fields']['SessionID'] = session_id
             
             logger.info(f"[SHAREPOINT] Sending Env field with value: '{env_value}'")
             
@@ -413,10 +417,20 @@ def log_user_activity(
     user_name = os.getenv('LOCAL_DEV_USER_NAME', user_info.get('name', 'Unknown User'))
     user_email = os.getenv('LOCAL_DEV_USER_EMAIL', user_info.get('email', 'unknown@localhost'))
     
+    details_payload = dict(details) if details else {}
+
+    session_id = details_payload.get('session_id')
+    if not session_id:
+        try:
+            session_id = session.get('session_id')
+        except Exception:
+            session_id = None
+
     # Extract user_role from details or set to 'dev_user' for local dev
     user_role = 'dev_user' if is_local_dev else 'user'
-    if details and 'user_role' in details:
-        user_role = details.pop('user_role')  # Remove from details to avoid duplication
+    if 'user_role' in details_payload:
+        user_role = details_payload.pop('user_role')  # Remove from details to avoid duplication
+    details_payload.pop('session_id', None)
     
     return logger_instance.log_activity(
         access_token=access_token,
@@ -424,5 +438,6 @@ def log_user_activity(
         user_email=user_email,
         activity_type=activity_type,
         user_role=user_role,
-        details=details
+        details=details_payload,
+        session_id=session_id
     )

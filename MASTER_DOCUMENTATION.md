@@ -1172,6 +1172,10 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-02-20**: Added app-level session lifecycle with SessionID generation, idle-timeout rollover, and Start/End Session correlation in SharePoint activity logs
+- **2026-02-20**: Updated SharePoint activity logging to populate `SessionID` on all activity events (Start Session, Successful Audit, Failed Audit, End Session)
+- **2026-02-20**: Fixed cross-run exception resolution month matching normalization so historical resolutions are applied before snapshot counts
+- **2026-02-20**: Restored property dashboard resident-name population and aligned lease variance/count display logic with unresolved vs static snapshot behavior
 - **2026-02-11**: Implemented documentation-first rule with pre-commit hooks and CONTRIBUTING.md
 - **2026-02-11**: Fixed duplicate loop in resolved exception filtering, added comprehensive logging
 - **2026-02-11**: Added comprehensive master documentation
@@ -1196,6 +1200,6 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 
 ---
 
-**Last Updated**: February 11, 2026  
+**Last Updated**: February 20, 2026  
 **Version**: 1.0  
 **Maintained By**: PeakMade Development Team

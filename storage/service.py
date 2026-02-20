@@ -282,18 +282,42 @@ class StorageService:
             if cast_type is int:
                 return int(float(value))
             if cast_type is str:
-                return str(value)
+                if isinstance(value, (int, float)):
+                    numeric = float(value)
+                    if numeric.is_integer():
+                        return str(int(numeric))
+                    return str(numeric)
+                text = str(value).strip()
+                try:
+                    numeric = float(text)
+                    if numeric.is_integer():
+                        return str(int(numeric))
+                except Exception:
+                    pass
+                return text
         except Exception:
             return ""
         return value
 
     def _normalize_snapshot_audit_month(self, value: Any):
-        """Normalize audit month to YYYY-MM-DD for snapshot filtering."""
+        """Normalize audit month to YYYY-MM for snapshot filtering and cross-run matching."""
+        if value is None:
+            return ''
+
         if isinstance(value, pd.Timestamp):
-            return value.strftime('%Y-%m-%d')
-        if isinstance(value, str):
-            return value[:10]
-        return value
+            return value.strftime('%Y-%m')
+
+        try:
+            parsed = pd.to_datetime(value, errors='coerce')
+            if not pd.isna(parsed):
+                return parsed.strftime('%Y-%m')
+        except Exception:
+            pass
+
+        text = str(value).strip()
+        if len(text) >= 7:
+            return text[:7]
+        return text
 
     def _build_snapshot_resolved_key(self, property_id, lease_id, ar_code_id, audit_month):
         """Create normalized tuple key for resolved-month lookup during snapshot generation."""
@@ -672,6 +696,86 @@ class StorageService:
         except Exception as e:
             logger.error(f"[STORAGE] Error loading RunDisplaySnapshots row: {e}", exc_info=True)
             return None
+
+    def load_run_display_snapshots_for_property(
+        self,
+        run_id: str,
+        property_id: int,
+        scope_type: str = 'lease',
+    ) -> Dict[int, Dict[str, Any]]:
+        """Load all snapshot rows for a property keyed by lease interval id."""
+        if not self._can_use_sharepoint_lists():
+            return {}
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return {}
+
+            list_id = self._get_run_display_snapshots_list_id()
+            if not list_id:
+                return {}
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            params = {
+                '$expand': 'fields',
+                '$filter': (
+                    f"fields/RunId eq '{run_id}' and "
+                    f"fields/ScopeType eq '{scope_type}' and "
+                    f"fields/PropertyId eq {int(property_id)}"
+                ),
+                '$top': 5000
+            }
+
+            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Failed loading RunDisplaySnapshots list rows for property {property_id}: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return {}
+
+            snapshot_map: Dict[int, Dict[str, Any]] = {}
+            for item in response.json().get('value', []):
+                fields = item.get('fields', {})
+                lease_interval_id = self._safe_int(fields.get('LeaseIntervalId'))
+                if lease_interval_id is None:
+                    continue
+
+                exception_count = fields.get('ExceptionCountStatic')
+                if exception_count is None:
+                    exception_count = fields.get('ExceptionCountStatistic')
+
+                snapshot_map[lease_interval_id] = {
+                    'snapshot_key': fields.get('SnapshotKey'),
+                    'run_id': fields.get('RunId', run_id),
+                    'scope_type': fields.get('ScopeType', scope_type),
+                    'property_id': self._safe_int(fields.get('PropertyId')),
+                    'lease_interval_id': lease_interval_id,
+                    'exception_count': int(float(exception_count or 0)),
+                    'undercharge': float(fields.get('UnderchargeStatic') or 0),
+                    'overcharge': float(fields.get('OverchargeStatic') or 0),
+                    'match_rate': float(fields.get('MatchRateStatic') or 0),
+                    'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
+                    'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
+                }
+
+            logger.info(
+                f"[STORAGE] ✅ Loaded {len(snapshot_map)} RunDisplaySnapshots rows for run={run_id}, "
+                f"property_id={property_id}, scope={scope_type}"
+            )
+            return snapshot_map
+        except Exception as e:
+            logger.error(
+                f"[STORAGE] Error loading RunDisplaySnapshots rows for property {property_id}: {e}",
+                exc_info=True
+            )
+            return {}
 
     def _write_results_to_sharepoint_list(
         self,
@@ -1336,7 +1440,7 @@ class StorageService:
             all_records = []
             for item in items:
                 fields = item.get('fields', {})
-                audit_month = fields.get('AuditMonth', '')
+                audit_month = self._normalize_snapshot_audit_month(fields.get('AuditMonth', ''))
                 record_run_id = fields.get('RunId', '')
                 
                 record = {
@@ -1470,7 +1574,7 @@ class StorageService:
                 fields = item.get('fields', {})
                 lease_id = fields.get('LeaseIntervalId')
                 ar_code_id = fields.get('ArCodeId', '')
-                audit_month = fields.get('AuditMonth', '')
+                audit_month = self._normalize_snapshot_audit_month(fields.get('AuditMonth', ''))
                 record_run_id = fields.get('RunId', '')
                 
                 if not lease_id or not ar_code_id:
@@ -1566,11 +1670,13 @@ class StorageService:
                 logger.error("[STORAGE] ExceptionMonths list not found - cannot save month data")
                 return False
 
+            normalized_audit_month = self._normalize_snapshot_audit_month(month_data.get('audit_month'))
+
             # Build composite key for this specific month
             composite_key = (
                 f"{month_data.get('run_id')}:{month_data.get('property_id')}:"
                 f"{month_data.get('lease_interval_id')}:{month_data.get('ar_code_id')}:"
-                f"{month_data.get('audit_month')}"
+                f"{normalized_audit_month}"
             )
             logger.info(f"[STORAGE] Upserting ExceptionMonth: {composite_key}")
 
@@ -1596,7 +1702,7 @@ class StorageService:
                 'PropertyId': int(month_data.get('property_id', 0)),
                 'LeaseIntervalId': int(month_data.get('lease_interval_id', 0)),
                 'ArCodeId': month_data.get('ar_code_id'),
-                'AuditMonth': month_data.get('audit_month'),
+                'AuditMonth': normalized_audit_month,
                 'ExceptionType': month_data.get('exception_type', ''),
                 'Status': month_data.get('status', 'Open'),
                 'FixLabel': month_data.get('fix_label', ''),

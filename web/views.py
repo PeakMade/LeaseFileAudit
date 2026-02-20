@@ -1,7 +1,7 @@
 """
 Flask views for Lease File Audit application.
 """
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, session
 from werkzeug.utils import secure_filename
 from pathlib import Path
 import pandas as pd
@@ -81,12 +81,21 @@ def _normalize_key_value(value, cast_type=str):
 
 
 def _normalize_audit_month(value):
-    """Normalize audit month to YYYY-MM-DD for key comparisons."""
+    """Normalize audit month to YYYY-MM for key comparisons."""
+    if value is None:
+        return ''
     if isinstance(value, pd.Timestamp):
-        return value.strftime('%Y-%m-%d')
-    if isinstance(value, str):
-        return value[:10]
-    return value
+        return value.strftime('%Y-%m')
+    try:
+        parsed = pd.to_datetime(value, errors='coerce')
+        if not pd.isna(parsed):
+            return parsed.strftime('%Y-%m')
+    except Exception:
+        pass
+    text = str(value).strip()
+    if len(text) >= 7:
+        return text[:7]
+    return text
 
 
 def _build_resolved_key(property_id, lease_id, ar_code_id, audit_month):
@@ -729,7 +738,7 @@ def index():
     recent_runs = storage.list_runs(limit=10)
     user = get_current_user()
     
-    # Log login activity to SharePoint if user is authenticated
+    # Session lifecycle logging (Start/timeout End) is handled centrally in app.before_request.
     logger.info(f"[INDEX] User present: {user is not None}")
     if user:
         logger.info(f"[INDEX] User keys: {list(user.keys())}")
@@ -737,19 +746,6 @@ def index():
         logger.info(f"[INDEX] Can log to SharePoint: {config.auth.can_log_to_sharepoint()}")
         logger.info(f"[INDEX] SharePoint site URL: {config.auth.sharepoint_site_url}")
         logger.info(f"[INDEX] SharePoint list name: {config.auth.sharepoint_list_name}")
-        
-    if user and config.auth.can_log_to_sharepoint():
-        logger.info(f"[INDEX] Attempting to log to SharePoint...")
-        result = log_user_activity(
-            user_info=user,
-            activity_type='Start Session',
-            site_url=config.auth.sharepoint_site_url,
-            list_name=config.auth.sharepoint_list_name,
-            details={'page': 'index', 'user_role': 'user'}
-        )
-        logger.info(f"[INDEX] SharePoint logging result: {result}")
-    else:
-        logger.warning(f"[INDEX] SharePoint logging skipped - user: {user is not None}, can_log: {config.auth.can_log_to_sharepoint() if user else 'N/A'}")
     
     return render_template('upload.html', recent_runs=recent_runs, user=user)
 
@@ -774,6 +770,10 @@ def end_session():
             details={'page': 'end_session', 'user_role': 'user'}
         )
         logger.info(f"[END_SESSION] SharePoint logging result: {result}")
+
+    session.pop('session_id', None)
+    session.pop('session_started_at', None)
+    session.pop('last_activity_at', None)
     
     return render_template('session_ended.html', user=user)
 
@@ -1193,6 +1193,11 @@ def property_view(property_id: str, run_id: str = None):
             scope_type='property',
             property_id=int(float(property_id))
         )
+        lease_snapshot_map = storage.load_run_display_snapshots_for_property(
+            run_id=run_id,
+            property_id=int(float(property_id)),
+            scope_type='lease'
+        )
         if property_snapshot:
             logger.info(
                 f"[SNAPSHOT][PROPERTY] Using RunDisplaySnapshots for run {run_id}, property {property_id}: "
@@ -1219,6 +1224,43 @@ def property_view(property_id: str, run_id: str = None):
         
         # Get all unique leases for this property
         all_lease_ids = sorted(all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value].unique())
+
+        lease_customer_names = {}
+        try:
+            lease_ids_normalized = {int(float(lease_id)) for lease_id in all_lease_ids}
+
+            actual_detail = storage.load_actual_detail(run_id)
+            if not actual_detail.empty and CanonicalField.LEASE_INTERVAL_ID.value in actual_detail.columns:
+                for _, record in actual_detail.iterrows():
+                    lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
+                    if pd.isna(lease_value):
+                        continue
+                    lease_key = int(float(lease_value))
+                    if lease_key not in lease_ids_normalized:
+                        continue
+                    if lease_key in lease_customer_names and lease_customer_names[lease_key]:
+                        continue
+                    customer_value = record.get(CanonicalField.CUSTOMER_NAME.value)
+                    if pd.notna(customer_value) and str(customer_value).strip():
+                        lease_customer_names[lease_key] = str(customer_value).strip()
+
+            if len(lease_customer_names) < len(lease_ids_normalized):
+                expected_detail = storage.load_expected_detail(run_id)
+                if not expected_detail.empty and CanonicalField.LEASE_INTERVAL_ID.value in expected_detail.columns:
+                    for _, record in expected_detail.iterrows():
+                        lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
+                        if pd.isna(lease_value):
+                            continue
+                        lease_key = int(float(lease_value))
+                        if lease_key not in lease_ids_normalized:
+                            continue
+                        if lease_key in lease_customer_names and lease_customer_names[lease_key]:
+                            continue
+                        customer_value = record.get(CanonicalField.CUSTOMER_NAME.value)
+                        if pd.notna(customer_value) and str(customer_value).strip():
+                            lease_customer_names[lease_key] = str(customer_value).strip()
+        except Exception as name_error:
+            logger.warning(f"[PROPERTY_VIEW] Failed to load resident names for lease rows: {name_error}")
         
         # Filter to only exceptions for grouping
         property_buckets = all_property_buckets[
@@ -1282,7 +1324,7 @@ def property_view(property_id: str, run_id: str = None):
         for lease_id in all_lease_ids:
             # Get guarantor name and customer name for this lease
             guarantor_name = None
-            customer_name = None
+            customer_name = lease_customer_names.get(int(float(lease_id)))
             
             # Get all buckets for this lease
             lease_all_buckets = all_property_buckets[
@@ -1296,24 +1338,30 @@ def property_view(property_id: str, run_id: str = None):
                 # Lease has exceptions
                 exceptions = lease_groups[lease_id]
                 total_variance = sum(e['variance'] for e in exceptions)
+                lease_snapshot = lease_snapshot_map.get(int(float(lease_id)))
+                static_exception_count = int(lease_snapshot.get('exception_count', len(exceptions))) if lease_snapshot else len(exceptions)
                 lease_summary.append({
                     'lease_interval_id': lease_id,
                     'customer_name': customer_name,
                     'guarantor_name': guarantor_name,
-                    'has_exceptions': True,
-                    'exception_count': len(exceptions),
+                    'has_exceptions': static_exception_count > 0,
+                    'exception_count': static_exception_count,
+                    'unresolved_exception_count': len(exceptions),
                     'matched_count': matched_count,
                     'total_variance': total_variance,
                     'exceptions': sorted(exceptions, key=lambda x: abs(x['variance']), reverse=True)
                 })
             else:
                 # Clean lease - no exceptions
+                lease_snapshot = lease_snapshot_map.get(int(float(lease_id)))
+                static_exception_count = int(lease_snapshot.get('exception_count', 0)) if lease_snapshot else 0
                 lease_summary.append({
                     'lease_interval_id': lease_id,
                     'customer_name': customer_name,
                     'guarantor_name': guarantor_name,
-                    'has_exceptions': False,
-                    'exception_count': 0,
+                    'has_exceptions': static_exception_count > 0,
+                    'exception_count': static_exception_count,
+                    'unresolved_exception_count': 0,
                     'matched_count': matched_count,
                     'total_variance': 0,
                     'exceptions': []
@@ -1930,7 +1978,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             for month_record in exception_months:
                 audit_month = month_record.get('audit_month')
                 logger.info(f"[LEASE_VIEW] SharePoint month record: {audit_month} -> Status: {month_record.get('status')}, Fix: {month_record.get('fix_label')}")
-                ar_month_states[ar_code_id][audit_month] = month_record
+                normalized_month = _normalize_audit_month(audit_month)
+                ar_month_states[ar_code_id][normalized_month] = month_record
         
         # Merge month-level resolution statuses into monthly details
         for ar_code_id, ar_data in ar_code_unified.items():
@@ -1940,26 +1989,13 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             
             for monthly in ar_data['monthly_details']:
                 audit_month = monthly['audit_month']
-                
-                logger.debug(f"[LEASE_VIEW] Looking for match: monthly audit_month={audit_month}, type={type(audit_month)}")
-                
-                # Normalize audit_month format for comparison (handle both date and string formats)
-                if isinstance(audit_month, str):
-                    # Could be "2025-11-01" or "2025-11" or other format
-                    audit_month_normalized = audit_month[:10]  # Take first 10 chars (YYYY-MM-DD)
-                else:
-                    audit_month_normalized = str(audit_month)
-                
-                # Try exact match first, then try normalized match
-                month_state = month_states.get(audit_month)
-                if not month_state:
-                    # Try to find by normalized format
-                    for sp_month, sp_state in month_states.items():
-                        sp_month_normalized = sp_month[:10] if isinstance(sp_month, str) else str(sp_month)
-                        if sp_month_normalized == audit_month_normalized:
-                            month_state = sp_state
-                            logger.info(f"[LEASE_VIEW] Matched {audit_month} with SharePoint {sp_month} (normalized match)")
-                            break
+                audit_month_normalized = _normalize_audit_month(audit_month)
+                logger.debug(
+                    f"[LEASE_VIEW] Looking for match: monthly audit_month={audit_month}, "
+                    f"normalized={audit_month_normalized}, type={type(audit_month)}"
+                )
+
+                month_state = month_states.get(audit_month_normalized)
                 
                 # If this month has exception state data, overlay it
                 if month_state:
@@ -1998,7 +2034,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 1 for monthly in ar_data['monthly_details']
                 if monthly.get('status') != 'matched'
             )
-            ar_data['exception_count'] = unresolved_count  # Display count (unresolved only)
+            ar_data['exception_count'] = total_exception_count  # Display count stays static for the audit run
+            ar_data['unresolved_exception_count'] = unresolved_count
             ar_data['total_exception_count'] = total_exception_count  # For status calculation (all exceptions)
             logger.info(f"[LEASE_VIEW] AR Code {ar_code_id}: {unresolved_count} unresolved, {total_exception_count} total exceptions")
         
@@ -2085,12 +2122,15 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             for monthly in unresolved_exception_months
         )
 
+        total_expected = sum(float(monthly.get('expected_total', 0) or 0) for monthly in unresolved_exception_months)
+        total_actual = sum(float(monthly.get('actual_total', 0) or 0) for monthly in unresolved_exception_months)
+        total_variance = total_actual - total_expected
+
         if lease_snapshot:
             total_undercharge = float(lease_snapshot.get('undercharge', total_undercharge) or 0)
             total_overcharge = float(lease_snapshot.get('overcharge', total_overcharge) or 0)
 
-        # Keep variance for any existing consumers, but don't use it to compute the two totals.
-        total_variance = total_actual - total_expected
+        # Variance aligns with unresolved-month totals shown in lease workflow rows.
         
         # Convert NaT/NaN values to None for JSON serialization
         def sanitize_for_json(obj):
