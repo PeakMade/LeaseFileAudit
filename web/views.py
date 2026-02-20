@@ -119,8 +119,33 @@ def clear_run_cache(run_id: str = None):
         logger.info(f"[CACHE] 🧹 Clearing cache for run {run_id}")
     else:
         logger.info(f"[CACHE] 🧹 Clearing ALL caches")
-    
-    cache.clear()
+
+    try:
+        cache.clear()
+        logger.info("[CACHE] ✅ Cleared via cache.clear()")
+        return
+    except KeyError as e:
+        logger.warning(f"[CACHE] cache.clear() KeyError; attempting extension-level clear fallback: {e}")
+    except Exception as e:
+        logger.warning(f"[CACHE] cache.clear() failed; attempting extension-level clear fallback: {e}")
+
+    try:
+        cache_extension = current_app.extensions.get('cache', {}) if current_app else {}
+        if not cache_extension:
+            logger.warning("[CACHE] No Flask cache extension map found; skipping cache clear")
+            return
+
+        backends_cleared = 0
+        for backend in cache_extension.values():
+            try:
+                backend.clear()
+                backends_cleared += 1
+            except Exception as backend_error:
+                logger.warning(f"[CACHE] Failed clearing backend from extension map: {backend_error}")
+
+        logger.info(f"[CACHE] ✅ Fallback clear completed; backends_cleared={backends_cleared}")
+    except Exception as e:
+        logger.warning(f"[CACHE] Fallback clear failed; continuing without hard failure: {e}")
 
 
 @cache.cached(timeout=300)  # Cache run list for 5 minutes
@@ -148,6 +173,14 @@ def get_available_runs() -> list:
     
     logger.info(f"[CACHE] ✅ Loaded {len(formatted_runs)} available runs")
     return formatted_runs
+
+
+@bp.route('/api/runs', methods=['GET'])
+@require_auth
+def get_available_runs_api():
+    """Return available runs for lazy-loaded run pickers."""
+    runs = get_available_runs()
+    return jsonify({'runs': runs})
 
 
 @cache.cached(timeout=300)  # Cache metrics for 5 minutes
@@ -902,9 +935,14 @@ def portfolio(run_id: str = None):
         if not run_id:
             run_id = cumulative['most_recent_run']['run_id']
         
-        # 🚀 USE CACHED LOAD_RUN instead of direct call
-        logger.info(f"[PORTFOLIO] Loading run data (cached)")
-        run_data = cached_load_run(run_id)
+        logger.info(f"[PORTFOLIO] Loading bucket results from AuditRuns for run {run_id}")
+        bucket_results = storage.load_bucket_results(run_id)
+        findings = storage.load_findings(run_id)
+
+        try:
+            metadata = storage.load_metadata(run_id)
+        except Exception:
+            metadata = {'timestamp': 'Unknown'}
 
         # Prefer static snapshot values for portfolio header metrics.
         portfolio_snapshot = storage.load_run_display_snapshot_from_sharepoint_list(
@@ -930,15 +968,9 @@ def portfolio(run_id: str = None):
                 f"(snapshot not found or unavailable)"
             )
         
-        # Add analysis period to metadata
-        metadata = run_data["metadata"].copy()
-        analysis_period = _calculate_analysis_period(run_data["actual_detail"], run_data["expected_detail"])
-        if analysis_period:
-            metadata['analysis_period'] = analysis_period
-        
         # Filter bucket_results to exclude resolved exceptions
         logger.info(f"[PORTFOLIO] Filtering resolved exceptions for run {run_id}")
-        bucket_results = run_data["bucket_results"].copy()
+        bucket_results = bucket_results.copy()
         exception_buckets = bucket_results[
             bucket_results[CanonicalField.STATUS.value] != config.reconciliation.status_matched
         ].copy()
@@ -986,8 +1018,8 @@ def portfolio(run_id: str = None):
         # Calculate property summary from filtered bucket results
         property_summary = calculate_property_summary(
             filtered_bucket_results,
-            run_data["findings"],
-            run_data["actual_detail"]  # Pass actual_detail to get property names
+            findings,
+            None
         )
         
         return render_template(
@@ -1090,10 +1122,21 @@ def upsert_exception_month():
     if ok:
         logger.info(f"[CACHE] Clearing cache after exception status update")
         # Clear the property-specific cache for this update
-        cache.delete_memoized(cached_load_property_exception_months, 
-                             payload['run_id'], 
-                             int(payload['property_id']))
-        logger.info(f"[CACHE] Cleared property {payload['property_id']} exception cache")
+        try:
+            cache.delete_memoized(cached_load_property_exception_months,
+                                 payload['run_id'],
+                                 int(payload['property_id']))
+            logger.info(f"[CACHE] Cleared property {payload['property_id']} exception cache")
+        except KeyError as e:
+            logger.warning(
+                f"[CACHE] delete_memoized KeyError for property {payload['property_id']}; "
+                f"cache invalidation skipped: {e}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[CACHE] delete_memoized failed for property {payload['property_id']}; "
+                f"cache invalidation skipped: {e}"
+            )
     
     # Also recalculate overall AR code status
     exception_count = payload.get('exception_count', 0)  # Get from payload if provided
@@ -1124,31 +1167,26 @@ def property_view(property_id: str, run_id: str = None):
     """Property view - exceptions grouped by lease with run selector."""
     try:
         storage = get_storage_service()
+
+        # Resolve selected run without loading full run list unless needed.
+        if not run_id:
+            latest_runs = get_available_runs()
+            if latest_runs:
+                run_id = latest_runs[0]['run_id']
+            else:
+                flash('No audit runs available', 'warning')
+                return redirect(url_for('main.index'))
         
-        # Get all available runs
-        all_runs = get_available_runs()
-        
-        # If no run_id specified, use the most recent
-        if not run_id and all_runs:
-            run_id = all_runs[0]['run_id']
-        elif not run_id:
-            flash('No audit runs available', 'warning')
-            return redirect(url_for('main.index'))
-        
-        # 🚀 USE CACHED LOAD_RUN
-        run_data = cached_load_run(run_id)
-        
-        # Add analysis period to metadata
-        metadata = run_data["metadata"].copy()
-        analysis_period = _calculate_analysis_period(run_data["actual_detail"], run_data["expected_detail"])
-        if analysis_period:
-            metadata['analysis_period'] = analysis_period
-        
-        # Get bucket results for this property (all statuses)
-        bucket_results = run_data["bucket_results"]
-        all_property_buckets = bucket_results[
-            bucket_results[CanonicalField.PROPERTY_ID.value] == float(property_id)
-        ]
+        try:
+            metadata = storage.load_metadata(run_id)
+        except Exception:
+            metadata = {'timestamp': 'Unknown'}
+
+        # Get bucket results for this property from AuditRuns
+        all_property_buckets = storage.load_bucket_results(
+            run_id,
+            property_id=int(float(property_id))
+        )
 
         property_snapshot = storage.load_run_display_snapshot_from_sharepoint_list(
             run_id=run_id,
@@ -1175,12 +1213,6 @@ def property_view(property_id: str, run_id: str = None):
         }
         
         property_name = None
-        actual_detail = run_data["actual_detail"]
-        expected_detail = run_data["expected_detail"]
-        property_actual = actual_detail[actual_detail[CanonicalField.PROPERTY_ID.value] == float(property_id)]
-        if len(property_actual) > 0 and CanonicalField.PROPERTY_NAME.value in property_actual.columns:
-            property_name = property_actual[CanonicalField.PROPERTY_NAME.value].iloc[0]
-        
         # Fallback to hardcoded names
         if not property_name:
             property_name = PROPERTY_NAME_MAP.get(int(float(property_id)))
@@ -1252,33 +1284,6 @@ def property_view(property_id: str, run_id: str = None):
             guarantor_name = None
             customer_name = None
             
-            # First check actual_detail (posted transactions)
-            lease_actual_data = actual_detail[actual_detail[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id]
-            if len(lease_actual_data) > 0:
-                if CanonicalField.GUARANTOR_NAME.value in lease_actual_data.columns:
-                    guarantor_value = lease_actual_data[CanonicalField.GUARANTOR_NAME.value].iloc[0]
-                    if pd.notna(guarantor_value):
-                        guarantor_name = guarantor_value
-                
-                if CanonicalField.CUSTOMER_NAME.value in lease_actual_data.columns:
-                    customer_value = lease_actual_data[CanonicalField.CUSTOMER_NAME.value].iloc[0]
-                    if pd.notna(customer_value):
-                        customer_name = customer_value
-            
-            # If not found in actual, check expected_detail (scheduled charges)
-            if not guarantor_name or not customer_name:
-                lease_expected_data = expected_detail[expected_detail[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id]
-                if len(lease_expected_data) > 0:
-                    if not guarantor_name and CanonicalField.GUARANTOR_NAME.value in lease_expected_data.columns:
-                        guarantor_value = lease_expected_data[CanonicalField.GUARANTOR_NAME.value].iloc[0]
-                        if pd.notna(guarantor_value):
-                            guarantor_name = guarantor_value
-                    
-                    if not customer_name and CanonicalField.CUSTOMER_NAME.value in lease_expected_data.columns:
-                        customer_value = lease_expected_data[CanonicalField.CUSTOMER_NAME.value].iloc[0]
-                        if pd.notna(customer_value):
-                            customer_name = customer_value
-            
             # Get all buckets for this lease
             lease_all_buckets = all_property_buckets[
                 all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
@@ -1326,7 +1331,7 @@ def property_view(property_id: str, run_id: str = None):
         
         property_kpis = calculate_kpis(
             kpis_input,  # Use filtered dataset (matched + unresolved exceptions only)
-            run_data["findings"],
+            storage.load_findings(run_id, property_id=int(float(property_id))),
             property_id=None  # Already filtered, don't filter again
         )
 
@@ -1349,7 +1354,14 @@ def property_view(property_id: str, run_id: str = None):
             kpis=property_kpis,
             lease_summary=lease_summary,
             exception_count=property_exception_count,
-            all_runs=all_runs,
+            all_runs=[
+                {
+                    'run_id': run_id,
+                    'timestamp': metadata.get('timestamp', 'Unknown'),
+                    'audit_period': metadata.get('audit_period', {}),
+                    'run_type': metadata.get('run_type', 'Manual')
+                }
+            ],
             current_run_id=run_id
         )
     except Exception as e:
@@ -1439,8 +1451,17 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
     """Lease view - detailed exceptions for a specific lease."""
     try:
         storage = get_storage_service()
-        # 🚀 USE CACHED LOAD_RUN
-        run_data = cached_load_run(run_id)
+        bucket_results = storage.load_bucket_results(
+            run_id,
+            property_id=int(float(property_id)),
+            lease_interval_id=int(float(lease_interval_id))
+        )
+        expected_detail = storage.load_expected_detail(run_id)
+        actual_detail = storage.load_actual_detail(run_id)
+        try:
+            run_metadata = storage.load_metadata(run_id)
+        except Exception:
+            run_metadata = {'timestamp': 'Unknown'}
 
         lease_snapshot = storage.load_run_display_snapshot_from_sharepoint_list(
             run_id=run_id,
@@ -1461,17 +1482,12 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             )
         
         # Get all buckets for this lease - exceptions and matches separately
-        bucket_results = run_data["bucket_results"]
         lease_buckets = bucket_results[
-            (bucket_results[CanonicalField.PROPERTY_ID.value] == float(property_id)) &
-            (bucket_results[CanonicalField.LEASE_INTERVAL_ID.value] == float(lease_interval_id)) &
             (bucket_results[CanonicalField.STATUS.value] != config.reconciliation.status_matched)
         ].copy()
         
         # Get matched buckets for this lease
         matched_buckets = bucket_results[
-            (bucket_results[CanonicalField.PROPERTY_ID.value] == float(property_id)) &
-            (bucket_results[CanonicalField.LEASE_INTERVAL_ID.value] == float(lease_interval_id)) &
             (bucket_results[CanonicalField.STATUS.value] == config.reconciliation.status_matched)
         ].copy()
         
@@ -1480,9 +1496,6 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         logger.info(f"[LEASE_VIEW] Found {len(lease_buckets)} exception buckets for lease {lease_interval_id} (including any resolved)")
         
         # Get expected and actual detail for this lease
-        expected_detail = run_data["expected_detail"]
-        actual_detail = run_data["actual_detail"]
-        
         lease_expected = expected_detail[
             expected_detail[CanonicalField.LEASE_INTERVAL_ID.value] == float(lease_interval_id)
         ]
@@ -2117,7 +2130,7 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             lease_interval_id=lease_interval_id,
             entrata_url=entrata_url,
             has_customer_id=has_customer_id,
-            metadata=run_data["metadata"],
+            metadata=run_metadata,
             exceptions=grouped_list,
             exception_count=len(grouped_list),
             matched_records=matched_list,

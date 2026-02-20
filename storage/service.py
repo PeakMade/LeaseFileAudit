@@ -34,6 +34,9 @@ class StorageService:
             variance_detail.csv (optional)
         run_meta.json
     """
+    _GLOBAL_SITE_ID_CACHE: Dict[str, str] = {}
+    _GLOBAL_DRIVE_ID_CACHE: Dict[str, str] = {}
+    _GLOBAL_LIST_ID_CACHE: Dict[str, str] = {}
     
     def __init__(self, base_dir: Path, use_sharepoint: bool = False, sharepoint_site_url: str = None, 
                  library_name: str = None, access_token: str = None):
@@ -45,9 +48,16 @@ class StorageService:
         self._site_id = None
         self._drive_id = None
         self._list_ids = {}
+
+        site_cache_key = self.sharepoint_site_url or ""
+        drive_cache_key = f"{site_cache_key}|{self.library_name}" if site_cache_key and self.library_name else ""
+        if site_cache_key and site_cache_key in self._GLOBAL_SITE_ID_CACHE:
+            self._site_id = self._GLOBAL_SITE_ID_CACHE[site_cache_key]
+        if drive_cache_key and drive_cache_key in self._GLOBAL_DRIVE_ID_CACHE:
+            self._drive_id = self._GLOBAL_DRIVE_ID_CACHE[drive_cache_key]
         
         if self.use_sharepoint:
-            logger.info(f"[STORAGE] Using SharePoint Document Library: {library_name}")
+            logger.debug(f"[STORAGE] Using SharePoint Document Library: {library_name}")
         else:
             self.base_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"[STORAGE] Using local filesystem: {self.base_dir}")
@@ -92,7 +102,11 @@ class StorageService:
             for drive in response.json()['value']:
                 if drive['name'] == self.library_name:
                     self._drive_id = drive['id']
-                    logger.info(f"[STORAGE] Found drive ID for library '{self.library_name}'")
+                    site_cache_key = self.sharepoint_site_url or ""
+                    drive_cache_key = f"{site_cache_key}|{self.library_name}" if site_cache_key and self.library_name else ""
+                    if drive_cache_key:
+                        self._GLOBAL_DRIVE_ID_CACHE[drive_cache_key] = self._drive_id
+                    logger.debug(f"[STORAGE] Found drive ID for library '{self.library_name}'")
                     return site_id, self._drive_id
             
             logger.error(f"[STORAGE] Document library '{self.library_name}' not found")
@@ -105,6 +119,11 @@ class StorageService:
     def _get_site_id(self) -> Optional[str]:
         """Get SharePoint site ID without resolving document library."""
         if self._site_id:
+            return self._site_id
+
+        site_cache_key = self.sharepoint_site_url or ""
+        if site_cache_key and site_cache_key in self._GLOBAL_SITE_ID_CACHE:
+            self._site_id = self._GLOBAL_SITE_ID_CACHE[site_cache_key]
             return self._site_id
 
         try:
@@ -120,6 +139,8 @@ class StorageService:
                 return None
 
             self._site_id = response.json()['id']
+            if site_cache_key:
+                self._GLOBAL_SITE_ID_CACHE[site_cache_key] = self._site_id
             return self._site_id
         except Exception as e:
             logger.error(f"[STORAGE] Error getting site ID: {e}", exc_info=True)
@@ -133,6 +154,12 @@ class StorageService:
         if not site_id:
             logger.error("[STORAGE] Cannot resolve list ID - site ID not found")
             return None
+
+        global_list_key = f"{site_id}|{list_name}"
+        if global_list_key in self._GLOBAL_LIST_ID_CACHE:
+            list_id = self._GLOBAL_LIST_ID_CACHE[global_list_key]
+            self._list_ids[list_name] = list_id
+            return list_id
 
         list_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists"
         headers = {
@@ -153,7 +180,8 @@ class StorageService:
 
         list_id = lists_data['value'][0]['id']
         self._list_ids[list_name] = list_id
-        logger.info(f"[STORAGE] Resolved SharePoint list '{list_name}' id: {list_id}")
+        self._GLOBAL_LIST_ID_CACHE[global_list_key] = list_id
+        logger.debug(f"[STORAGE] Resolved SharePoint list '{list_name}' id: {list_id}")
         return list_id
 
     def _normalize_for_json(self, value: Any) -> Any:
@@ -245,6 +273,100 @@ class StorageService:
             return int(float(value))
         except Exception:
             return None
+
+    def _normalize_snapshot_key_value(self, value: Any, cast_type=str):
+        """Normalize key values for snapshot resolved-month matching."""
+        if value is None:
+            return ""
+        try:
+            if cast_type is int:
+                return int(float(value))
+            if cast_type is str:
+                return str(value)
+        except Exception:
+            return ""
+        return value
+
+    def _normalize_snapshot_audit_month(self, value: Any):
+        """Normalize audit month to YYYY-MM-DD for snapshot filtering."""
+        if isinstance(value, pd.Timestamp):
+            return value.strftime('%Y-%m-%d')
+        if isinstance(value, str):
+            return value[:10]
+        return value
+
+    def _build_snapshot_resolved_key(self, property_id, lease_id, ar_code_id, audit_month):
+        """Create normalized tuple key for resolved-month lookup during snapshot generation."""
+        return (
+            self._normalize_snapshot_key_value(property_id, int),
+            self._normalize_snapshot_key_value(lease_id, int),
+            self._normalize_snapshot_key_value(ar_code_id, str),
+            self._normalize_snapshot_audit_month(audit_month)
+        )
+
+    def _filter_bucket_results_for_unresolved_snapshot(self, run_id: str, bucket_results: pd.DataFrame) -> pd.DataFrame:
+        """Filter out resolved exception months before snapshot metric calculation."""
+        if bucket_results is None or len(bucket_results) == 0:
+            return bucket_results
+
+        status_column = 'status' if 'status' in bucket_results.columns else 'STATUS'
+        property_column = 'PROPERTY_ID' if 'PROPERTY_ID' in bucket_results.columns else 'property_id'
+        lease_column = 'LEASE_INTERVAL_ID' if 'LEASE_INTERVAL_ID' in bucket_results.columns else 'lease_interval_id'
+        ar_code_column = 'AR_CODE_ID' if 'AR_CODE_ID' in bucket_results.columns else 'ar_code_id'
+        audit_month_column = 'AUDIT_MONTH' if 'AUDIT_MONTH' in bucket_results.columns else 'audit_month'
+
+        required_columns = [status_column, property_column, lease_column, ar_code_column, audit_month_column]
+        if any(col not in bucket_results.columns for col in required_columns):
+            logger.warning("[STORAGE] Snapshot unresolved filtering skipped: required columns missing")
+            return bucket_results
+
+        status_series = bucket_results[status_column].map(self._normalize_status_value)
+        exception_rows = bucket_results[status_series != 'matched'].copy()
+        if len(exception_rows) == 0:
+            return bucket_results
+
+        resolved_keys = set()
+        unique_properties = pd.to_numeric(exception_rows[property_column], errors='coerce').dropna().unique()
+
+        for property_id in unique_properties:
+            try:
+                bulk_exception_data = self.load_property_exception_months_bulk(run_id, int(float(property_id)))
+                for (lease_id, ar_code_id), month_records in bulk_exception_data.items():
+                    for month_record in month_records:
+                        if str(month_record.get('status', '')).strip().lower() == 'resolved':
+                            resolved_key = self._build_snapshot_resolved_key(
+                                property_id,
+                                lease_id,
+                                ar_code_id,
+                                month_record.get('audit_month')
+                            )
+                            resolved_keys.add(resolved_key)
+            except Exception as e:
+                logger.warning(
+                    f"[STORAGE] Snapshot unresolved filtering property lookup failed for {property_id}: {e}"
+                )
+
+        if len(resolved_keys) == 0:
+            return bucket_results
+
+        def _is_unresolved_bucket(row):
+            if self._normalize_status_value(row[status_column]) == 'matched':
+                return True
+
+            key = self._build_snapshot_resolved_key(
+                row[property_column],
+                row[lease_column],
+                row[ar_code_column],
+                row[audit_month_column]
+            )
+            return key not in resolved_keys
+
+        filtered = bucket_results[bucket_results.apply(_is_unresolved_bucket, axis=1)].copy()
+        logger.info(
+            f"[STORAGE] Snapshot unresolved filtering for {run_id}: "
+            f"original_rows={len(bucket_results)}, filtered_rows={len(filtered)}, resolved_keys={len(resolved_keys)}"
+        )
+        return filtered
 
     def _calculate_static_metrics(self, dataframe: pd.DataFrame) -> Dict[str, Any]:
         """Calculate static display metrics from bucket rows without resolution overlay."""
@@ -442,10 +564,11 @@ class StorageService:
                     f"{existing_response.status_code} - {existing_response.text}"
                 )
 
+            filtered_bucket_results = self._filter_bucket_results_for_unresolved_snapshot(run_id, bucket_results)
             exception_count_field_name = self._resolve_snapshot_exception_count_field_name(site_id, list_id)
             snapshot_rows = self._build_run_display_snapshot_rows(
                 run_id,
-                bucket_results,
+                filtered_bucket_results,
                 exception_count_field_name=exception_count_field_name,
             )
             created = 0
@@ -608,6 +731,103 @@ class StorageService:
                 if df is None or len(df) == 0:
                     return rows_written
 
+                row_requests: List[Dict[str, Any]] = []
+
+                def _post_single(request_payload: Dict[str, Any], row_idx: int) -> bool:
+                    create_response = requests.post(
+                        items_url,
+                        headers=headers,
+                        json=request_payload,
+                        timeout=60,
+                    )
+                    if create_response.status_code in [200, 201]:
+                        return True
+                    logger.warning(
+                        f"[STORAGE] Failed writing {result_type} row {row_idx} for run {run_id}: "
+                        f"{create_response.status_code} - {create_response.text}"
+                    )
+                    return False
+
+                def _post_batch(batch_items: List[Dict[str, Any]]) -> int:
+                    """Post up to 20 create requests through Microsoft Graph $batch."""
+                    if not batch_items:
+                        return 0
+
+                    batch_url = "https://graph.microsoft.com/v1.0/$batch"
+                    batch_headers = {
+                        'Authorization': f'Bearer {self.access_token}',
+                        'Content-Type': 'application/json',
+                    }
+
+                    requests_payload = []
+                    for request_item in batch_items:
+                        requests_payload.append({
+                            'id': str(request_item['row_idx']),
+                            'method': 'POST',
+                            'url': f"/sites/{site_id}/lists/{list_id}/items",
+                            'headers': {'Content-Type': 'application/json'},
+                            'body': request_item['payload'],
+                        })
+
+                    try:
+                        batch_response = requests.post(
+                            batch_url,
+                            headers=batch_headers,
+                            json={'requests': requests_payload},
+                            timeout=120,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"[STORAGE] Batch write request failed for {result_type}; "
+                            f"falling back to single posts: {e}"
+                        )
+                        success_count = 0
+                        for request_item in batch_items:
+                            if _post_single(request_item['payload'], request_item['row_idx']):
+                                success_count += 1
+                        return success_count
+
+                    if batch_response.status_code != 200:
+                        logger.warning(
+                            f"[STORAGE] Batch write failed for {result_type} (HTTP {batch_response.status_code}); "
+                            f"falling back to single posts"
+                        )
+                        success_count = 0
+                        for request_item in batch_items:
+                            if _post_single(request_item['payload'], request_item['row_idx']):
+                                success_count += 1
+                        return success_count
+
+                    response_items = batch_response.json().get('responses', [])
+                    response_map = {item.get('id'): item for item in response_items}
+
+                    success_count = 0
+                    for request_item in batch_items:
+                        row_idx = request_item['row_idx']
+                        response_item = response_map.get(str(row_idx))
+                        if not response_item:
+                            logger.warning(
+                                f"[STORAGE] Missing batch response for {result_type} row {row_idx}; "
+                                f"falling back to single post"
+                            )
+                            if _post_single(request_item['payload'], row_idx):
+                                success_count += 1
+                            continue
+
+                        status_code = response_item.get('status')
+                        if status_code in [200, 201]:
+                            success_count += 1
+                            continue
+
+                        logger.warning(
+                            f"[STORAGE] Batch write failed for {result_type} row {row_idx}: "
+                            f"{status_code} - {response_item.get('body')}"
+                        )
+                        if _post_single(request_item['payload'], row_idx):
+                            success_count += 1
+
+                    return success_count
+
                 for idx, (_, row) in enumerate(df.iterrows()):
                     row_dict = {col: self._normalize_for_json(value) for col, value in row.to_dict().items()}
                     composite_key = self._build_result_composite_key(run_id, result_type, row_dict, idx)
@@ -650,16 +870,16 @@ class StorageService:
                         'CreatedAt': datetime.utcnow().isoformat(),
                     }
 
-                    create_payload = {'fields': fields_payload}
-                    create_response = requests.post(items_url, headers=headers, json=create_payload, timeout=60)
-                    if create_response.status_code not in [200, 201]:
-                        logger.warning(
-                            f"[STORAGE] Failed writing {result_type} row {idx} for run {run_id}: "
-                            f"{create_response.status_code} - {create_response.text}"
-                        )
-                        continue
+                    row_requests.append({
+                        'row_idx': idx,
+                        'payload': {'fields': fields_payload},
+                    })
 
-                    rows_written += 1
+                # Microsoft Graph supports up to 20 requests per batch.
+                batch_size = 20
+                for start in range(0, len(row_requests), batch_size):
+                    chunk = row_requests[start:start + batch_size]
+                    rows_written += _post_batch(chunk)
 
                 return rows_written
 
@@ -674,7 +894,13 @@ class StorageService:
             logger.error(f"[STORAGE] Error writing audit results list rows: {e}", exc_info=True)
             return False
 
-    def _load_results_from_sharepoint_list(self, run_id: str, result_type: str) -> Optional[pd.DataFrame]:
+    def _load_results_from_sharepoint_list(
+        self,
+        run_id: str,
+        result_type: str,
+        property_id: Optional[int] = None,
+        lease_interval_id: Optional[int] = None,
+    ) -> Optional[pd.DataFrame]:
         """Load result rows for a run/type from SharePoint list 'AuditRuns'."""
         if not self._can_use_sharepoint_lists():
             return None
@@ -694,9 +920,18 @@ class StorageService:
                 'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
             }
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            filters = [
+                f"fields/RunId eq '{run_id}'",
+                f"fields/ResultType eq '{result_type}'",
+            ]
+            if property_id is not None:
+                filters.append(f"fields/PropertyId eq {int(property_id)}")
+            if lease_interval_id is not None:
+                filters.append(f"fields/LeaseIntervalId eq {int(lease_interval_id)}")
+
             params = {
                 '$expand': 'fields',
-                '$filter': f"fields/RunId eq '{run_id}' and fields/ResultType eq '{result_type}'",
+                '$filter': ' and '.join(filters),
                 '$top': 5000
             }
 
@@ -781,6 +1016,118 @@ class StorageService:
         except Exception as e:
             logger.error(f"[STORAGE] Error loading audit results list rows: {e}", exc_info=True)
             return None
+
+    def load_bucket_results(
+        self,
+        run_id: str,
+        property_id: Optional[int] = None,
+        lease_interval_id: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Load bucket results from AuditRuns (preferred) with CSV fallback."""
+        bucket_results = self._load_results_from_sharepoint_list(
+            run_id,
+            'bucket_result',
+            property_id=property_id,
+            lease_interval_id=lease_interval_id,
+        )
+        if bucket_results is not None:
+            return self._normalize_loaded_dataframe(bucket_results)
+
+        bucket_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
+        if bucket_results is None:
+            return pd.DataFrame()
+
+        if property_id is not None and 'PROPERTY_ID' in bucket_results.columns:
+            bucket_results = bucket_results[bucket_results['PROPERTY_ID'] == float(property_id)]
+        if lease_interval_id is not None and 'LEASE_INTERVAL_ID' in bucket_results.columns:
+            bucket_results = bucket_results[bucket_results['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
+        return self._normalize_loaded_dataframe(bucket_results.copy())
+
+    def load_findings(
+        self,
+        run_id: str,
+        property_id: Optional[int] = None,
+        lease_interval_id: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Load findings from AuditRuns (preferred) with CSV fallback."""
+        findings = self._load_results_from_sharepoint_list(
+            run_id,
+            'finding',
+            property_id=property_id,
+            lease_interval_id=lease_interval_id,
+        )
+        if findings is not None:
+            return self._normalize_loaded_dataframe(findings)
+
+        findings = self._load_dataframe(run_id, "outputs/findings.csv")
+        if findings is None:
+            return pd.DataFrame()
+
+        if property_id is not None:
+            if 'property_id' in findings.columns:
+                findings = findings[findings['property_id'] == float(property_id)]
+            elif 'PROPERTY_ID' in findings.columns:
+                findings = findings[findings['PROPERTY_ID'] == float(property_id)]
+
+        if lease_interval_id is not None:
+            if 'lease_interval_id' in findings.columns:
+                findings = findings[findings['lease_interval_id'] == float(lease_interval_id)]
+            elif 'LEASE_INTERVAL_ID' in findings.columns:
+                findings = findings[findings['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
+        return self._normalize_loaded_dataframe(findings.copy())
+
+    def load_expected_detail(self, run_id: str) -> pd.DataFrame:
+        """Load expected_detail for a run from persisted inputs."""
+        expected_detail = self._load_dataframe(run_id, "inputs_normalized/expected_detail.csv")
+        if expected_detail is None:
+            return pd.DataFrame()
+        return self._normalize_loaded_dataframe(expected_detail)
+
+    def load_actual_detail(self, run_id: str) -> pd.DataFrame:
+        """Load actual_detail for a run from persisted inputs."""
+        actual_detail = self._load_dataframe(run_id, "inputs_normalized/actual_detail.csv")
+        if actual_detail is None:
+            return pd.DataFrame()
+        return self._normalize_loaded_dataframe(actual_detail)
+
+    def _normalize_ar_code_value(self, value: Any) -> str:
+        if value is None or pd.isna(value):
+            return ''
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric.is_integer():
+                return str(int(numeric))
+            return str(numeric)
+        text = str(value).strip()
+        try:
+            numeric = float(text)
+            if numeric.is_integer():
+                return str(int(numeric))
+        except Exception:
+            pass
+        return text
+
+    def _normalize_loaded_dataframe(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """Normalize loaded data to keep key comparisons stable across data sources."""
+        if dataframe is None or dataframe.empty:
+            return dataframe
+
+        date_columns = ['AUDIT_MONTH', 'PERIOD_START', 'PERIOD_END', 'POST_DATE', 'audit_month']
+        for column_name in date_columns:
+            if column_name in dataframe.columns:
+                series = pd.to_datetime(dataframe[column_name], errors='coerce')
+                try:
+                    series = series.dt.tz_localize(None)
+                except Exception:
+                    pass
+                dataframe[column_name] = series
+
+        ar_code_columns = ['AR_CODE_ID', 'ar_code_id']
+        for column_name in ar_code_columns:
+            if column_name in dataframe.columns:
+                dataframe[column_name] = dataframe[column_name].apply(self._normalize_ar_code_value)
+
+        return dataframe
 
     def load_exception_states_from_sharepoint_list(self, run_id: str, property_id: int, lease_interval_id: int) -> List[Dict[str, Any]]:
         """Load exception workflow states from SharePoint List 'ExceptionStates'."""
@@ -1422,7 +1769,10 @@ class StorageService:
             if response.status_code == 200:
                 return response.text
             else:
-                logger.warning(f"[STORAGE] File not found or error downloading {file_path}: {response.status_code}")
+                if response.status_code == 404:
+                    logger.debug(f"[STORAGE] SharePoint file not found (404): {file_path}")
+                else:
+                    logger.warning(f"[STORAGE] File not found or error downloading {file_path}: {response.status_code}")
                 return None
                 
         except Exception as e:
@@ -1824,45 +2174,12 @@ class StorageService:
         if expected_detail is None or actual_detail is None or bucket_results is None or findings is None:
             raise ValueError(f"Run {run_id} not found or incomplete")
 
-        def _normalize_ar_code_value(value: Any) -> str:
-            if value is None or pd.isna(value):
-                return ''
-            if isinstance(value, (int, float)):
-                numeric = float(value)
-                if numeric.is_integer():
-                    return str(int(numeric))
-                return str(numeric)
-            text = str(value).strip()
-            try:
-                numeric = float(text)
-                if numeric.is_integer():
-                    return str(int(numeric))
-            except Exception:
-                pass
-            return text
-        
-        # Convert date columns to datetime
-        date_columns = ['AUDIT_MONTH', 'PERIOD_START', 'PERIOD_END', 'POST_DATE', 'audit_month']
         for df in [expected_detail, actual_detail, bucket_results, findings]:
-            for col in date_columns:
-                if col in df.columns:
-                    series = pd.to_datetime(df[col], errors='coerce')
-                    try:
-                        series = series.dt.tz_localize(None)
-                    except Exception:
-                        pass
-                    df[col] = series
-
-        # Normalize AR code column types across DataFrames to avoid string/number mismatches
-        # when matching bucket rows to expected/actual detail in lease views.
-        ar_code_columns = ['AR_CODE_ID', 'ar_code_id']
-        for df in [expected_detail, actual_detail, bucket_results, findings]:
-            for col in ar_code_columns:
-                if col in df.columns:
-                    df[col] = df[col].apply(_normalize_ar_code_value)
+            self._normalize_loaded_dataframe(df)
         
         # Also convert dates in variance_detail if loaded
         if variance_detail is not None:
+            date_columns = ['AUDIT_MONTH', 'PERIOD_START', 'PERIOD_END', 'POST_DATE', 'audit_month']
             for col in date_columns:
                 if col in variance_detail.columns:
                     series = pd.to_datetime(variance_detail[col], errors='coerce')
@@ -1924,8 +2241,21 @@ class StorageService:
                         if meta:
                             meta["run_id"] = run_id
                             runs.append(meta)
+                        else:
+                            runs.append({
+                                "run_id": run_id,
+                                "timestamp": folder.get("createdDateTime", "Unknown"),
+                                "audit_period": {},
+                                "run_type": "Manual"
+                            })
                     except Exception as e:
-                        logger.warning(f"[STORAGE] Failed to load metadata for {run_id}: {e}")
+                        logger.warning(f"[STORAGE] Failed to load metadata for {run_id}; using fallback metadata: {e}")
+                        runs.append({
+                            "run_id": run_id,
+                            "timestamp": folder.get("createdDateTime", "Unknown"),
+                            "audit_period": {},
+                            "run_type": "Manual"
+                        })
                 
             except Exception as e:
                 logger.error(f"[STORAGE] Error listing SharePoint runs: {e}", exc_info=True)

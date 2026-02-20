@@ -54,9 +54,83 @@
     </div>
     
     <script>
+    let runsLoaded = false;
+
     function changeRun(runId) {
-        window.location.href = '{{ url_for('main.property_view', property_id=property_id, run_id='PLACEHOLDER') }}'.replace('PLACEHOLDER', runId);
+        window.location.href = "{{ url_for('main.property_view', property_id=property_id, run_id='PLACEHOLDER') }}".replace('PLACEHOLDER', runId);
     }
+
+    async function loadRunsForPicker() {
+        if (runsLoaded) {
+            return;
+        }
+
+        const selector = document.getElementById('runSelector');
+        if (!selector) {
+            return;
+        }
+
+        try {
+            const response = await fetch("{{ url_for('main.get_available_runs_api') }}", {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                return;
+            }
+
+            const payload = await response.json();
+            const runs = payload.runs || [];
+            if (!runs.length) {
+                return;
+            }
+
+            const currentValue = selector.value;
+            selector.innerHTML = '';
+
+            runs.forEach(run => {
+                const option = document.createElement('option');
+                option.value = run.run_id;
+
+                if (run.timestamp && run.timestamp !== 'Unknown' && run.timestamp.length >= 10) {
+                    option.textContent = `${run.timestamp.substring(5, 7)}/${run.timestamp.substring(8, 10)}/${run.timestamp.substring(0, 4)} - ${run.run_type || 'Manual'}`;
+                } else if (run.audit_period && run.audit_period.month && run.audit_period.year) {
+                    const month = String(run.audit_period.month).padStart(2, '0');
+                    option.textContent = `${month}/${run.audit_period.year} - ${run.run_type || 'Manual'}`;
+                } else {
+                    option.textContent = `${run.run_id} - ${run.run_type || 'Manual'}`;
+                }
+
+                if (run.run_id === currentValue) {
+                    option.selected = true;
+                }
+
+                selector.appendChild(option);
+            });
+
+            if (!selector.value && currentValue) {
+                selector.value = currentValue;
+            }
+
+            runsLoaded = true;
+        } catch (error) {
+            console.warn('Failed to lazy-load runs for picker', error);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const selector = document.getElementById('runSelector');
+        if (!selector) {
+            return;
+        }
+
+        selector.addEventListener('focus', loadRunsForPicker, { once: true });
+        selector.addEventListener('mousedown', loadRunsForPicker, { once: true });
+        selector.addEventListener('touchstart', loadRunsForPicker, { once: true });
+    });
     </script>
 
     <div class="row mb-4">

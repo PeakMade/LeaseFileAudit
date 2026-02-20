@@ -545,6 +545,7 @@ storage.upsert_exception_month_to_sharepoint_list({
 - On save, app writes `bucket_results` + `findings` rows to `AuditRuns`.
 - On load, app reads `AuditRuns` first and falls back to CSV files if list rows are unavailable.
 - Existing CSV run artifacts remain as compatibility fallback.
+- Write path uses Microsoft Graph `$batch` (20 rows/request) for faster persistence, with per-row fallback if a batch call fails.
 
 **Indexing required for reliable filtered reads**:
 - Index `RunId` (required)
@@ -585,9 +586,14 @@ storage.upsert_exception_month_to_sharepoint_list({
 **Behavior**:
 - Rows are written once per upload from `bucket_results`.
 - Values are static snapshots and do not recalculate on resolution status changes.
+- Snapshot totals/counts are calculated from unresolved-only exceptions at write time by applying current resolved-month state from `ExceptionMonths` before aggregation.
 - Resolution status visibility remains driven by `ExceptionMonths`.
 - Portfolio/Property/Lease headers prefer `RunDisplaySnapshots`; if a row is missing, routes fall back to in-memory recalculation.
 - Debug logs use tags: `[SNAPSHOT][PORTFOLIO]`, `[SNAPSHOT][PROPERTY]`, `[SNAPSHOT][LEASE]` to show snapshot usage vs fallback.
+
+**AuditRuns read-path cutover**:
+- Portfolio and Property routes now load bucket/finding result sets from `AuditRuns` (with CSV fallback), instead of relying on full `load_run()` for core result queries.
+- Lease route now loads lease bucket data from `AuditRuns` and only uses persisted `expected_detail`/`actual_detail` inputs for transaction/date enrichment in the drawer.
 
 ### Document Library Structure
 
@@ -1041,6 +1047,12 @@ def calculate_cumulative_metrics(run_id):
    - `get_available_runs()`
    - `calculate_cumulative_metrics()`
 - `get_available_runs()` is intentionally limited to the most recent 50 runs to avoid expensive per-run metadata fetches.
+- Cache clear/invalidation is hardened to avoid request failure if Flask debug reloader creates cache instance mapping mismatch (`cache.clear()` falls back to extension-backend clear and logs warning).
+- Preferred local startup path is `python run.py` to keep factory/import behavior consistent.
+- SharePoint run-list loading now handles missing `run_meta.json` gracefully by using folder fallback metadata (run ID + createdDateTime) and logging missing files at debug level for 404 responses.
+- `StorageService` now uses process-level caches for SharePoint `site_id`, library `drive_id`, and list IDs across instances to reduce repeated Graph discovery calls.
+- Repetitive SharePoint discovery messages (library/list ID resolution) are logged at debug level to reduce noise in normal logs.
+- Property page run selector is lazy-loaded via API (`/api/runs`); full run list is fetched only when the selector is opened, not on initial property page render.
 
 **Undercharge includes resolved exceptions (Troubleshooting):**
 - Symptom: Resolved month counts look correct, but Current Undercharge is still too high.
