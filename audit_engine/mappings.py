@@ -131,7 +131,7 @@ class SourceMapping:
 API_POSTED_AR_CODES = [
     155023, 154776, 155217, 154777, 155018, 156669, 
     155099, 155022, 154785, 155049, 155040, 155015, 
-    155017, 155176, 155203
+    155017, 155176, 155203, 155053, 154787, 155073, 155083, 155028, 155202, 154774
 ]
 
 def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
@@ -175,9 +175,11 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
             print(f"[FILTER] Excluding {filtered_api_codes} AR transactions with API-posted AR codes: {API_POSTED_AR_CODES}")
         mask = mask & ~df[ARSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES)
     
-    # Only include active lease intervals (FLAG_ACTIVE_LEASE_INTERVAL = 1)
+    # Inactive lease interval filter temporarily disabled.
     if ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL in df.columns:
-        mask = mask & (df[ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL].astype(float) == 1)
+        inactive_count = (pd.to_numeric(df[ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL], errors='coerce') != 1).sum()
+        if inactive_count > 0:
+            print(f"[FILTER] Inactive lease interval filter disabled in AR source; retaining {inactive_count} inactive rows")
     
     result = df[mask].copy()
     print(f"[AR FILTER DEBUG] After filtering: {len(result)}/{len(df)} rows ({len(df) - len(result)} filtered out)")
@@ -282,6 +284,11 @@ def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     This ensures we only compare billings against charges that SHOULD have been billed.
     """
     mask = pd.Series(True, index=df.index)
+
+    def _flag_is_one(series: pd.Series) -> pd.Series:
+        """Robustly evaluate boolean-style numeric flags equal to 1."""
+        numeric = pd.to_numeric(series, errors='coerce')
+        return numeric == 1
     
     # Exclude API-posted AR codes - these are automatically posted and shouldn't be in scheduled charges
     if ScheduledSourceColumns.AR_CODE_ID in df.columns:
@@ -293,31 +300,35 @@ def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     # CRITICAL: Exclude unselected quotes (IS_UNSELECTED_QUOTE = 1)
     # These are from quotes the tenant didn't select, so they should never appear in AR
     if ScheduledSourceColumns.IS_UNSELECTED_QUOTE in df.columns:
-        mask = mask & (df[ScheduledSourceColumns.IS_UNSELECTED_QUOTE] != 1)
-        filtered_quotes = (~(df[ScheduledSourceColumns.IS_UNSELECTED_QUOTE] != 1)).sum()
+        selected_mask = ~_flag_is_one(df[ScheduledSourceColumns.IS_UNSELECTED_QUOTE])
+        mask = mask & selected_mask
+        filtered_quotes = (~selected_mask).sum()
         if filtered_quotes > 0:
             print(f"[FILTER] Excluded {filtered_quotes} unselected quote records")
     
     # Exclude deleted scheduled charges (DELETED_ON is not null)
     if ScheduledSourceColumns.DELETED_ON in df.columns:
-        mask = mask & df[ScheduledSourceColumns.DELETED_ON].isna()
-        filtered_deleted = (~df[ScheduledSourceColumns.DELETED_ON].isna()).sum()
+        deleted_col = df[ScheduledSourceColumns.DELETED_ON]
+        is_blank_or_null = deleted_col.isna() | (deleted_col.astype(str).str.strip() == '')
+        mask = mask & is_blank_or_null
+        filtered_deleted = (~is_blank_or_null).sum()
         if filtered_deleted > 0:
             print(f"[FILTER] Excluded {filtered_deleted} deleted scheduled charge records")
     
     # Only include charges cached to lease (IS_CACHED_TO_LEASE = 1)
     if ScheduledSourceColumns.IS_CACHED_TO_LEASE in df.columns:
-        mask = mask & (df[ScheduledSourceColumns.IS_CACHED_TO_LEASE] == 1)
-        filtered_not_cached = (~(df[ScheduledSourceColumns.IS_CACHED_TO_LEASE] == 1)).sum()
+        cached_mask = _flag_is_one(df[ScheduledSourceColumns.IS_CACHED_TO_LEASE])
+        mask = mask & cached_mask
+        filtered_not_cached = (~cached_mask).sum()
         if filtered_not_cached > 0:
             print(f"[FILTER] Excluded {filtered_not_cached} not-cached-to-lease records")
     
-    # Only include active lease intervals (FLAG_ACTIVE_LEASE_INTERVAL = 1)
+    # Inactive lease interval filter temporarily disabled.
     if ScheduledSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL in df.columns:
-        mask = mask & (df[ScheduledSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL] == 1)
-        filtered_inactive = (~(df[ScheduledSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL] == 1)).sum()
+        active_mask = _flag_is_one(df[ScheduledSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL])
+        filtered_inactive = (~active_mask).sum()
         if filtered_inactive > 0:
-            print(f"[FILTER] Excluded {filtered_inactive} inactive lease interval records")
+            print(f"[FILTER] Inactive lease interval filter disabled in scheduled source; retaining {filtered_inactive} inactive rows")
     
     result = df[mask].copy()
     print(f"[FILTER] Scheduled charges: {len(df)} total -> {len(result)} active (filtered {len(df) - len(result)})")
@@ -340,16 +351,36 @@ def _scheduled_period_start_convert(df: pd.DataFrame) -> pd.Series:
         )
     
     series = df[ScheduledSourceColumns.CHARGE_START_DATE].copy()
-    
-    # Check if already datetime (pandas reads Excel dates as datetime)
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series
-    
-    # Otherwise, assume integer YYYYMMDD format
-    mask = series.notna()
-    result = pd.Series(pd.NaT, index=series.index)
-    if mask.any():
-        result.loc[mask] = pd.to_datetime(series[mask].astype(int).astype(str), format='%Y%m%d', errors='coerce')
+
+    # Attempt 1: generic parser (handles datetime strings and datetime objects)
+    result = pd.to_datetime(series, errors='coerce')
+
+    # Attempt 2: numeric fallbacks for values not parsed above
+    unresolved_mask = result.isna() & series.notna()
+    if unresolved_mask.any():
+        numeric_values = pd.to_numeric(series[unresolved_mask], errors='coerce')
+
+        # 2a: YYYYMMDD integers
+        yyyymmdd_mask = numeric_values.between(19000101, 21001231)
+        if yyyymmdd_mask.any():
+            parsed_yyyymmdd = pd.to_datetime(
+                numeric_values[yyyymmdd_mask].astype('Int64').astype(str),
+                format='%Y%m%d',
+                errors='coerce'
+            )
+            result.loc[parsed_yyyymmdd.index] = parsed_yyyymmdd
+
+        # 2b: Excel serial date numbers
+        excel_mask = numeric_values.notna() & ~yyyymmdd_mask
+        if excel_mask.any():
+            parsed_excel = pd.to_datetime(
+                numeric_values[excel_mask],
+                unit='D',
+                origin='1899-12-30',
+                errors='coerce'
+            )
+            result.loc[parsed_excel.index] = parsed_excel
+
     return result
 
 
@@ -369,16 +400,36 @@ def _scheduled_period_end_convert(df: pd.DataFrame) -> pd.Series:
         )
     
     series = df[ScheduledSourceColumns.CHARGE_END_DATE].copy()
-    
-    # Check if already datetime (pandas reads Excel dates as datetime)
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series
-    
-    # Otherwise, assume integer YYYYMMDD format
-    mask = series.notna()
-    result = pd.Series(pd.NaT, index=series.index)
-    if mask.any():
-        result.loc[mask] = pd.to_datetime(series[mask].astype(int).astype(str), format='%Y%m%d', errors='coerce')
+
+    # Attempt 1: generic parser (handles datetime strings and datetime objects)
+    result = pd.to_datetime(series, errors='coerce')
+
+    # Attempt 2: numeric fallbacks for values not parsed above
+    unresolved_mask = result.isna() & series.notna()
+    if unresolved_mask.any():
+        numeric_values = pd.to_numeric(series[unresolved_mask], errors='coerce')
+
+        # 2a: YYYYMMDD integers
+        yyyymmdd_mask = numeric_values.between(19000101, 21001231)
+        if yyyymmdd_mask.any():
+            parsed_yyyymmdd = pd.to_datetime(
+                numeric_values[yyyymmdd_mask].astype('Int64').astype(str),
+                format='%Y%m%d',
+                errors='coerce'
+            )
+            result.loc[parsed_yyyymmdd.index] = parsed_yyyymmdd
+
+        # 2b: Excel serial date numbers
+        excel_mask = numeric_values.notna() & ~yyyymmdd_mask
+        if excel_mask.any():
+            parsed_excel = pd.to_datetime(
+                numeric_values[excel_mask],
+                unit='D',
+                origin='1899-12-30',
+                errors='coerce'
+            )
+            result.loc[parsed_excel.index] = parsed_excel
+
     return result
 
 

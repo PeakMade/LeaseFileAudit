@@ -1172,6 +1172,11 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-02-23**: Added default Current Academic Year filtering (Aug through current month) when upload Year is left as "Current Academic Year"; optional month selection now applies after academic-year scoping
+- **2026-02-23**: Temporarily disabled active lease interval filtering in AR and scheduled source row filters to include inactive lease-interval rows during reconciliation
+- **2026-02-23**: Hardened scheduled flag filtering for mixed data types (`1`, `1.0`, `'1'`) and blank `DELETED_ON` handling to prevent unintended row exclusion
+- **2026-02-23**: Fixed lease drawer monthly-details table alignment when expected/actual row counts differ so actual values no longer render under expected columns
+- **2026-02-23**: Hardened SharePoint AuditRuns row payload ID conversion using safe int parsing to avoid per-row cast failures interrupting list persistence
 - **2026-02-20**: Updated exception-month save/status API to use scoped AR status logic so status remains Open until all scoped exceptions for an AR code are resolved
 - **2026-02-20**: Refined lease AR-code status logic to remain Open until all scoped exceptions for that lease interval AR code are resolved; status no longer flips to Resolved from cross-run historical state alone
 - **2026-02-20**: Aligned lease drawer count/status presentation with scoped run logic (exclude previously resolved historical months from current audit count while preserving current-run resolution behavior)
@@ -1203,6 +1208,6 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 
 ---
 
-**Last Updated**: February 20, 2026  
+**Last Updated**: February 23, 2026  
 **Version**: 1.0  
 **Maintained By**: PeakMade Development Team

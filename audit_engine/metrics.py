@@ -105,12 +105,6 @@ def calculate_property_summary(bucket_results: pd.DataFrame, findings: pd.DataFr
     Returns:
         DataFrame with one row per property
     """
-    # Temporary hardcoded property names
-    PROPERTY_NAME_MAP = {
-        1122966: "48 West",
-        100069944: "Bixby Kennesaw"
-    }
-    
     properties = bucket_results[CanonicalField.PROPERTY_ID.value].unique()
     
     summaries = []
@@ -125,9 +119,12 @@ def calculate_property_summary(bucket_results: pd.DataFrame, findings: pd.DataFr
             if len(prop_data) > 0:
                 kpis["property_name"] = prop_data[CanonicalField.PROPERTY_NAME.value].iloc[0]
         
-        # Fallback to hardcoded names if not found
+        # Fallback to property id string if name not found in source data
         if not kpis["property_name"]:
-            kpis["property_name"] = PROPERTY_NAME_MAP.get(int(float(prop_id)))
+            try:
+                kpis["property_name"] = f"Property {int(float(prop_id))}"
+            except Exception:
+                kpis["property_name"] = f"Property {prop_id}"
         
         # Calculate total unique lease intervals for this property
         prop_buckets = bucket_results[bucket_results[CanonicalField.PROPERTY_ID.value] == prop_id]

@@ -949,13 +949,16 @@ class StorageService:
                     finding_title_val = row_dict.get('title', row_dict.get('TITLE', ''))
                     impact_amount_val = row_dict.get('impact_amount', row_dict.get('IMPACT_AMOUNT', 0))
 
+                    property_id_int = self._safe_int(property_id_val)
+                    lease_interval_id_int = self._safe_int(lease_interval_id_val)
+
                     fields_payload = {
                         'Title': f"{result_type}:{idx}",
                         'CompositeKey': composite_key,
                         'RunId': run_id,
                         'ResultType': result_type,
-                        'PropertyId': int(float(property_id_val)) if property_id_val is not None and property_id_val != '' else None,
-                        'LeaseIntervalId': int(float(lease_interval_id_val)) if lease_interval_id_val is not None and lease_interval_id_val != '' else None,
+                        'PropertyId': property_id_int,
+                        'LeaseIntervalId': lease_interval_id_int,
                         'ArCodeId': str(ar_code_id_val) if ar_code_id_val is not None else '',
                         'AuditMonth': audit_month_val,
                         'Status': str(status_val),

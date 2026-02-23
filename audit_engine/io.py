@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Optional
 from pathlib import Path
 import pandas as pd
+import re
 from config import DataSourceConfig
 
 
@@ -19,6 +20,29 @@ class DataSourceLoader(ABC):
 
 class ExcelSourceLoader(DataSourceLoader):
     """Load data sources from Excel file."""
+
+    @staticmethod
+    def _normalize_sheet_name(sheet_name: str) -> str:
+        """Normalize sheet names for resilient keyword matching."""
+        normalized = re.sub(r'[^a-z0-9]+', ' ', str(sheet_name).lower()).strip()
+        return re.sub(r'\s+', ' ', normalized)
+
+    @classmethod
+    def _keyword_score(cls, sheet_name: str, keywords: list[str]) -> int:
+        """Return keyword match score for a sheet name."""
+        normalized_name = cls._normalize_sheet_name(sheet_name)
+        compact_name = normalized_name.replace(' ', '')
+        score = 0
+
+        for keyword in keywords:
+            normalized_keyword = cls._normalize_sheet_name(keyword)
+            compact_keyword = normalized_keyword.replace(' ', '')
+            if normalized_keyword and normalized_keyword in normalized_name:
+                score += 2
+            elif compact_keyword and compact_keyword in compact_name:
+                score += 1
+
+        return score
     
     def load_all_sheets(self, file_path: Path) -> Dict[str, pd.DataFrame]:
         """Load all sheets from Excel file."""
@@ -33,27 +57,35 @@ class ExcelSourceLoader(DataSourceLoader):
         """
         Detect which sheet matches a data source config.
         
-        First tries to match by keywords in sheet name.
-        Then validates by required columns.
+        Evaluates all sheets that satisfy required columns, then chooses the
+        best candidate by keyword score and row count.
         """
-        # Try keyword matching first
-        for sheet_name in sheets.keys():
-            sheet_lower = sheet_name.lower()
-            if any(keyword.lower() in sheet_lower for keyword in config.detection_keywords):
-                # Validate columns
-                columns = sheets[sheet_name].columns.tolist()
-                is_valid, _ = config.column_mapping.validate(columns)
-                if is_valid:
-                    return sheet_name
-        
-        # Fall back to column validation only
+        candidates = []
+
         for sheet_name, df in sheets.items():
             columns = df.columns.tolist()
             is_valid, _ = config.column_mapping.validate(columns)
-            if is_valid:
-                return sheet_name
-        
-        return None
+            if not is_valid:
+                continue
+
+            keyword_score = self._keyword_score(sheet_name, config.detection_keywords)
+            row_count = len(df)
+            candidates.append((keyword_score, row_count, sheet_name))
+
+        if not candidates:
+            return None
+
+        # Highest keyword score first, then largest row count.
+        candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
+        selected = candidates[0][2]
+
+        print(
+            f"[IO DEBUG] Sheet candidates for '{config.name}': "
+            f"{[(name, score, rows) for score, rows, name in candidates]}"
+        )
+        print(f"[IO DEBUG] Selected best sheet '{selected}' for config '{config.name}'")
+
+        return selected
     
     def load(self, source_path: Path, config: DataSourceConfig) -> pd.DataFrame:
         """Load specific data source from Excel."""

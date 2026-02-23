@@ -723,6 +723,38 @@ def filter_by_audit_period(df: pd.DataFrame, year: int = None, month: int = None
     return result
 
 
+def filter_to_current_academic_year(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filter a DataFrame to current academic year-to-date.
+
+    Academic year starts in August and runs through the current month.
+    Example (Feb 2026): range is 2025-08 through 2026-02.
+    """
+    from audit_engine.canonical_fields import CanonicalField
+
+    if CanonicalField.AUDIT_MONTH.value not in df.columns:
+        raise ValueError(f"DataFrame missing required column: {CanonicalField.AUDIT_MONTH.value}")
+
+    result = df.copy()
+    result = result[result[CanonicalField.AUDIT_MONTH.value].notna()]
+
+    current_month = pd.Timestamp.now().to_period('M').to_timestamp()
+    academic_start_year = current_month.year if current_month.month >= 8 else current_month.year - 1
+    academic_start = pd.Timestamp(year=academic_start_year, month=8, day=1)
+
+    result = result[
+        (result[CanonicalField.AUDIT_MONTH.value] >= academic_start) &
+        (result[CanonicalField.AUDIT_MONTH.value] <= current_month)
+    ]
+
+    print(
+        f"[AUDIT PERIOD FILTER] Current Academic Year applied: "
+        f"{academic_start.strftime('%Y-%m')} through {current_month.strftime('%Y-%m')} "
+        f"({len(result)} rows)"
+    )
+    return result
+
+
 def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audit_month: int = None) -> dict:
     """
     Execute complete audit run.
@@ -758,14 +790,28 @@ def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audi
     # Expand scheduled to months
     expected_detail = expand_scheduled_to_months(scheduled_normalized)
     
-    # Apply period filter if specified
-    if audit_year is not None or audit_month is not None:
+    # Apply period filter.
+    # Default behavior when no explicit year is selected: current academic year (Aug -> current month).
+    if audit_year is None:
+        print("\n[AUDIT PERIOD FILTER] Applying default Current Academic Year filter")
+        print(f"[AUDIT PERIOD FILTER] Before filter - Expected: {len(expected_detail)}, Actual: {len(actual_detail)}")
+
+        expected_detail = filter_to_current_academic_year(expected_detail)
+        actual_detail = filter_to_current_academic_year(actual_detail)
+
+        # If month is explicitly selected with Current Academic Year, apply month after academic-year scoping.
+        if audit_month is not None:
+            expected_detail = filter_by_audit_period(expected_detail, year=None, month=audit_month)
+            actual_detail = filter_by_audit_period(actual_detail, year=None, month=audit_month)
+
+        print(f"[AUDIT PERIOD FILTER] After filter - Expected: {len(expected_detail)}, Actual: {len(actual_detail)}")
+    elif audit_year is not None or audit_month is not None:
         print(f"\n[AUDIT PERIOD FILTER] Filtering to Year={audit_year or 'All'}, Month={audit_month or 'All'}")
         print(f"[AUDIT PERIOD FILTER] Before filter - Expected: {len(expected_detail)}, Actual: {len(actual_detail)}")
-        
+
         expected_detail = filter_by_audit_period(expected_detail, audit_year, audit_month)
         actual_detail = filter_by_audit_period(actual_detail, audit_year, audit_month)
-        
+
         print(f"[AUDIT PERIOD FILTER] After filter - Expected: {len(expected_detail)}, Actual: {len(actual_detail)}")
     
     # Filter out API/timed/external charges from actual_detail
@@ -1061,6 +1107,7 @@ def portfolio(run_id: str = None):
         logger.info(f"[PORTFOLIO] Loading bucket results from AuditRuns for run {run_id}")
         bucket_results = storage.load_bucket_results(run_id)
         findings = storage.load_findings(run_id)
+        actual_detail = storage.load_actual_detail(run_id)
 
         try:
             metadata = storage.load_metadata(run_id)
@@ -1142,7 +1189,7 @@ def portfolio(run_id: str = None):
         property_summary = calculate_property_summary(
             filtered_bucket_results,
             findings,
-            None
+            actual_detail
         )
         
         return render_template(
@@ -1333,16 +1380,34 @@ def property_view(property_id: str, run_id: str = None):
                 f"property {property_id} (snapshot not found or unavailable)"
             )
         
-        # Get property name from actual detail or use hardcoded mapping
-        PROPERTY_NAME_MAP = {
-            1122966: "48 West",
-            100069944: "Bixby Kennesaw"
-        }
-        
+        # Resolve property name from uploaded run data (actual first, expected fallback)
         property_name = None
-        # Fallback to hardcoded names
+        try:
+            actual_detail_for_name = storage.load_actual_detail(run_id)
+            if not actual_detail_for_name.empty and CanonicalField.PROPERTY_NAME.value in actual_detail_for_name.columns:
+                property_matches = actual_detail_for_name[
+                    actual_detail_for_name[CanonicalField.PROPERTY_ID.value] == float(property_id)
+                ]
+                if not property_matches.empty:
+                    name_value = property_matches[CanonicalField.PROPERTY_NAME.value].iloc[0]
+                    if pd.notna(name_value) and str(name_value).strip():
+                        property_name = str(name_value).strip()
+
+            if not property_name:
+                expected_detail_for_name = storage.load_expected_detail(run_id)
+                if not expected_detail_for_name.empty and CanonicalField.PROPERTY_NAME.value in expected_detail_for_name.columns:
+                    property_matches = expected_detail_for_name[
+                        expected_detail_for_name[CanonicalField.PROPERTY_ID.value] == float(property_id)
+                    ]
+                    if not property_matches.empty:
+                        name_value = property_matches[CanonicalField.PROPERTY_NAME.value].iloc[0]
+                        if pd.notna(name_value) and str(name_value).strip():
+                            property_name = str(name_value).strip()
+        except Exception as property_name_error:
+            logger.warning(f"[PROPERTY_VIEW] Failed resolving property name from source data: {property_name_error}")
+
         if not property_name:
-            property_name = PROPERTY_NAME_MAP.get(int(float(property_id)))
+            property_name = f"Property {int(float(property_id))}"
         
         # Get all unique leases for this property
         all_lease_ids = sorted(all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value].unique())
@@ -1876,16 +1941,14 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         total_undercharge = 0
         total_overcharge = 0
         
-        # Get property name
-        PROPERTY_NAME_MAP = {
-            1122966: "48 West",
-            100069944: "Bixby Kennesaw"
-        }
+        # Get property name from lease data only (dynamic from uploaded source)
         property_name = None
         if len(lease_actual) > 0 and CanonicalField.PROPERTY_NAME.value in lease_actual.columns:
             property_name = lease_actual[CanonicalField.PROPERTY_NAME.value].iloc[0]
+        if (not property_name) and len(lease_expected) > 0 and CanonicalField.PROPERTY_NAME.value in lease_expected.columns:
+            property_name = lease_expected[CanonicalField.PROPERTY_NAME.value].iloc[0]
         if not property_name:
-            property_name = PROPERTY_NAME_MAP.get(int(float(property_id)))
+            property_name = f"Property {int(float(property_id))}"
         
         # Get customer name and IDs from actual records
         customer_name = None
