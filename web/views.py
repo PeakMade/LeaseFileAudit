@@ -69,6 +69,118 @@ def cached_load_property_exception_months(run_id: str, property_id: int):
     return storage.load_property_exception_months_bulk(run_id, property_id)
 
 
+@cache.memoize(timeout=300)
+def cached_load_bucket_results(run_id: str, property_id=None, lease_interval_id=None):
+    """Cached wrapper for bucket results by run and optional scope."""
+    logger.info(
+        f"[CACHE] ⏬ Cache MISS: Loading bucket_results for run={run_id}, "
+        f"property_id={property_id}, lease_interval_id={lease_interval_id}"
+    )
+    storage = get_storage_service()
+    return storage.load_bucket_results(run_id, property_id=property_id, lease_interval_id=lease_interval_id)
+
+
+@cache.memoize(timeout=300)
+def cached_load_findings(run_id: str, property_id=None, lease_interval_id=None):
+    """Cached wrapper for findings by run and optional scope."""
+    logger.info(
+        f"[CACHE] ⏬ Cache MISS: Loading findings for run={run_id}, "
+        f"property_id={property_id}, lease_interval_id={lease_interval_id}"
+    )
+    storage = get_storage_service()
+    return storage.load_findings(run_id, property_id=property_id, lease_interval_id=lease_interval_id)
+
+
+@cache.memoize(timeout=300)
+def cached_load_actual_detail(run_id: str):
+    """Cached wrapper for actual_detail by run."""
+    logger.info(f"[CACHE] ⏬ Cache MISS: Loading actual_detail for run={run_id}")
+    storage = get_storage_service()
+    return storage.load_actual_detail(run_id)
+
+
+@cache.memoize(timeout=300)
+def cached_load_expected_detail(run_id: str):
+    """Cached wrapper for expected_detail by run."""
+    logger.info(f"[CACHE] ⏬ Cache MISS: Loading expected_detail for run={run_id}")
+    storage = get_storage_service()
+    return storage.load_expected_detail(run_id)
+
+
+@cache.memoize(timeout=300)
+def cached_load_metadata(run_id: str):
+    """Cached wrapper for run metadata by run."""
+    logger.info(f"[CACHE] ⏬ Cache MISS: Loading metadata for run={run_id}")
+    storage = get_storage_service()
+    return storage.load_metadata(run_id)
+
+
+@cache.memoize(timeout=300)
+def cached_load_run_display_snapshot(run_id: str, scope_type: str, property_id=None, lease_interval_id=None):
+    """Cached wrapper for run display snapshot lookup."""
+    logger.info(
+        f"[CACHE] ⏬ Cache MISS: Loading run display snapshot for run={run_id}, "
+        f"scope={scope_type}, property_id={property_id}, lease_interval_id={lease_interval_id}"
+    )
+    storage = get_storage_service()
+    return storage.load_run_display_snapshot_from_sharepoint_list(
+        run_id=run_id,
+        scope_type=scope_type,
+        property_id=property_id,
+        lease_interval_id=lease_interval_id
+    )
+
+
+@cache.memoize(timeout=300)
+def cached_load_run_display_snapshots_for_property(run_id: str, property_id: int, scope_type: str = 'lease'):
+    """Cached wrapper for all snapshot rows for a property."""
+    logger.info(
+        f"[CACHE] ⏬ Cache MISS: Loading run display snapshots for run={run_id}, "
+        f"property_id={property_id}, scope={scope_type}"
+    )
+    storage = get_storage_service()
+    return storage.load_run_display_snapshots_for_property(
+        run_id=run_id,
+        property_id=property_id,
+        scope_type=scope_type
+    )
+
+
+def _clear_run_scoped_caches(run_id: str, property_id=None, lease_interval_id=None):
+    """Clear memoized caches for a specific run and optional property/lease scope."""
+
+    def _safe_delete(func, *args):
+        try:
+            cache.delete_memoized(func, *args)
+        except KeyError as e:
+            logger.warning(f"[CACHE] delete_memoized KeyError for {func.__name__}{args}: {e}")
+        except Exception as e:
+            logger.warning(f"[CACHE] delete_memoized failed for {func.__name__}{args}: {e}")
+
+    _safe_delete(cached_load_run, run_id)
+    _safe_delete(cached_load_bucket_results, run_id, None, None)
+    _safe_delete(cached_load_findings, run_id, None, None)
+    _safe_delete(cached_load_actual_detail, run_id)
+    _safe_delete(cached_load_expected_detail, run_id)
+    _safe_delete(cached_load_metadata, run_id)
+    _safe_delete(cached_load_run_display_snapshot, run_id, 'portfolio', None, None)
+
+    if property_id is not None:
+        property_id_int = int(float(property_id))
+        _safe_delete(cached_load_bucket_results, run_id, property_id_int, None)
+        _safe_delete(cached_load_findings, run_id, property_id_int, None)
+        _safe_delete(cached_load_property_exception_months, run_id, property_id_int)
+        _safe_delete(cached_load_run_display_snapshot, run_id, 'property', property_id_int, None)
+        _safe_delete(cached_load_run_display_snapshots_for_property, run_id, property_id_int, 'lease')
+
+        if lease_interval_id is not None:
+            lease_interval_id_int = int(float(lease_interval_id))
+            _safe_delete(cached_load_bucket_results, run_id, property_id_int, lease_interval_id_int)
+            _safe_delete(cached_load_run_display_snapshot, run_id, 'lease', property_id_int, lease_interval_id_int)
+
+    _safe_delete(calculate_cumulative_metrics)
+
+
 def _normalize_key_value(value, cast_type=str):
     """Normalize key values for consistent tuple matching across CSV and SharePoint sources."""
     if value is None:
@@ -246,9 +358,14 @@ def clear_run_cache(run_id: str = None):
     Call this after uploads or status updates.
     """
     if run_id:
-        # Clear specific run (Flask-Caching doesn't support selective clearing easily,
-        # so we clear all and log)
         logger.info(f"[CACHE] 🧹 Clearing cache for run {run_id}")
+        _clear_run_scoped_caches(run_id)
+        try:
+            cache.delete_memoized(get_available_runs)
+        except Exception as e:
+            logger.warning(f"[CACHE] Failed to clear available runs cache: {e}")
+        logger.info(f"[CACHE] ✅ Cleared run-scoped cache entries for run {run_id}")
+        return
     else:
         logger.info(f"[CACHE] 🧹 Clearing ALL caches")
 
@@ -854,45 +971,191 @@ def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audi
         print(f"[API CODE FILTER] Remaining AR transactions: {len(actual_detail)}")
         print(f"[API CODE FILTER] ==========================================\n")
     
-    # Reconcile (detailed row-level with PRIMARY/SECONDARY/TERTIARY matching) - DO THIS FIRST
-    # This identifies date mismatches via TERTIARY matching
-    # Note: Use the normalized (not expanded) versions for detailed reconciliation
-    variance_detail, recon_stats = reconcile_detail(
-        scheduled_normalized,  # Use non-expanded scheduled charges
-        actual_detail,         # Use normalized AR transactions
-        config.reconciliation
+    # Execute reconciliation property-by-property (true scoped execution, not post-sort).
+    property_column = CanonicalField.PROPERTY_ID.value
+
+    for dataset_name, dataset_df in {
+        "expected_detail": expected_detail,
+        "actual_detail": actual_detail,
+        "scheduled_normalized": scheduled_normalized,
+    }.items():
+        if property_column not in dataset_df.columns:
+            raise ValueError(
+                f"{dataset_name} missing required property column '{property_column}' for property-scoped reconciliation"
+            )
+
+    def _normalize_property_key(value):
+        if pd.isna(value):
+            return None
+
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if pd.isna(numeric):
+                return None
+            if numeric.is_integer():
+                return str(int(numeric))
+            return str(numeric)
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        try:
+            numeric = float(text)
+            if pd.isna(numeric):
+                return None
+            if numeric.is_integer():
+                return str(int(numeric))
+            return str(numeric)
+        except Exception:
+            return text
+
+    def _group_by_property(df: pd.DataFrame) -> dict:
+        if df.empty:
+            return {}
+
+        property_keys = df[property_column].apply(_normalize_property_key)
+        valid_mask = property_keys.notna()
+        if valid_mask.sum() == 0:
+            return {}
+
+        groups = {}
+        for key, subset in df[valid_mask].groupby(property_keys[valid_mask], sort=True):
+            groups[key] = subset.copy()
+        return groups
+
+    expected_by_property = _group_by_property(expected_detail)
+    actual_by_property = _group_by_property(actual_detail)
+    scheduled_by_property = _group_by_property(scheduled_normalized)
+
+    property_keys = sorted(
+        set(expected_by_property.keys()) |
+        set(actual_by_property.keys()) |
+        set(scheduled_by_property.keys())
     )
-    
-    print(f"\n[RECONCILIATION STATS]")
+
+    print(f"\n[PROPERTY EXECUTION] Running reconciliation per property ({len(property_keys)} properties)")
+
+    expected_parts = []
+    actual_parts = []
+    bucket_parts = []
+    finding_parts = []
+    variance_parts = []
+    property_execution_stats = []
+
+    empty_expected_template = expected_detail.iloc[0:0].copy()
+    empty_actual_template = actual_detail.iloc[0:0].copy()
+    empty_scheduled_template = scheduled_normalized.iloc[0:0].copy()
+
+    for property_key in property_keys:
+        expected_prop = expected_by_property.get(property_key, empty_expected_template)
+        actual_prop = actual_by_property.get(property_key, empty_actual_template)
+        scheduled_prop = scheduled_by_property.get(property_key, empty_scheduled_template)
+
+        print(
+            f"[PROPERTY EXECUTION] PROPERTY_ID={property_key}: "
+            f"expected={len(expected_prop)}, actual={len(actual_prop)}, scheduled={len(scheduled_prop)}"
+        )
+
+        # Reconcile detail for this property only.
+        variance_detail_prop, recon_stats_prop = reconcile_detail(
+            scheduled_prop,
+            actual_prop,
+            config.reconciliation
+        )
+
+        # Reconcile buckets for this property only.
+        bucket_results_prop = reconcile_buckets(expected_prop, actual_prop, config.reconciliation)
+
+        # Run rules scoped to this property only.
+        context_prop = RuleContext(
+            run_id=run_id,
+            expected_detail=expected_prop,
+            actual_detail=actual_prop,
+            bucket_results=bucket_results_prop
+        )
+        finding_dicts_prop = default_registry.evaluate_all(context_prop)
+        findings_prop = generate_findings(finding_dicts_prop, run_id)
+
+        expected_parts.append(expected_prop)
+        actual_parts.append(actual_prop)
+        bucket_parts.append(bucket_results_prop)
+        finding_parts.append(findings_prop)
+        variance_parts.append(variance_detail_prop)
+
+        property_execution_stats.append({
+            "property_id": property_key,
+            "expected_rows": len(expected_prop),
+            "actual_rows": len(actual_prop),
+            "scheduled_rows": len(scheduled_prop),
+            "bucket_rows": len(bucket_results_prop),
+            "finding_rows": len(findings_prop),
+            "variance_rows": len(variance_detail_prop),
+            "primary_matched_ar": recon_stats_prop.get("primary_matched_ar", 0),
+            "secondary_matched_ar": recon_stats_prop.get("secondary_matched_ar", 0),
+            "tertiary_matched_ar": recon_stats_prop.get("tertiary_matched_ar", 0),
+            "unmatched_ar": recon_stats_prop.get("unmatched_ar", 0),
+            "unmatched_scheduled": recon_stats_prop.get("unmatched_scheduled", 0),
+            "variances": recon_stats_prop.get("variances", 0),
+        })
+
+    def _concat_frames(frames, fallback: pd.DataFrame) -> pd.DataFrame:
+        if frames:
+            try:
+                return pd.concat(frames, ignore_index=True)
+            except ValueError:
+                pass
+        return fallback.iloc[0:0].copy()
+
+    expected_detail = _concat_frames(expected_parts, expected_detail)
+    actual_detail = _concat_frames(actual_parts, actual_detail)
+    bucket_results = _concat_frames(bucket_parts, pd.DataFrame())
+    findings = _concat_frames(finding_parts, pd.DataFrame())
+
+    variance_frames = [df for df in variance_parts if df is not None]
+    if variance_frames:
+        try:
+            variance_detail = pd.concat(variance_frames, ignore_index=True)
+        except ValueError:
+            variance_detail = pd.DataFrame()
+    else:
+        variance_detail = pd.DataFrame()
+
+    recon_stats = {
+        "total_scheduled": sum(item["scheduled_rows"] for item in property_execution_stats),
+        "total_ar": sum(item["actual_rows"] for item in property_execution_stats),
+        "primary_matched_ar": sum(item["primary_matched_ar"] for item in property_execution_stats),
+        "secondary_matched_ar": sum(item["secondary_matched_ar"] for item in property_execution_stats),
+        "tertiary_matched_ar": sum(item["tertiary_matched_ar"] for item in property_execution_stats),
+        "unmatched_ar": sum(item["unmatched_ar"] for item in property_execution_stats),
+        "unmatched_scheduled": sum(item["unmatched_scheduled"] for item in property_execution_stats),
+        "variances": sum(item["variances"] for item in property_execution_stats),
+        "properties_processed": len(property_execution_stats),
+    }
+
+    print(f"\n[RECONCILIATION STATS - AGGREGATED]")
+    print(f"  Properties processed: {recon_stats['properties_processed']}")
     print(f"  Primary matches: {recon_stats['primary_matched_ar']}")
     print(f"  Secondary matches: {recon_stats['secondary_matched_ar']}")
     print(f"  Tertiary matches: {recon_stats['tertiary_matched_ar']}")
     print(f"  Unmatched AR: {recon_stats['unmatched_ar']}")
     print(f"  Unmatched scheduled: {recon_stats['unmatched_scheduled']}")
     print(f"  Total variances: {recon_stats['variances']}")
-    
-    # Reconcile (bucket-level aggregation)
-    # Note: DATE_MISMATCH variances from variance_detail will be displayed separately in lease view
-    bucket_results = reconcile_buckets(expected_detail, actual_detail, config.reconciliation)
-    
-    # Execute rules
-    context = RuleContext(
-        run_id=run_id,
-        expected_detail=expected_detail,
-        actual_detail=actual_detail,
-        bucket_results=bucket_results
-    )
-    
-    finding_dicts = default_registry.evaluate_all(context)
-    findings = generate_findings(finding_dicts, run_id)
-    
+
+    # Aggregate property summaries into portfolio totals (computed from concatenated outputs).
+    property_summary = calculate_property_summary(bucket_results, findings, actual_detail)
+    portfolio_totals = calculate_kpis(bucket_results, findings)
+
     return {
         "expected_detail": expected_detail,
         "actual_detail": actual_detail,
         "bucket_results": bucket_results,
         "variance_detail": variance_detail,
         "recon_stats": recon_stats,
-        "findings": findings
+        "findings": findings,
+        "property_summary": property_summary,
+        "portfolio_totals": portfolio_totals,
+        "property_execution_stats": property_execution_stats,
     }
 
 
@@ -1105,17 +1368,17 @@ def portfolio(run_id: str = None):
             run_id = cumulative['most_recent_run']['run_id']
         
         logger.info(f"[PORTFOLIO] Loading bucket results from AuditRuns for run {run_id}")
-        bucket_results = storage.load_bucket_results(run_id)
-        findings = storage.load_findings(run_id)
-        actual_detail = storage.load_actual_detail(run_id)
+        bucket_results = cached_load_bucket_results(run_id)
+        findings = cached_load_findings(run_id)
+        actual_detail = cached_load_actual_detail(run_id)
 
         try:
-            metadata = storage.load_metadata(run_id)
+            metadata = cached_load_metadata(run_id)
         except Exception:
             metadata = {'timestamp': 'Unknown'}
 
         # Prefer static snapshot values for portfolio header metrics.
-        portfolio_snapshot = storage.load_run_display_snapshot_from_sharepoint_list(
+        portfolio_snapshot = cached_load_run_display_snapshot(
             run_id=run_id,
             scope_type='portfolio'
         )
@@ -1227,6 +1490,12 @@ def upsert_exception_state():
 
     storage = get_storage_service()
     ok = storage.upsert_exception_state_to_sharepoint_list(payload)
+    if ok:
+        _clear_run_scoped_caches(
+            payload['run_id'],
+            property_id=payload.get('property_id'),
+            lease_interval_id=payload.get('lease_interval_id')
+        )
     return jsonify({'ok': ok})
 
 
@@ -1291,22 +1560,11 @@ def upsert_exception_month():
     # 🧹 CLEAR CACHE after status update
     if ok:
         logger.info(f"[CACHE] Clearing cache after exception status update")
-        # Clear the property-specific cache for this update
-        try:
-            cache.delete_memoized(cached_load_property_exception_months,
-                                 payload['run_id'],
-                                 int(payload['property_id']))
-            logger.info(f"[CACHE] Cleared property {payload['property_id']} exception cache")
-        except KeyError as e:
-            logger.warning(
-                f"[CACHE] delete_memoized KeyError for property {payload['property_id']}; "
-                f"cache invalidation skipped: {e}"
-            )
-        except Exception as e:
-            logger.warning(
-                f"[CACHE] delete_memoized failed for property {payload['property_id']}; "
-                f"cache invalidation skipped: {e}"
-            )
+        _clear_run_scoped_caches(
+            payload['run_id'],
+            property_id=payload.get('property_id'),
+            lease_interval_id=payload.get('lease_interval_id')
+        )
     
     # Recalculate overall AR code status using scoped current-run logic.
     status_info = _calculate_scoped_ar_status(
@@ -1347,22 +1605,22 @@ def property_view(property_id: str, run_id: str = None):
                 return redirect(url_for('main.index'))
         
         try:
-            metadata = storage.load_metadata(run_id)
+            metadata = cached_load_metadata(run_id)
         except Exception:
             metadata = {'timestamp': 'Unknown'}
 
         # Get bucket results for this property from AuditRuns
-        all_property_buckets = storage.load_bucket_results(
+        all_property_buckets = cached_load_bucket_results(
             run_id,
             property_id=int(float(property_id))
         )
 
-        property_snapshot = storage.load_run_display_snapshot_from_sharepoint_list(
+        property_snapshot = cached_load_run_display_snapshot(
             run_id=run_id,
             scope_type='property',
             property_id=int(float(property_id))
         )
-        lease_snapshot_map = storage.load_run_display_snapshots_for_property(
+        lease_snapshot_map = cached_load_run_display_snapshots_for_property(
             run_id=run_id,
             property_id=int(float(property_id)),
             scope_type='lease'
@@ -1383,7 +1641,7 @@ def property_view(property_id: str, run_id: str = None):
         # Resolve property name from uploaded run data (actual first, expected fallback)
         property_name = None
         try:
-            actual_detail_for_name = storage.load_actual_detail(run_id)
+            actual_detail_for_name = cached_load_actual_detail(run_id)
             if not actual_detail_for_name.empty and CanonicalField.PROPERTY_NAME.value in actual_detail_for_name.columns:
                 property_matches = actual_detail_for_name[
                     actual_detail_for_name[CanonicalField.PROPERTY_ID.value] == float(property_id)
@@ -1394,7 +1652,7 @@ def property_view(property_id: str, run_id: str = None):
                         property_name = str(name_value).strip()
 
             if not property_name:
-                expected_detail_for_name = storage.load_expected_detail(run_id)
+                expected_detail_for_name = cached_load_expected_detail(run_id)
                 if not expected_detail_for_name.empty and CanonicalField.PROPERTY_NAME.value in expected_detail_for_name.columns:
                     property_matches = expected_detail_for_name[
                         expected_detail_for_name[CanonicalField.PROPERTY_ID.value] == float(property_id)
@@ -1416,7 +1674,7 @@ def property_view(property_id: str, run_id: str = None):
         try:
             lease_ids_normalized = {int(float(lease_id)) for lease_id in all_lease_ids}
 
-            actual_detail = storage.load_actual_detail(run_id)
+            actual_detail = cached_load_actual_detail(run_id)
             if not actual_detail.empty and CanonicalField.LEASE_INTERVAL_ID.value in actual_detail.columns:
                 for _, record in actual_detail.iterrows():
                     lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
@@ -1432,7 +1690,7 @@ def property_view(property_id: str, run_id: str = None):
                         lease_customer_names[lease_key] = str(customer_value).strip()
 
             if len(lease_customer_names) < len(lease_ids_normalized):
-                expected_detail = storage.load_expected_detail(run_id)
+                expected_detail = cached_load_expected_detail(run_id)
                 if not expected_detail.empty and CanonicalField.LEASE_INTERVAL_ID.value in expected_detail.columns:
                     for _, record in expected_detail.iterrows():
                         lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
@@ -1566,7 +1824,7 @@ def property_view(property_id: str, run_id: str = None):
         
         property_kpis = calculate_kpis(
             kpis_input,  # Use filtered dataset (matched + unresolved exceptions only)
-            storage.load_findings(run_id, property_id=int(float(property_id))),
+            cached_load_findings(run_id, property_id=int(float(property_id))),
             property_id=None  # Already filtered, don't filter again
         )
 
@@ -1686,19 +1944,19 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
     """Lease view - detailed exceptions for a specific lease."""
     try:
         storage = get_storage_service()
-        bucket_results = storage.load_bucket_results(
+        bucket_results = cached_load_bucket_results(
             run_id,
             property_id=int(float(property_id)),
             lease_interval_id=int(float(lease_interval_id))
         )
-        expected_detail = storage.load_expected_detail(run_id)
-        actual_detail = storage.load_actual_detail(run_id)
+        expected_detail = cached_load_expected_detail(run_id)
+        actual_detail = cached_load_actual_detail(run_id)
         try:
-            run_metadata = storage.load_metadata(run_id)
+            run_metadata = cached_load_metadata(run_id)
         except Exception:
             run_metadata = {'timestamp': 'Unknown'}
 
-        lease_snapshot = storage.load_run_display_snapshot_from_sharepoint_list(
+        lease_snapshot = cached_load_run_display_snapshot(
             run_id=run_id,
             scope_type='lease',
             property_id=int(float(property_id)),
@@ -2418,7 +2676,7 @@ def bucket_drilldown(run_id: str, property_id: str, lease_interval_id: str,
     """Bucket drilldown - expected vs actual detail and findings."""
     try:
         storage = get_storage_service()
-        run_data = storage.load_run(run_id)
+        run_data = cached_load_run(run_id)
         
         # Convert audit_month to datetime
         audit_month_dt = pd.to_datetime(audit_month)

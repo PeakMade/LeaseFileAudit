@@ -506,10 +506,11 @@ def _match_tertiary_date_mismatch(
             scheduled_to_ar_map[matched_sched_id].append(ar_row[CanonicalField.AR_TRANSACTION_ID.value])
             
             matched_count += 1
-    
+
     logger.info(f"Tertiary matching: {matched_count} AR transactions matched to scheduled charges (date mismatches)")
-    
+
     return ar_result, scheduled_result
+
 
 
 def _identify_variances(

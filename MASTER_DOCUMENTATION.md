@@ -1172,6 +1172,11 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-02-24**: Refactored `execute_audit_run()` to perform true property-scoped reconciliation (`PROPERTY_ID` subsets) and aggregate per-property outputs into portfolio-level totals
+- **2026-02-24**: Added run-scoped shared caching in `web/views.py` for `bucket_results`, `findings`, `actual_detail`, `expected_detail`, `metadata`, and run display snapshots to reduce repeat loads on back navigation
+- **2026-02-24**: Added targeted run/property/lease cache invalidation hooks after uploads and exception status updates so shared cached data remains consistent across users
+- **2026-02-24**: Restored full `_match_tertiary_date_mismatch()` execution path and tuple return in `audit_engine/reconcile.py` to fix upload failure (`cannot unpack non-iterable NoneType object`)
+- **2026-02-24**: Expanded API-posted AR code exclusion list in `audit_engine/mappings.py` to include additional timed/external codes (`155030`, `155037`)
 - **2026-02-23**: Added default Current Academic Year filtering (Aug through current month) when upload Year is left as "Current Academic Year"; optional month selection now applies after academic-year scoping
 - **2026-02-23**: Temporarily disabled active lease interval filtering in AR and scheduled source row filters to include inactive lease-interval rows during reconciliation
 - **2026-02-23**: Hardened scheduled flag filtering for mixed data types (`1`, `1.0`, `'1'`) and blank `DELETED_ON` handling to prevent unintended row exclusion
