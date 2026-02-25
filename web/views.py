@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import logging
 from datetime import datetime
+from time import perf_counter
 
 from audit_engine import (
     ExcelSourceLoader,
@@ -146,6 +147,20 @@ def cached_load_run_display_snapshots_for_property(run_id: str, property_id: int
     )
 
 
+@cache.memoize(timeout=300)
+def cached_load_run_display_snapshots_for_run(run_id: str, scope_type: str = 'property'):
+    """Cached wrapper for all snapshot rows for a run and scope."""
+    logger.info(
+        f"[CACHE] ⏬ Cache MISS: Loading run display snapshots for run={run_id}, "
+        f"scope={scope_type}"
+    )
+    storage = get_storage_service()
+    return storage.load_run_display_snapshots_for_run(
+        run_id=run_id,
+        scope_type=scope_type
+    )
+
+
 def _clear_run_scoped_caches(run_id: str, property_id=None, lease_interval_id=None):
     """Clear memoized caches for a specific run and optional property/lease scope."""
 
@@ -164,6 +179,8 @@ def _clear_run_scoped_caches(run_id: str, property_id=None, lease_interval_id=No
     _safe_delete(cached_load_expected_detail, run_id)
     _safe_delete(cached_load_metadata, run_id)
     _safe_delete(cached_load_run_display_snapshot, run_id, 'portfolio', None, None)
+    _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'property')
+    _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'lease')
 
     if property_id is not None:
         property_id_int = int(float(property_id))
@@ -208,6 +225,105 @@ def _normalize_audit_month(value):
     if len(text) >= 7:
         return text[:7]
     return text
+
+
+def _normalize_property_id_token(value):
+    """Normalize property id-like values to stable string keys (e.g. 1001.0 -> '1001')."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if pd.isna(numeric):
+            return None
+        return str(int(numeric)) if numeric.is_integer() else str(numeric)
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        numeric = float(text)
+        if pd.isna(numeric):
+            return None
+        return str(int(numeric)) if numeric.is_integer() else str(numeric)
+    except Exception:
+        return text
+
+
+def _filter_df_to_property_scope(df: pd.DataFrame, property_scope: set) -> pd.DataFrame:
+    """Filter DataFrame rows to scoped property ids using normalized key matching."""
+    if df is None or df.empty or not property_scope:
+        return df
+
+    prop_col = CanonicalField.PROPERTY_ID.value
+    if prop_col not in df.columns:
+        return df.iloc[0:0].copy()
+
+    normalized = df[prop_col].apply(_normalize_property_id_token)
+    return df[normalized.isin(property_scope)].copy()
+
+
+def _overlay_property_scope_results(scoped_results: dict, baseline_run_data: dict, property_scope: set) -> dict:
+    """Overlay scoped property outputs onto baseline run outputs to preserve full portfolio coverage."""
+    if not baseline_run_data or not property_scope:
+        return scoped_results
+
+    def _merge_dataset(scoped_df: pd.DataFrame, baseline_df: pd.DataFrame, property_col_candidates) -> pd.DataFrame:
+        if baseline_df is None or baseline_df.empty:
+            return scoped_df.copy() if scoped_df is not None else pd.DataFrame()
+        if scoped_df is None:
+            scoped_df = pd.DataFrame()
+
+        property_col = next((col for col in property_col_candidates if col in baseline_df.columns), None)
+        if not property_col:
+            return scoped_df.copy() if not scoped_df.empty else baseline_df.copy()
+
+        baseline_filtered = baseline_df[
+            ~baseline_df[property_col].apply(_normalize_property_id_token).isin(property_scope)
+        ].copy()
+
+        if scoped_df.empty:
+            return baseline_filtered
+
+        return pd.concat([baseline_filtered, scoped_df], ignore_index=True)
+
+    merged = dict(scoped_results)
+    merged['expected_detail'] = _merge_dataset(
+        scoped_results.get('expected_detail', pd.DataFrame()),
+        baseline_run_data.get('expected_detail', pd.DataFrame()),
+        [CanonicalField.PROPERTY_ID.value, 'property_id']
+    )
+    merged['actual_detail'] = _merge_dataset(
+        scoped_results.get('actual_detail', pd.DataFrame()),
+        baseline_run_data.get('actual_detail', pd.DataFrame()),
+        [CanonicalField.PROPERTY_ID.value, 'property_id']
+    )
+    merged['bucket_results'] = _merge_dataset(
+        scoped_results.get('bucket_results', pd.DataFrame()),
+        baseline_run_data.get('bucket_results', pd.DataFrame()),
+        [CanonicalField.PROPERTY_ID.value, 'property_id']
+    )
+    merged['findings'] = _merge_dataset(
+        scoped_results.get('findings', pd.DataFrame()),
+        baseline_run_data.get('findings', pd.DataFrame()),
+        ['property_id', CanonicalField.PROPERTY_ID.value]
+    )
+
+    # Keep variance_detail scoped (no stable PROPERTY_ID column guaranteed in this dataset).
+    merged['variance_detail'] = scoped_results.get('variance_detail', pd.DataFrame())
+
+    merged['property_summary'] = calculate_property_summary(
+        merged['bucket_results'],
+        merged['findings'],
+        merged['actual_detail']
+    )
+    merged['portfolio_totals'] = calculate_kpis(merged['bucket_results'], merged['findings'])
+    return merged
 
 
 def _build_resolved_key(property_id, lease_id, ar_code_id, audit_month):
@@ -872,7 +988,13 @@ def filter_to_current_academic_year(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audit_month: int = None) -> dict:
+def execute_audit_run(
+    file_path: Path,
+    run_id: str,
+    audit_year: int = None,
+    audit_month: int = None,
+    scoped_property_ids=None
+) -> dict:
     """
     Execute complete audit run.
     
@@ -971,6 +1093,20 @@ def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audi
         print(f"[API CODE FILTER] Remaining AR transactions: {len(actual_detail)}")
         print(f"[API CODE FILTER] ==========================================\n")
     
+    # Optionally scope audit execution to selected property IDs.
+    scoped_property_set = {
+        token for token in (_normalize_property_id_token(v) for v in (scoped_property_ids or [])) if token
+    }
+    if scoped_property_set:
+        print(f"\n[PROPERTY SCOPE] Limiting audit execution to properties: {sorted(scoped_property_set)}")
+        expected_detail = _filter_df_to_property_scope(expected_detail, scoped_property_set)
+        actual_detail = _filter_df_to_property_scope(actual_detail, scoped_property_set)
+        scheduled_normalized = _filter_df_to_property_scope(scheduled_normalized, scoped_property_set)
+        print(
+            f"[PROPERTY SCOPE] After scope filter - "
+            f"Expected: {len(expected_detail)}, Actual: {len(actual_detail)}, Scheduled: {len(scheduled_normalized)}"
+        )
+
     # Execute reconciliation property-by-property (true scoped execution, not post-sort).
     property_column = CanonicalField.PROPERTY_ID.value
 
@@ -984,37 +1120,11 @@ def execute_audit_run(file_path: Path, run_id: str, audit_year: int = None, audi
                 f"{dataset_name} missing required property column '{property_column}' for property-scoped reconciliation"
             )
 
-    def _normalize_property_key(value):
-        if pd.isna(value):
-            return None
-
-        if isinstance(value, (int, float)):
-            numeric = float(value)
-            if pd.isna(numeric):
-                return None
-            if numeric.is_integer():
-                return str(int(numeric))
-            return str(numeric)
-
-        text = str(value).strip()
-        if not text:
-            return None
-
-        try:
-            numeric = float(text)
-            if pd.isna(numeric):
-                return None
-            if numeric.is_integer():
-                return str(int(numeric))
-            return str(numeric)
-        except Exception:
-            return text
-
     def _group_by_property(df: pd.DataFrame) -> dict:
         if df.empty:
             return {}
 
-        property_keys = df[property_column].apply(_normalize_property_key)
+        property_keys = df[property_column].apply(_normalize_property_id_token)
         valid_mask = property_keys.notna()
         if valid_mask.sum() == 0:
             return {}
@@ -1228,10 +1338,20 @@ def upload():
         flash('Please upload an Excel (.xlsx) file', 'danger')
         return redirect(url_for('main.index'))
     
+    audit_started_at = None
+
     try:
         # Get audit period filters from form
         audit_year = request.form.get('audit_year')
         audit_month = request.form.get('audit_month')
+        scoped_property_id = request.form.get('scoped_property_id')
+        scoped_property_ids_raw = request.form.get('scoped_property_ids')
+
+        scoped_property_ids = []
+        for value in [scoped_property_id] + (scoped_property_ids_raw.split(',') if scoped_property_ids_raw else []):
+            normalized = _normalize_property_id_token(value)
+            if normalized and normalized not in scoped_property_ids:
+                scoped_property_ids.append(normalized)
         
         # Convert to int if provided, otherwise None
         audit_year = int(audit_year) if audit_year else None
@@ -1255,11 +1375,48 @@ def upload():
         
         file.save(str(file_path))
         
-        # Execute audit with period filter
-        results = execute_audit_run(file_path, run_id, audit_year, audit_month)
+        # Execute audit with period filter and optional property scope.
+        audit_started_at = perf_counter()
+        results = execute_audit_run(
+            file_path,
+            run_id,
+            audit_year,
+            audit_month,
+            scoped_property_ids=scoped_property_ids
+        )
+
+        # For property-scoped runs, overlay onto latest baseline run so portfolio remains complete.
+        base_run_id = None
+        if scoped_property_ids:
+            try:
+                prior_runs = storage.list_runs(limit=50)
+                for run in prior_runs:
+                    candidate = run.get('run_id')
+                    if candidate and candidate != run_id:
+                        base_run_id = candidate
+                        break
+
+                if base_run_id:
+                    logger.info(
+                        f"[PROPERTY SCOPE] Overlaying scoped results for {scoped_property_ids} "
+                        f"onto baseline run {base_run_id}"
+                    )
+                    baseline_run_data = storage.load_run(base_run_id)
+                    results = _overlay_property_scope_results(
+                        results,
+                        baseline_run_data,
+                        set(scoped_property_ids)
+                    )
+            except Exception as overlay_error:
+                logger.warning(f"[PROPERTY SCOPE] Baseline overlay skipped due to error: {overlay_error}")
         
         # Save results
         metadata = storage.create_metadata(run_id, file_path)
+        metadata['run_scope'] = {
+            'type': 'property' if scoped_property_ids else 'portfolio',
+            'property_ids': scoped_property_ids,
+            'base_run_id': base_run_id,
+        }
         # Add period filter to metadata
         if audit_year or audit_month:
             metadata['audit_period'] = {
@@ -1316,10 +1473,21 @@ def upload():
                     'file_name': filename,
                     'audit_year': audit_year,
                     'audit_month': audit_month,
+                    'run_scope': metadata.get('run_scope', {}),
                     'user_role': 'user'
                 }
             )
-        
+
+        if audit_started_at is not None:
+            elapsed_seconds = perf_counter() - audit_started_at
+            logger.info(
+                f"[AUDIT TIMER] SUCCESS run_id={run_id} file={filename} "
+                f"elapsed_seconds={elapsed_seconds:.2f}"
+            )
+
+        if len(scoped_property_ids) == 1:
+            return redirect(url_for('main.property_view', property_id=scoped_property_ids[0], run_id=run_id))
+
         return redirect(url_for('main.portfolio', run_id=run_id))
         
     except Exception as e:
@@ -1343,6 +1511,14 @@ def upload():
                     'user_role': 'user'
                 }
             )
+
+        if audit_started_at is not None:
+            elapsed_seconds = perf_counter() - audit_started_at
+            logger.error(
+                f"[AUDIT TIMER] FAILED run_id={locals().get('run_id', 'unknown')} "
+                f"file={locals().get('filename', 'unknown')} "
+                f"elapsed_seconds={elapsed_seconds:.2f} error={error_msg}"
+            )
         
         flash(f'Error processing file: {error_msg}', 'danger')
         return redirect(url_for('main.index'))
@@ -1354,34 +1530,37 @@ def upload():
 def portfolio(run_id: str = None):
     """Portfolio view - Cumulative KPIs across all runs."""
     try:
-        storage = get_storage_service()
-        
-        # Calculate cumulative metrics across all runs
-        cumulative = calculate_cumulative_metrics()
-        
-        if not cumulative['most_recent_run']:
+        available_runs = get_available_runs()
+        if not available_runs:
             flash('No audit runs available', 'warning')
             return redirect(url_for('main.index'))
-        
+
         # Use most recent run if not specified
         if not run_id:
-            run_id = cumulative['most_recent_run']['run_id']
-        
-        logger.info(f"[PORTFOLIO] Loading bucket results from AuditRuns for run {run_id}")
-        bucket_results = cached_load_bucket_results(run_id)
-        findings = cached_load_findings(run_id)
-        actual_detail = cached_load_actual_detail(run_id)
+            run_id = available_runs[0]['run_id']
 
         try:
             metadata = cached_load_metadata(run_id)
         except Exception:
             metadata = {'timestamp': 'Unknown'}
 
-        # Prefer static snapshot values for portfolio header metrics.
+        # Snapshot-only header metrics.
         portfolio_snapshot = cached_load_run_display_snapshot(
             run_id=run_id,
             scope_type='portfolio'
         )
+
+        kpis = {
+            'current_undercharge': 0.0,
+            'historical_undercharge': 0.0,
+            'current_overcharge': 0.0,
+            'historical_overcharge': 0.0,
+            'open_exceptions': 0,
+            'match_rate': 0.0,
+            'total_runs': len(available_runs),
+            'most_recent_run': {'run_id': available_runs[0]['run_id']} if available_runs else None,
+        }
+
         if portfolio_snapshot:
             logger.info(
                 f"[SNAPSHOT][PORTFOLIO] Using RunDisplaySnapshots for run {run_id}: "
@@ -1390,78 +1569,52 @@ def portfolio(run_id: str = None):
                 f"overcharge={portfolio_snapshot.get('overcharge')}, "
                 f"match_rate={portfolio_snapshot.get('match_rate')}"
             )
-            cumulative = cumulative.copy()
-            cumulative['open_exceptions'] = int(portfolio_snapshot.get('exception_count', 0) or 0)
-            cumulative['current_undercharge'] = float(portfolio_snapshot.get('undercharge', 0) or 0)
-            cumulative['current_overcharge'] = float(portfolio_snapshot.get('overcharge', 0) or 0)
-            cumulative['match_rate'] = float(portfolio_snapshot.get('match_rate', 0) or 0)
+            kpis['open_exceptions'] = int(portfolio_snapshot.get('exception_count', 0) or 0)
+            kpis['current_undercharge'] = float(portfolio_snapshot.get('undercharge', 0) or 0)
+            kpis['current_overcharge'] = float(portfolio_snapshot.get('overcharge', 0) or 0)
+            kpis['match_rate'] = float(portfolio_snapshot.get('match_rate', 0) or 0)
         else:
             logger.warning(
-                f"[SNAPSHOT][PORTFOLIO] Fallback to recalculated portfolio metrics for run {run_id} "
-                f"(snapshot not found or unavailable)"
+                f"[SNAPSHOT][PORTFOLIO] Snapshot missing for run {run_id}; rendering with zeroed KPIs"
             )
-        
-        # Filter bucket_results to exclude resolved exceptions
-        logger.info(f"[PORTFOLIO] Filtering resolved exceptions for run {run_id}")
-        bucket_results = bucket_results.copy()
-        exception_buckets = bucket_results[
-            bucket_results[CanonicalField.STATUS.value] != config.reconciliation.status_matched
-        ].copy()
-        
-        resolved_keys = set()
-        unique_properties = exception_buckets[CanonicalField.PROPERTY_ID.value].unique()
-        
-        # 🚀 BULK FETCH: Load all exception months for each property in ONE call
-        logger.info(f"[PORTFOLIO] Bulk fetching exception months for {len(unique_properties)} properties")
-        property_exception_data = {}
-        for property_id in unique_properties:
-            property_exception_data[property_id] = cached_load_property_exception_months(run_id, int(float(property_id)))
-        
-        # Now process the bulk data without making individual API calls
-        for property_id in unique_properties:
-            bulk_data = property_exception_data[property_id]
-            
-            for (lease_id, ar_code_id), month_records in bulk_data.items():
-                for month_record in month_records:
-                    if month_record.get('status') == 'Resolved':
-                        audit_month = month_record.get('audit_month')
-                        if isinstance(audit_month, str):
-                            audit_month = audit_month[:10]
-                        resolved_key = _build_resolved_key(property_id, lease_id, ar_code_id, audit_month)
-                        resolved_keys.add(resolved_key)
-        
-        logger.info(f"[PORTFOLIO] Found {len(resolved_keys)} resolved exception months (using bulk fetch)")
-        
-        # Filter out resolved exceptions from bucket_results
-        def is_unresolved_bucket(row):
-            if row[CanonicalField.STATUS.value] == config.reconciliation.status_matched:
-                return True  # Keep all matched records
-            
-            key = _build_resolved_key(
-                row[CanonicalField.PROPERTY_ID.value],
-                row[CanonicalField.LEASE_INTERVAL_ID.value],
-                row[CanonicalField.AR_CODE_ID.value],
-                row[CanonicalField.AUDIT_MONTH.value]
-            )
-            return key not in resolved_keys
-        
-        filtered_bucket_results = bucket_results[bucket_results.apply(is_unresolved_bucket, axis=1)].copy()
-        logger.info(f"[PORTFOLIO] Filtered bucket_results from {len(bucket_results)} to {len(filtered_bucket_results)} (excluded resolved)")
-        
-        # Calculate property summary from filtered bucket results
-        property_summary = calculate_property_summary(
-            filtered_bucket_results,
-            findings,
-            actual_detail
-        )
+
+        # Snapshot-only property rows (no bucket/findings recompute path).
+        property_snapshots = cached_load_run_display_snapshots_for_run(run_id=run_id, scope_type='property')
+        logger.info(f"[SNAPSHOT][PORTFOLIO] Loaded {len(property_snapshots)} property snapshot rows for run {run_id}")
+
+        properties = []
+        for snapshot_row in property_snapshots:
+            property_id = snapshot_row.get('property_id')
+            if property_id is None:
+                continue
+
+            undercharge = float(snapshot_row.get('undercharge', 0) or 0)
+            overcharge = float(snapshot_row.get('overcharge', 0) or 0)
+            exception_count = int(snapshot_row.get('exception_count', 0) or 0)
+
+            properties.append({
+                'property_name': snapshot_row.get('property_name') or f"Property {property_id}",
+                'property_id': property_id,
+                'total_lease_intervals': int(snapshot_row.get('total_lease_intervals', 0) or 0),
+                'exception_buckets': exception_count,
+                'total_undercharge': undercharge,
+                'total_overcharge': overcharge,
+                'total_variance': float(snapshot_row.get('total_variance', undercharge + overcharge) or (undercharge + overcharge)),
+            })
+
+        if portfolio_snapshot and kpis['open_exceptions'] == 0 and properties:
+            # Safety fallback when header snapshot exists but exception_count is zero unexpectedly.
+            kpis['open_exceptions'] = int(sum(p['exception_buckets'] for p in properties))
+
+        properties.sort(key=lambda p: p.get('exception_buckets', 0), reverse=True)
         
         return render_template(
             'portfolio.html',
             run_id=run_id,
             metadata=metadata,
-            kpis=cumulative,
-            properties=property_summary.to_dict('records'),
-            total_runs=cumulative['total_runs']
+            kpis=kpis,
+            properties=properties,
+            total_runs=kpis['total_runs']
         )
     except Exception as e:
         import traceback

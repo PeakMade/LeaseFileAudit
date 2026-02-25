@@ -476,35 +476,103 @@ class StorageService:
             )
             return default_name
 
+    def _resolve_snapshot_optional_field_names(self, site_id: str, list_id: str) -> Dict[str, Optional[str]]:
+        """Resolve optional snapshot fields used by snapshot-only portfolio rendering."""
+        field_candidates = {
+            'property_name': ['PropertyNameStatic', 'PropertyName'],
+            'total_variance': ['TotalVarianceStatic'],
+            'total_lease_intervals': ['TotalLeaseIntervalsStatic'],
+        }
+        resolved = {
+            'property_name': None,
+            'total_variance': None,
+            'total_lease_intervals': None,
+        }
+
+        try:
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+            }
+            columns_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/columns"
+            params = {
+                '$select': 'name',
+                '$top': 200
+            }
+            response = requests.get(columns_url, headers=headers, params=params, timeout=60)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Could not read optional RunDisplaySnapshots columns: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return resolved
+
+            column_names = {column.get('name') for column in response.json().get('value', []) if column.get('name')}
+            for logical_name, candidates in field_candidates.items():
+                for candidate_name in candidates:
+                    if candidate_name in column_names:
+                        resolved[logical_name] = candidate_name
+                        break
+
+            return resolved
+        except Exception as e:
+            logger.warning(f"[STORAGE] Failed resolving optional snapshot field names: {e}")
+            return resolved
+
     def _build_run_display_snapshot_rows(
         self,
         run_id: str,
         bucket_results: pd.DataFrame,
-        exception_count_field_name: str = 'ExceptionCountStatic'
+        exception_count_field_name: str = 'ExceptionCountStatic',
+        optional_field_names: Optional[Dict[str, Optional[str]]] = None,
+        actual_detail: Optional[pd.DataFrame] = None,
     ) -> List[Dict[str, Any]]:
         """Build static snapshot rows for portfolio/property/lease display scopes."""
         rows: List[Dict[str, Any]] = []
         if bucket_results is None or len(bucket_results) == 0:
             return rows
 
+        optional_field_names = optional_field_names or {}
+        property_name_field = optional_field_names.get('property_name')
+        total_variance_field = optional_field_names.get('total_variance')
+        total_lease_intervals_field = optional_field_names.get('total_lease_intervals')
+
         property_column = 'PROPERTY_ID' if 'PROPERTY_ID' in bucket_results.columns else 'property_id'
         lease_column = 'LEASE_INTERVAL_ID' if 'LEASE_INTERVAL_ID' in bucket_results.columns else 'lease_interval_id'
+
+        property_name_map: Dict[int, str] = {}
+        if actual_detail is not None and len(actual_detail) > 0:
+            detail_property_column = 'PROPERTY_ID' if 'PROPERTY_ID' in actual_detail.columns else 'property_id'
+            detail_property_name_column = 'PROPERTY_NAME' if 'PROPERTY_NAME' in actual_detail.columns else 'property_name'
+            if detail_property_column in actual_detail.columns and detail_property_name_column in actual_detail.columns:
+                for _, detail_row in actual_detail[[detail_property_column, detail_property_name_column]].dropna().iterrows():
+                    property_id_int = self._safe_int(detail_row.get(detail_property_column))
+                    property_name = str(detail_row.get(detail_property_name_column)).strip()
+                    if property_id_int is None or not property_name or property_name.lower() == 'nan':
+                        continue
+                    if property_id_int not in property_name_map:
+                        property_name_map[property_id_int] = property_name
 
         def _make_row(scope_type: str, subset: pd.DataFrame, property_id: Any = None, lease_interval_id: Any = None) -> Dict[str, Any]:
             metrics = self._calculate_static_metrics(subset)
             property_id_int = self._safe_int(property_id)
             lease_interval_id_int = self._safe_int(lease_interval_id)
+            property_name = property_name_map.get(property_id_int, f"Property {property_id_int}") if property_id_int is not None else None
 
             snapshot_key = f"{run_id}:{scope_type}"
             title = f"{scope_type}:{run_id}"
             if property_id_int is not None:
                 snapshot_key += f":{property_id_int}"
                 title += f":{property_id_int}"
+                if property_name:
+                    title += f":{property_name}"
             if lease_interval_id_int is not None:
                 snapshot_key += f":{lease_interval_id_int}"
                 title += f":{lease_interval_id_int}"
 
-            return {
+            total_lease_intervals = int(subset[lease_column].nunique()) if lease_column in subset.columns else 0
+
+            row_payload = {
                 'Title': title,
                 'SnapshotKey': snapshot_key,
                 'RunId': run_id,
@@ -519,6 +587,20 @@ class StorageService:
                 'MatchedBucketsStatic': metrics['matched_buckets'],
                 'CreatedAt': datetime.utcnow().isoformat(),
             }
+
+            if property_name_field and property_name:
+                row_payload[property_name_field] = property_name
+            if total_variance_field:
+                row_payload[total_variance_field] = metrics['undercharge'] + metrics['overcharge']
+            if total_lease_intervals_field:
+                if scope_type == 'property':
+                    row_payload[total_lease_intervals_field] = total_lease_intervals
+                elif scope_type == 'lease':
+                    row_payload[total_lease_intervals_field] = 1
+                else:
+                    row_payload[total_lease_intervals_field] = 0
+
+            return row_payload
 
         # Portfolio-level snapshot
         rows.append(_make_row('portfolio', bucket_results))
@@ -542,7 +624,12 @@ class StorageService:
 
         return rows
 
-    def _write_run_display_snapshots_to_sharepoint_list(self, run_id: str, bucket_results: pd.DataFrame) -> bool:
+    def _write_run_display_snapshots_to_sharepoint_list(
+        self,
+        run_id: str,
+        bucket_results: pd.DataFrame,
+        actual_detail: Optional[pd.DataFrame] = None,
+    ) -> bool:
         """Persist static portfolio/property/lease display snapshots to RunDisplaySnapshots list."""
         if not self._can_use_sharepoint_lists():
             logger.debug("[STORAGE] SharePoint lists unavailable; skipping RunDisplaySnapshots write")
@@ -590,10 +677,13 @@ class StorageService:
 
             filtered_bucket_results = self._filter_bucket_results_for_unresolved_snapshot(run_id, bucket_results)
             exception_count_field_name = self._resolve_snapshot_exception_count_field_name(site_id, list_id)
+            optional_field_names = self._resolve_snapshot_optional_field_names(site_id, list_id)
             snapshot_rows = self._build_run_display_snapshot_rows(
                 run_id,
                 filtered_bucket_results,
                 exception_count_field_name=exception_count_field_name,
+                optional_field_names=optional_field_names,
+                actual_detail=actual_detail,
             )
             created = 0
             for row in snapshot_rows:
@@ -679,13 +769,19 @@ class StorageService:
                 'scope_type': fields.get('ScopeType', scope_type),
                 'property_id': fields.get('PropertyId'),
                 'lease_interval_id': fields.get('LeaseIntervalId'),
+                'property_name': fields.get('PropertyNameStatic') or fields.get('PropertyName'),
                 'exception_count': int(float(exception_count or 0)),
                 'undercharge': float(fields.get('UnderchargeStatic') or 0),
                 'overcharge': float(fields.get('OverchargeStatic') or 0),
+                'total_variance': float(fields.get('TotalVarianceStatic') or 0),
+                'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalsStatic') or 0)),
                 'match_rate': float(fields.get('MatchRateStatic') or 0),
                 'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
                 'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
             }
+
+            if not snapshot['total_variance']:
+                snapshot['total_variance'] = snapshot['undercharge'] + snapshot['overcharge']
 
             logger.info(
                 f"[STORAGE] ✅ Loaded RunDisplaySnapshot: run={run_id}, scope={scope_type}, "
@@ -706,6 +802,272 @@ class StorageService:
         """Load all snapshot rows for a property keyed by lease interval id."""
         if not self._can_use_sharepoint_lists():
             return {}
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return {}
+
+            list_id = self._get_run_display_snapshots_list_id()
+            if not list_id:
+                return {}
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            params = {
+                '$expand': 'fields',
+                '$filter': (
+                    f"fields/RunId eq '{run_id}' and "
+                    f"fields/ScopeType eq '{scope_type}' and "
+                    f"fields/PropertyId eq {int(property_id)}"
+                ),
+                '$top': 5000
+            }
+
+            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Failed loading RunDisplaySnapshots list rows for property {property_id}: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return {}
+
+            snapshot_map: Dict[int, Dict[str, Any]] = {}
+            for item in response.json().get('value', []):
+                fields = item.get('fields', {})
+                lease_interval_id = self._safe_int(fields.get('LeaseIntervalId'))
+                if lease_interval_id is None:
+                    continue
+
+                exception_count = fields.get('ExceptionCountStatic')
+                if exception_count is None:
+                    exception_count = fields.get('ExceptionCountStatistic')
+
+                undercharge = float(fields.get('UnderchargeStatic') or 0)
+                overcharge = float(fields.get('OverchargeStatic') or 0)
+
+                snapshot_map[lease_interval_id] = {
+                    'snapshot_key': fields.get('SnapshotKey'),
+                    'run_id': fields.get('RunId', run_id),
+                    'scope_type': fields.get('ScopeType', scope_type),
+                    'property_id': self._safe_int(fields.get('PropertyId')),
+                    'lease_interval_id': lease_interval_id,
+                    'property_name': fields.get('PropertyNameStatic') or fields.get('PropertyName'),
+                    'exception_count': int(float(exception_count or 0)),
+                    'undercharge': undercharge,
+                    'overcharge': overcharge,
+                    'total_variance': float(fields.get('TotalVarianceStatic') or (undercharge + overcharge)),
+                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalsStatic') or 1)),
+                    'match_rate': float(fields.get('MatchRateStatic') or 0),
+                    'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
+                    'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
+                }
+
+            logger.info(
+                f"[STORAGE] ✅ Loaded {len(snapshot_map)} RunDisplaySnapshots rows for run={run_id}, "
+                f"property_id={property_id}, scope={scope_type}"
+            )
+            return snapshot_map
+        except Exception as e:
+            logger.error(
+                f"[STORAGE] Error loading RunDisplaySnapshots rows for property {property_id}: {e}",
+                exc_info=True
+            )
+            return {}
+
+    def load_run_display_snapshots_for_run(
+        self,
+        run_id: str,
+        scope_type: str = 'property',
+    ) -> List[Dict[str, Any]]:
+        """Load all snapshot rows for a run and scope type."""
+        if not self._can_use_sharepoint_lists():
+            return []
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return []
+
+            list_id = self._get_run_display_snapshots_list_id()
+            if not list_id:
+                return []
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            params = {
+                '$expand': 'fields',
+                '$filter': (
+                    f"fields/RunId eq '{run_id}' and "
+                    f"fields/ScopeType eq '{scope_type}'"
+                ),
+                '$top': 5000
+            }
+
+            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Failed loading RunDisplaySnapshots rows for run={run_id}, scope={scope_type}: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return []
+
+            # Build lease-count overlay for property rows.
+            lease_counts_by_property: Dict[int, int] = {}
+            if scope_type == 'property':
+                lease_params = {
+                    '$expand': 'fields',
+                    '$filter': (
+                        f"fields/RunId eq '{run_id}' and "
+                        "fields/ScopeType eq 'lease'"
+                    ),
+                    '$top': 5000
+                }
+                lease_response = requests.get(items_url, headers=headers, params=lease_params, timeout=60)
+                if lease_response.status_code == 200:
+                    lease_rows = lease_response.json().get('value', [])
+                    for row in lease_rows:
+                        fields = row.get('fields', {})
+                        property_id_int = self._safe_int(fields.get('PropertyId'))
+                        if property_id_int is None:
+                            continue
+                        lease_counts_by_property[property_id_int] = lease_counts_by_property.get(property_id_int, 0) + 1
+                else:
+                    logger.warning(
+                        f"[STORAGE] Failed loading lease snapshots for run={run_id}: "
+                        f"{lease_response.status_code} - {lease_response.text}"
+                    )
+
+            snapshot_rows: List[Dict[str, Any]] = []
+            for item in response.json().get('value', []):
+                fields = item.get('fields', {})
+
+                exception_count = fields.get('ExceptionCountStatic')
+                if exception_count is None:
+                    exception_count = fields.get('ExceptionCountStatistic')
+
+                property_id_int = self._safe_int(fields.get('PropertyId'))
+                lease_interval_id_int = self._safe_int(fields.get('LeaseIntervalId'))
+                undercharge = float(fields.get('UnderchargeStatic') or 0)
+                overcharge = float(fields.get('OverchargeStatic') or 0)
+
+                snapshot_rows.append({
+                    'snapshot_key': fields.get('SnapshotKey'),
+                    'run_id': fields.get('RunId', run_id),
+                    'scope_type': fields.get('ScopeType', scope_type),
+                    'property_id': property_id_int,
+                    'lease_interval_id': lease_interval_id_int,
+                    'property_name': fields.get('PropertyNameStatic') or fields.get('PropertyName'),
+                    'exception_count': int(float(exception_count or 0)),
+                    'undercharge': undercharge,
+                    'overcharge': overcharge,
+                    'total_variance': float(fields.get('TotalVarianceStatic') or (undercharge + overcharge)),
+                    'match_rate': float(fields.get('MatchRateStatic') or 0),
+                    'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
+                    'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
+                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalsStatic') or lease_counts_by_property.get(property_id_int, 0) or 0))
+                })
+
+            snapshot_rows.sort(key=lambda row: (row.get('property_id') is None, row.get('property_id', 0)))
+
+            logger.info(
+                f"[STORAGE] ✅ Loaded {len(snapshot_rows)} RunDisplaySnapshots rows for run={run_id}, "
+                f"scope={scope_type}"
+            )
+            return snapshot_rows
+        except Exception as e:
+            logger.error(
+                f"[STORAGE] Error loading RunDisplaySnapshots rows for run={run_id}, scope={scope_type}: {e}",
+                exc_info=True
+            )
+            return []
+
+    def validate_run_display_snapshots(self, run_id: str, bucket_results: pd.DataFrame) -> Dict[str, Any]:
+        """Validate that required run display snapshots exist and counts align with bucket scope."""
+        validation = {
+            'ok': False,
+            'run_id': run_id,
+            'expected': {
+                'portfolio': 0,
+                'property': 0,
+                'lease': 0,
+            },
+            'actual': {
+                'portfolio': 0,
+                'property': 0,
+                'lease': 0,
+            },
+            'errors': []
+        }
+
+        try:
+            if bucket_results is None or len(bucket_results) == 0:
+                validation['errors'].append('No bucket_results available for snapshot validation')
+                return validation
+
+            filtered_bucket_results = self._filter_bucket_results_for_unresolved_snapshot(run_id, bucket_results)
+            if filtered_bucket_results is None or len(filtered_bucket_results) == 0:
+                validation['errors'].append('No filtered bucket_results available for snapshot validation')
+                return validation
+
+            property_column = 'PROPERTY_ID' if 'PROPERTY_ID' in filtered_bucket_results.columns else 'property_id'
+            lease_column = 'LEASE_INTERVAL_ID' if 'LEASE_INTERVAL_ID' in filtered_bucket_results.columns else 'lease_interval_id'
+
+            if property_column not in filtered_bucket_results.columns or lease_column not in filtered_bucket_results.columns:
+                validation['errors'].append('Required property/lease columns missing for snapshot validation')
+                return validation
+
+            expected_property_count = int(pd.to_numeric(filtered_bucket_results[property_column], errors='coerce').dropna().nunique())
+            expected_lease_count = int(
+                filtered_bucket_results[[property_column, lease_column]]
+                .dropna()
+                .drop_duplicates()
+                .shape[0]
+            )
+
+            validation['expected'] = {
+                'portfolio': 1,
+                'property': expected_property_count,
+                'lease': expected_lease_count,
+            }
+
+            portfolio_snapshot = self.load_run_display_snapshot_from_sharepoint_list(run_id=run_id, scope_type='portfolio')
+            property_snapshots = self.load_run_display_snapshots_for_run(run_id=run_id, scope_type='property')
+            lease_snapshots = self.load_run_display_snapshots_for_run(run_id=run_id, scope_type='lease')
+
+            validation['actual'] = {
+                'portfolio': 1 if portfolio_snapshot else 0,
+                'property': len(property_snapshots),
+                'lease': len(lease_snapshots),
+            }
+
+            if validation['actual']['portfolio'] != validation['expected']['portfolio']:
+                validation['errors'].append('Portfolio snapshot missing')
+            if validation['actual']['property'] != validation['expected']['property']:
+                validation['errors'].append(
+                    f"Property snapshot count mismatch (expected={validation['expected']['property']}, "
+                    f"actual={validation['actual']['property']})"
+                )
+            if validation['actual']['lease'] != validation['expected']['lease']:
+                validation['errors'].append(
+                    f"Lease snapshot count mismatch (expected={validation['expected']['lease']}, "
+                    f"actual={validation['actual']['lease']})"
+                )
+
+            validation['ok'] = len(validation['errors']) == 0
+            return validation
+        except Exception as e:
+            validation['errors'].append(f"Snapshot validation error: {e}")
+            return validation
 
         try:
             site_id = self._get_site_id()
@@ -2252,7 +2614,24 @@ class StorageService:
 
         # Write static display snapshots (portfolio/property/lease) for fast UI loads.
         try:
-            self._write_run_display_snapshots_to_sharepoint_list(run_id, bucket_results)
+            snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
+                run_id,
+                bucket_results,
+                actual_detail=actual_detail,
+            )
+            if snapshot_write_ok:
+                validation = self.validate_run_display_snapshots(run_id, bucket_results)
+                if validation.get('ok'):
+                    logger.info(
+                        f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
+                        f"portfolio={validation['actual']['portfolio']}, "
+                        f"property={validation['actual']['property']}, "
+                        f"lease={validation['actual']['lease']}"
+                    )
+                else:
+                    logger.warning(
+                        f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
+                    )
         except Exception as e:
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
         

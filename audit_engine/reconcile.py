@@ -16,6 +16,34 @@ logger = logging.getLogger(__name__)
 BUCKET_KEY_COLUMNS = list(get_field_names(BUCKET_KEY_FIELDS))
 
 
+def _normalize_match_id(value) -> str | None:
+    """Normalize ID values so numeric/string Excel variants compare consistently."""
+    if pd.isna(value):
+        return None
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or normalized.lower() in {'nan', 'none'}:
+            return None
+        try:
+            as_float = float(normalized)
+            if as_float.is_integer():
+                return str(int(as_float))
+            return normalized
+        except ValueError:
+            return normalized
+
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+
+    if isinstance(value, int):
+        return str(value)
+
+    return str(value).strip() or None
+
+
 def reconcile_buckets(
     expected_detail: pd.DataFrame,
     actual_detail: pd.DataFrame,
@@ -227,31 +255,50 @@ def _match_primary(
         logger.info("No AR transactions with SCHEDULED_CHARGE_ID_LINK - skipping primary matching")
         return ar_result, scheduled_result
     
-    # Match to scheduled charges
+    # Match to scheduled charges using normalized ID keys (handles float/string formatting drift)
     scheduled_ids = scheduled_df[CanonicalField.SCHEDULED_CHARGES_ID.value].tolist()
-    matched_ar_mask = linked_ar[CanonicalField.SCHEDULED_CHARGE_ID_LINK.value].isin(scheduled_ids)
+    scheduled_id_lookup = {}
+    for scheduled_id in scheduled_ids:
+        normalized = _normalize_match_id(scheduled_id)
+        if normalized is not None and normalized not in scheduled_id_lookup:
+            scheduled_id_lookup[normalized] = scheduled_id
+
+    linked_ar_normalized = linked_ar[CanonicalField.SCHEDULED_CHARGE_ID_LINK.value].apply(_normalize_match_id)
+    matched_ar_mask = linked_ar_normalized.isin(set(scheduled_id_lookup.keys()))
     
     # Update AR matches
     matched_ar_ids = linked_ar[matched_ar_mask].index
     ar_result.loc[matched_ar_ids, 'MATCHED'] = True
     ar_result.loc[matched_ar_ids, 'MATCH_TYPE'] = 'PRIMARY'
-    ar_result.loc[matched_ar_ids, 'MATCHED_SCHEDULED_ID'] = linked_ar.loc[matched_ar_ids, CanonicalField.SCHEDULED_CHARGE_ID_LINK.value]
+    ar_result.loc[matched_ar_ids, 'MATCHED_SCHEDULED_ID'] = linked_ar_normalized.loc[matched_ar_ids].map(scheduled_id_lookup)
     
     # Update scheduled matches (aggregate AR trans by scheduled ID)
-    for sched_id in scheduled_ids:
-        matched_ar_for_sched = linked_ar[
-            (linked_ar[CanonicalField.SCHEDULED_CHARGE_ID_LINK.value] == sched_id) &
-            matched_ar_mask
+    matched_pairs = linked_ar.loc[matched_ar_ids].copy()
+    matched_pairs['MATCHED_SCHEDULED_ID'] = linked_ar_normalized.loc[matched_ar_ids].map(scheduled_id_lookup)
+
+    for sched_id, matched_ar_for_sched in matched_pairs.groupby('MATCHED_SCHEDULED_ID'):
+        if pd.isna(sched_id):
+            continue
+
+        sched_mask = scheduled_result[CanonicalField.SCHEDULED_CHARGES_ID.value] == sched_id
+        scheduled_result.loc[sched_mask, 'MATCHED'] = True
+        scheduled_result.loc[sched_mask, 'MATCH_TYPE'] = 'PRIMARY'
+        scheduled_to_ar_map[sched_id] = matched_ar_for_sched[CanonicalField.AR_TRANSACTION_ID.value].tolist()
+
+    matched_count = int(matched_ar_mask.sum())
+    logger.info(
+        f"Primary matching: {matched_count} AR transactions matched to scheduled charges "
+        f"(linked_ar={len(linked_ar)}, scheduled_ids={len(scheduled_id_lookup)})"
+    )
+    if matched_count == 0 and len(linked_ar) > 0:
+        sample_ar_links = [
+            key for key in linked_ar_normalized.dropna().head(5).tolist()
         ]
-        
-        if len(matched_ar_for_sched) > 0:
-            sched_mask = scheduled_result[CanonicalField.SCHEDULED_CHARGES_ID.value] == sched_id
-            scheduled_result.loc[sched_mask, 'MATCHED'] = True
-            scheduled_result.loc[sched_mask, 'MATCH_TYPE'] = 'PRIMARY'
-            # Store AR IDs in dictionary instead of DataFrame
-            scheduled_to_ar_map[sched_id] = matched_ar_for_sched[CanonicalField.AR_TRANSACTION_ID.value].tolist()
-    
-    logger.info(f"Primary matching: {matched_ar_mask.sum()} AR transactions matched to scheduled charges")
+        sample_sched_ids = list(scheduled_id_lookup.keys())[:5]
+        logger.info(
+            f"Primary matching diagnostics: sample_link_keys={sample_ar_links}, "
+            f"sample_scheduled_keys={sample_sched_ids}"
+        )
     
     return ar_result, scheduled_result
 
@@ -416,8 +463,10 @@ def _match_tertiary_date_mismatch(
         return ar_result, scheduled_result
     
     matched_count = 0
-    
-    print(f"\n[TERTIARY MATCHING] Starting - {len(ar_df)} unmatched AR, {len(scheduled_df)} unmatched scheduled")
+    logger.info(
+        f"[TERTIARY] Starting tertiary matching: unmatched_ar={len(ar_df)}, "
+        f"unmatched_scheduled={len(scheduled_df)}"
+    )
     
     # Group by lease interval and AR code to find date mismatches
     for (lease_id, ar_code), ar_group in ar_df.groupby([CanonicalField.LEASE_INTERVAL_ID.value, CanonicalField.AR_CODE_ID.value]):
@@ -431,7 +480,10 @@ def _match_tertiary_date_mismatch(
         if len(sched_candidates) == 0:
             continue
         
-        print(f"[TERTIARY] Lease {lease_id}, AR code {ar_code}: {len(ar_group)} AR trans, {len(sched_candidates)} unmatched scheduled charges")
+        bucket_matched = 0
+        bucket_no_date_mismatch = 0
+        bucket_amount_fallback = 0
+        bucket_ambiguous_amount_matches = 0
         
         # Match AR transactions to scheduled charges
         for ar_idx, ar_row in ar_group.iterrows():
@@ -439,33 +491,33 @@ def _match_tertiary_date_mismatch(
             ar_id = ar_row.get(CanonicalField.AR_TRANSACTION_ID.value)
             post_date = ar_row.get(CanonicalField.POST_DATE.value)
             
-            print(f"[TERTIARY]   AR trans {ar_id}: post_date={post_date}, amount=${ar_amount}")
-            
             # Re-filter to get only currently unmatched scheduled charges (in case previous iteration matched one)
             available_candidates = sched_candidates[~sched_candidates.get('MATCHED', False)]
             
             if len(available_candidates) == 0:
-                print(f"[TERTIARY]   No more available scheduled charges to match")
                 break
             
             # Filter candidates where date is OUTSIDE the scheduled period (confirms date mismatch)
-            if post_date and CanonicalField.PERIOD_START.value in available_candidates.columns:
+            if pd.notna(post_date) and CanonicalField.PERIOD_START.value in available_candidates.columns:
+                period_end_series = available_candidates.get(
+                    CanonicalField.PERIOD_END.value,
+                    pd.Series(index=available_candidates.index, dtype='datetime64[ns]')
+                )
                 date_mismatch_candidates = available_candidates[
                     (available_candidates[CanonicalField.PERIOD_START.value] > post_date) |
-                    ((available_candidates.get(CanonicalField.PERIOD_END.value, pd.Series()).notna()) & 
-                     (available_candidates.get(CanonicalField.PERIOD_END.value, pd.Series()) < post_date))
+                    (period_end_series.notna() & (period_end_series < post_date))
                 ]
-                print(f"[TERTIARY]   Date mismatch candidates: {len(date_mismatch_candidates)}")
-                for _, cand in date_mismatch_candidates.iterrows():
-                    print(f"[TERTIARY]     Sched ID {cand[CanonicalField.SCHEDULED_CHARGES_ID.value]}: start={cand.get(CanonicalField.PERIOD_START.value)}, end={cand.get(CanonicalField.PERIOD_END.value)}, amount=${cand[CanonicalField.EXPECTED_AMOUNT.value]}")
             else:
                 # No date field or can't check, treat all as potential mismatches
                 date_mismatch_candidates = available_candidates
-                print(f"[TERTIARY]   No post_date, treating all {len(available_candidates)} as candidates")
+                logger.warning(
+                    f"[TERTIARY] Bucket lease={lease_id} ar_code={ar_code}: "
+                    f"AR transaction {ar_id} missing post_date; using all candidates for tertiary evaluation"
+                )
             
             if len(date_mismatch_candidates) == 0:
                 # No candidates with date mismatches found
-                print(f"[TERTIARY]   No date mismatch candidates found (dates might align)")
+                bucket_no_date_mismatch += 1
                 continue
             
             # Try to match by amount first
@@ -475,17 +527,17 @@ def _match_tertiary_date_mismatch(
             
             # Select best match
             if len(amount_match_candidates) > 0:
+                if len(amount_match_candidates) > 1:
+                    bucket_ambiguous_amount_matches += 1
                 matched_sched = amount_match_candidates.iloc[0]
             elif len(date_mismatch_candidates) > 0:
                 # No amount match but same lease+AR code with date mismatch
-                logger.info(f"TERTIARY: Matching AR trans (lease {lease_id}, AR code {ar_code}) by lease+AR code only (amount differs + date mismatch)")
+                bucket_amount_fallback += 1
                 matched_sched = date_mismatch_candidates.iloc[0]
             else:
                 continue
             
             matched_sched_id = matched_sched[CanonicalField.SCHEDULED_CHARGES_ID.value]
-            
-            print(f"[TERTIARY]   ✓ MATCHED: AR trans {ar_id} → Sched ID {matched_sched_id}")
             
             # Update AR match - flag as TERTIARY (date mismatch)
             ar_result.loc[ar_idx, 'MATCHED'] = True
@@ -506,6 +558,19 @@ def _match_tertiary_date_mismatch(
             scheduled_to_ar_map[matched_sched_id].append(ar_row[CanonicalField.AR_TRANSACTION_ID.value])
             
             matched_count += 1
+            bucket_matched += 1
+
+        logger.info(
+            f"[TERTIARY] Bucket summary lease={lease_id} ar_code={ar_code}: "
+            f"ar_rows={len(ar_group)} sched_unmatched={len(sched_candidates)} matched={bucket_matched}"
+        )
+        if bucket_no_date_mismatch > 0 or bucket_amount_fallback > 0 or bucket_ambiguous_amount_matches > 0:
+            logger.warning(
+                f"[TERTIARY] Bucket unusual lease={lease_id} ar_code={ar_code}: "
+                f"no_date_mismatch={bucket_no_date_mismatch}, "
+                f"amount_fallback_matches={bucket_amount_fallback}, "
+                f"ambiguous_amount_candidates={bucket_ambiguous_amount_matches}"
+            )
 
     logger.info(f"Tertiary matching: {matched_count} AR transactions matched to scheduled charges (date mismatches)")
 

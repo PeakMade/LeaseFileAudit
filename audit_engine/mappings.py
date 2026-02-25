@@ -245,6 +245,7 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
     column_transforms=[
         ColumnTransform(ARSourceColumns.PROPERTY_ID, CanonicalField.PROPERTY_ID),
         ColumnTransform(ARSourceColumns.PROPERTY_NAME, CanonicalField.PROPERTY_NAME),
+        ColumnTransform(ARSourceColumns.LEASE_ID, CanonicalField.LEASE_ID),
         ColumnTransform(ARSourceColumns.LEASE_INTERVAL_ID, CanonicalField.LEASE_INTERVAL_ID),
         ColumnTransform(ARSourceColumns.AR_CODE_ID, CanonicalField.AR_CODE_ID),
         ColumnTransform(ARSourceColumns.AR_CODE_NAME, CanonicalField.AR_CODE_NAME),
@@ -256,7 +257,9 @@ AR_TRANSACTIONS_MAPPING = SourceMapping(
         ColumnTransform(ARSourceColumns.IS_REVERSAL, CanonicalField.IS_REVERSAL),
         ColumnTransform(ARSourceColumns.ID, CanonicalField.AR_TRANSACTION_ID),
         ColumnTransform(ARSourceColumns.CUSTOMER_NAME, CanonicalField.CUSTOMER_NAME),
+        ColumnTransform(ARSourceColumns.CUSTOMER_ID, CanonicalField.CUSTOMER_ID),
         ColumnTransform(ARSourceColumns.GUARANTOR_NAME, CanonicalField.GUARANTOR_NAME),
+        ColumnTransform(ARSourceColumns.SCHEDULED_CHARGE_ID, CanonicalField.SCHEDULED_CHARGE_ID_LINK),
         # Add LEASE_ID and CUSTOMER_ID if columns exist (optional for AR, will fall back to scheduled)
     ],
     row_filter=_ar_row_filter,
@@ -545,6 +548,18 @@ def apply_source_mapping(df: pd.DataFrame, mapping: SourceMapping) -> pd.DataFra
     # Apply column transformations
     result_data = {}
     for transform in mapping.column_transforms:
+        if transform.source_column not in df.columns:
+            if transform.source_column in mapping.required_source_columns:
+                raise ValueError(
+                    f"Source '{mapping.name}' is missing required column during transform: {transform.source_column}"
+                )
+
+            print(
+                f"[MAPPING DEBUG] Skipping optional column transform: "
+                f"'{transform.source_column}' -> '{transform.canonical_field.value}' (column not present)"
+            )
+            continue
+
         try:
             result_data[transform.canonical_field.value] = transform.apply(df)
         except Exception as e:

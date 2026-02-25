@@ -1172,6 +1172,11 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-02-25**: Made portfolio route snapshot-only in `web/views.py` by loading KPIs/property rows from `RunDisplaySnapshots` without recomputing from run detail payloads
+- **2026-02-25**: Added snapshot write-time validation and run-scoped snapshot loaders in `storage/service.py` to verify expected snapshot counts and improve load reliability
+- **2026-02-25**: Expanded snapshot payload support with `PropertyNameStatic`, `TotalVarianceStatic`, and `TotalLeaseIntervalsStatic` fallback handling so UI display fields persist in snapshots
+- **2026-02-25**: Added audit runtime timing logs (`[AUDIT TIMER]`) in upload flow and reduced tertiary reconciliation log noise to bucket-level summaries with unusual-case diagnostics
+- **2026-02-25**: Fixed primary-match linkage by mapping AR `SCHEDULED_CHARGE_ID` to canonical `SCHEDULED_CHARGE_ID_LINK` and normalizing match IDs in `audit_engine/reconcile.py`
 - **2026-02-24**: Refactored `execute_audit_run()` to perform true property-scoped reconciliation (`PROPERTY_ID` subsets) and aggregate per-property outputs into portfolio-level totals
 - **2026-02-24**: Added run-scoped shared caching in `web/views.py` for `bucket_results`, `findings`, `actual_detail`, `expected_detail`, `metadata`, and run display snapshots to reduce repeat loads on back navigation
 - **2026-02-24**: Added targeted run/property/lease cache invalidation hooks after uploads and exception status updates so shared cached data remains consistent across users
@@ -1213,6 +1218,6 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 
 ---
 
-**Last Updated**: February 23, 2026  
+**Last Updated**: February 25, 2026  
 **Version**: 1.0  
 **Maintained By**: PeakMade Development Team
