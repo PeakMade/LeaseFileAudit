@@ -10,6 +10,16 @@ from .findings import Finding, generate_findings
 from .metrics import calculate_kpis, calculate_property_summary
 from .canonical_fields import CanonicalField, BUCKET_KEY_FIELDS
 from .schemas import CanonicalDataSet, validate_columns, enforce_dtypes
+from .entrata_lease_terms import (
+    normalize_id,
+    collect_property_lease_pairs,
+    build_entrata_params,
+    get_value_by_paths,
+    extract_fields_from_response,
+    extract_lease_terms_for_pairs,
+    build_lease_expectation_overlay,
+    refresh_lease_terms_for_lease_interval,
+)
 
 __all__ = [
     "DataSourceLoader",
@@ -31,4 +41,12 @@ __all__ = [
     "CanonicalDataSet",
     "validate_columns",
     "enforce_dtypes",
+    "normalize_id",
+    "collect_property_lease_pairs",
+    "build_entrata_params",
+    "get_value_by_paths",
+    "extract_fields_from_response",
+    "extract_lease_terms_for_pairs",
+    "build_lease_expectation_overlay",
+    "refresh_lease_terms_for_lease_interval",
 ]

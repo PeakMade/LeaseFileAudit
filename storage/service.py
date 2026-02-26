@@ -6,12 +6,15 @@ import json
 import hashlib
 import io
 import logging
+import os
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import math
 import pandas as pd
 import requests
+from urllib.parse import unquote
 from activity_logging.sharepoint import _get_app_only_token
 
 logger = logging.getLogger(__name__)
@@ -184,6 +187,34 @@ class StorageService:
         logger.debug(f"[STORAGE] Resolved SharePoint list '{list_name}' id: {list_id}")
         return list_id
 
+    def _extract_list_id_from_config_value(self, configured_value: str) -> Optional[str]:
+        """Extract list ID GUID from env value (GUID, {GUID}, or SharePoint sharing URL)."""
+        if not configured_value:
+            return None
+
+        decoded = unquote(str(configured_value).strip())
+        patterns = [
+            r"List=\{?([0-9a-fA-F\-]{36})\}?",
+            r"\{([0-9a-fA-F\-]{36})\}",
+            r"\b([0-9a-fA-F\-]{36})\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, decoded)
+            if match:
+                return match.group(1)
+
+        return None
+
+    def _get_configured_sharepoint_list_id(self, env_keys: List[str]) -> Optional[str]:
+        """Resolve list id from one of the configured env vars."""
+        for env_key in env_keys:
+            configured_value = os.getenv(env_key)
+            list_id = self._extract_list_id_from_config_value(configured_value) if configured_value else None
+            if list_id:
+                logger.info(f"[STORAGE] Using configured list id from {env_key}: {list_id}")
+                return list_id
+        return None
+
     def _normalize_for_json(self, value: Any) -> Any:
         """Normalize pandas/numpy values into JSON-serializable primitives."""
         if value is None:
@@ -253,6 +284,51 @@ class StorageService:
                     logger.warning(
                         f"[STORAGE] Using legacy list name '{name}'. Consider renaming to 'RunDisplaySnapshots'."
                     )
+                return list_id
+        return None
+
+    def _get_lease_term_set_list_id(self) -> Optional[str]:
+        """Resolve lease term set list id via env override first, then by display name."""
+        configured = self._get_configured_sharepoint_list_id([
+            'LEASE_TERM_SET_LIST_ID',
+            'LEASE_TERM_SET_LIST_URL',
+        ])
+        if configured:
+            return configured
+
+        for name in ["LeaseTermSet", "Lease Term Set"]:
+            list_id = self._get_sharepoint_list_id(name)
+            if list_id:
+                return list_id
+        return None
+
+    def _get_lease_terms_list_id(self) -> Optional[str]:
+        """Resolve lease terms list id via env override first, then by display name."""
+        configured = self._get_configured_sharepoint_list_id([
+            'LEASE_TERMS_LIST_ID',
+            'LEASE_TERMS_LIST_URL',
+        ])
+        if configured:
+            return configured
+
+        for name in ["LeaseTerms", "Lease Terms"]:
+            list_id = self._get_sharepoint_list_id(name)
+            if list_id:
+                return list_id
+        return None
+
+    def _get_lease_term_evidence_list_id(self) -> Optional[str]:
+        """Resolve lease term evidence list id via env override first, then by display name."""
+        configured = self._get_configured_sharepoint_list_id([
+            'LEASE_TERM_EVIDENCE_LIST_ID',
+            'LEASE_TERM_EVIDENCE_LIST_URL',
+        ])
+        if configured:
+            return configured
+
+        for name in ["LeaseTermEvidence", "Lease Term Evidence"]:
+            list_id = self._get_sharepoint_list_id(name)
+            if list_id:
                 return list_id
         return None
 
@@ -526,6 +602,8 @@ class StorageService:
         exception_count_field_name: str = 'ExceptionCountStatic',
         optional_field_names: Optional[Dict[str, Optional[str]]] = None,
         actual_detail: Optional[pd.DataFrame] = None,
+        expected_detail: Optional[pd.DataFrame] = None,
+        property_name_map: Optional[Dict[int, str]] = None,
     ) -> List[Dict[str, Any]]:
         """Build static snapshot rows for portfolio/property/lease display scopes."""
         rows: List[Dict[str, Any]] = []
@@ -540,24 +618,43 @@ class StorageService:
         property_column = 'PROPERTY_ID' if 'PROPERTY_ID' in bucket_results.columns else 'property_id'
         lease_column = 'LEASE_INTERVAL_ID' if 'LEASE_INTERVAL_ID' in bucket_results.columns else 'lease_interval_id'
 
-        property_name_map: Dict[int, str] = {}
-        if actual_detail is not None and len(actual_detail) > 0:
-            detail_property_column = 'PROPERTY_ID' if 'PROPERTY_ID' in actual_detail.columns else 'property_id'
-            detail_property_name_column = 'PROPERTY_NAME' if 'PROPERTY_NAME' in actual_detail.columns else 'property_name'
-            if detail_property_column in actual_detail.columns and detail_property_name_column in actual_detail.columns:
-                for _, detail_row in actual_detail[[detail_property_column, detail_property_name_column]].dropna().iterrows():
-                    property_id_int = self._safe_int(detail_row.get(detail_property_column))
-                    property_name = str(detail_row.get(detail_property_name_column)).strip()
-                    if property_id_int is None or not property_name or property_name.lower() == 'nan':
-                        continue
-                    if property_id_int not in property_name_map:
-                        property_name_map[property_id_int] = property_name
+        resolved_property_name_map: Dict[int, str] = {}
+
+        if property_name_map:
+            for raw_property_id, raw_property_name in property_name_map.items():
+                property_id_int = self._safe_int(raw_property_id)
+                property_name_value = str(raw_property_name).strip() if raw_property_name is not None else ''
+                if property_id_int is None or not property_name_value or property_name_value.lower() == 'nan':
+                    continue
+                if property_id_int not in resolved_property_name_map:
+                    resolved_property_name_map[property_id_int] = property_name_value
+
+        def _populate_property_names(detail_df: Optional[pd.DataFrame]) -> None:
+            if detail_df is None or len(detail_df) == 0:
+                return
+
+            detail_property_column = 'PROPERTY_ID' if 'PROPERTY_ID' in detail_df.columns else 'property_id'
+            detail_property_name_column = 'PROPERTY_NAME' if 'PROPERTY_NAME' in detail_df.columns else 'property_name'
+            if detail_property_column not in detail_df.columns or detail_property_name_column not in detail_df.columns:
+                return
+
+            for _, detail_row in detail_df[[detail_property_column, detail_property_name_column]].dropna().iterrows():
+                property_id_int = self._safe_int(detail_row.get(detail_property_column))
+                property_name = str(detail_row.get(detail_property_name_column)).strip()
+                if property_id_int is None or not property_name or property_name.lower() == 'nan':
+                    continue
+                if property_id_int not in resolved_property_name_map:
+                    resolved_property_name_map[property_id_int] = property_name
+
+        # Name priority: actual detail first, expected detail second.
+        _populate_property_names(actual_detail)
+        _populate_property_names(expected_detail)
 
         def _make_row(scope_type: str, subset: pd.DataFrame, property_id: Any = None, lease_interval_id: Any = None) -> Dict[str, Any]:
             metrics = self._calculate_static_metrics(subset)
             property_id_int = self._safe_int(property_id)
             lease_interval_id_int = self._safe_int(lease_interval_id)
-            property_name = property_name_map.get(property_id_int, f"Property {property_id_int}") if property_id_int is not None else None
+            property_name = resolved_property_name_map.get(property_id_int, f"Property {property_id_int}") if property_id_int is not None else None
 
             snapshot_key = f"{run_id}:{scope_type}"
             title = f"{scope_type}:{run_id}"
@@ -629,6 +726,8 @@ class StorageService:
         run_id: str,
         bucket_results: pd.DataFrame,
         actual_detail: Optional[pd.DataFrame] = None,
+        expected_detail: Optional[pd.DataFrame] = None,
+        property_name_map: Optional[Dict[int, str]] = None,
     ) -> bool:
         """Persist static portfolio/property/lease display snapshots to RunDisplaySnapshots list."""
         if not self._can_use_sharepoint_lists():
@@ -684,6 +783,8 @@ class StorageService:
                 exception_count_field_name=exception_count_field_name,
                 optional_field_names=optional_field_names,
                 actual_detail=actual_detail,
+                expected_detail=expected_detail,
+                property_name_map=property_name_map,
             )
             created = 0
             for row in snapshot_rows:
@@ -1741,6 +1842,295 @@ class StorageService:
             logger.error(f"[STORAGE] Error upserting exception state: {e}", exc_info=True)
             return False
 
+    def upsert_lease_term_set_to_sharepoint_list(self, payload: Dict[str, Any]) -> bool:
+        """Upsert LeaseTermSet row by LeaseKey."""
+        if not self._can_use_sharepoint_lists():
+            return False
+
+        lease_key = str(payload.get('lease_key') or '').strip()
+        if not lease_key:
+            logger.error("[STORAGE] LeaseTermSet upsert missing lease_key")
+            return False
+
+        try:
+            site_id = self._get_site_id()
+            list_id = self._get_lease_term_set_list_id()
+            if not site_id or not list_id:
+                return False
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            filter_query = f"fields/LeaseKey eq '{lease_key}'"
+            params = {'$expand': 'fields', '$filter': filter_query, '$top': 1}
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] LeaseTermSet query failed: {response.status_code} - {response.text}")
+                return False
+
+            fields_payload = {
+                'Title': lease_key,
+                'LeaseKey': lease_key,
+                'PropertyId': self._safe_int(payload.get('property_id')),
+                'LeaseIntervalId': self._safe_int(payload.get('lease_interval_id')),
+                'LeaseId': self._safe_int(payload.get('lease_id')),
+                'TermSetVersion': int(payload.get('term_set_version') or 1),
+                'FingerprintHash': str(payload.get('fingerprint_hash') or ''),
+                'SelectedDocIds': str(payload.get('selected_doc_ids') or ''),
+                'LastCheckedAt': str(payload.get('last_checked_at') or datetime.utcnow().isoformat()),
+                'LastRefreshedAt': str(payload.get('last_refreshed_at') or datetime.utcnow().isoformat()),
+                'Status': str(payload.get('status') or 'active'),
+                'RefreshError': str(payload.get('refresh_error') or ''),
+                'RunIdLastSeen': str(payload.get('run_id_last_seen') or ''),
+            }
+
+            existing_items = response.json().get('value', [])
+            if existing_items:
+                item_id = existing_items[0]['id']
+                update_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items/{item_id}/fields"
+                update_response = requests.patch(update_url, headers=headers, json=fields_payload, timeout=30)
+                return update_response.status_code in [200, 204]
+
+            create_response = requests.post(items_url, headers=headers, json={'fields': fields_payload}, timeout=30)
+            return create_response.status_code in [200, 201]
+        except Exception as e:
+            logger.error(f"[STORAGE] Error upserting LeaseTermSet: {e}", exc_info=True)
+            return False
+
+    def replace_lease_terms_to_sharepoint_list(self, lease_key: str, rows: List[Dict[str, Any]]) -> bool:
+        """Replace LeaseTerms rows for LeaseKey (delete existing + insert current)."""
+        if not self._can_use_sharepoint_lists():
+            return False
+
+        lease_key = str(lease_key or '').strip()
+        if not lease_key:
+            logger.error("[STORAGE] replace_lease_terms_to_sharepoint_list missing lease_key")
+            return False
+
+        try:
+            site_id = self._get_site_id()
+            list_id = self._get_lease_terms_list_id()
+            if not site_id or not list_id:
+                return False
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            existing_params = {'$select': 'id', '$expand': 'fields', '$filter': f"fields/LeaseKey eq '{lease_key}'", '$top': 5000}
+            existing_response = requests.get(items_url, headers=headers, params=existing_params, timeout=30)
+            if existing_response.status_code == 200:
+                for item in existing_response.json().get('value', []):
+                    requests.delete(f"{items_url}/{item['id']}", headers=headers, timeout=30)
+
+            for idx, row in enumerate(rows or []):
+                term_key = str(row.get('term_key') or f"{lease_key}:row:{idx}")
+                fields_payload = {
+                    'Title': term_key,
+                    'TermKey': term_key,
+                    'LeaseKey': lease_key,
+                    'PropertyId': self._safe_int(row.get('property_id')),
+                    'LeaseIntervalId': self._safe_int(row.get('lease_interval_id')),
+                    'LeaseId': self._safe_int(row.get('lease_id')),
+                    'TermSetVersion': int(row.get('term_set_version') or 1),
+                    'IsActive': bool(row.get('is_active', True)),
+                    'TermType': str(row.get('term_type') or 'OTHER'),
+                    'MappedArCode': str(row.get('mapped_ar_code') or ''),
+                    'Amount': float(row.get('amount') or 0),
+                    'Frequency': str(row.get('frequency') or ''),
+                    'StartDate': str(row.get('start_date') or ''),
+                    'EndDate': str(row.get('end_date') or ''),
+                    'DueDay': self._safe_int(row.get('due_day')),
+                    'ConditionsKey': str(row.get('conditions_key') or ''),
+                    'TermSourceDocId': str(row.get('term_source_doc_id') or ''),
+                    'TermSourceDocName': str(row.get('term_source_doc_name') or ''),
+                    'MappingVersion': str(row.get('mapping_version') or ''),
+                    'MappingConfidence': float(row.get('mapping_confidence') or 0),
+                    'UpdatedAt': str(row.get('updated_at') or datetime.utcnow().isoformat()),
+                }
+                create_response = requests.post(items_url, headers=headers, json={'fields': fields_payload}, timeout=30)
+                if create_response.status_code not in [200, 201]:
+                    logger.warning(f"[STORAGE] Failed creating LeaseTerms row {term_key}: {create_response.status_code} - {create_response.text}")
+
+            return True
+        except Exception as e:
+            logger.error(f"[STORAGE] Error replacing LeaseTerms rows: {e}", exc_info=True)
+            return False
+
+    def replace_lease_term_evidence_to_sharepoint_list(self, lease_key: str, rows: List[Dict[str, Any]]) -> bool:
+        """Replace LeaseTermEvidence rows for LeaseKey."""
+        if not self._can_use_sharepoint_lists():
+            return False
+
+        lease_key = str(lease_key or '').strip()
+        if not lease_key:
+            return False
+
+        try:
+            site_id = self._get_site_id()
+            list_id = self._get_lease_term_evidence_list_id()
+            if not site_id or not list_id:
+                return False
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            existing_params = {'$select': 'id', '$expand': 'fields', '$filter': f"fields/LeaseKey eq '{lease_key}'", '$top': 5000}
+            existing_response = requests.get(items_url, headers=headers, params=existing_params, timeout=30)
+            if existing_response.status_code == 200:
+                for item in existing_response.json().get('value', []):
+                    requests.delete(f"{items_url}/{item['id']}", headers=headers, timeout=30)
+
+            for idx, row in enumerate(rows or []):
+                evidence_key = str(row.get('evidence_key') or f"{lease_key}:evidence:{idx}")
+                fields_payload = {
+                    'Title': evidence_key,
+                    'EvidenceKey': evidence_key,
+                    'TermKey': str(row.get('term_key') or ''),
+                    'LeaseKey': lease_key,
+                    'PropertyId': self._safe_int(row.get('property_id')),
+                    'LeaseIntervalId': self._safe_int(row.get('lease_interval_id')),
+                    'LeaseId': self._safe_int(row.get('lease_id')),
+                    'DocId': str(row.get('doc_id') or ''),
+                    'DocName': str(row.get('doc_name') or ''),
+                    'PageNumber': self._safe_int(row.get('page_number')),
+                    'ExcerptText': str(row.get('excerpt_text') or ''),
+                    'Confidence': float(row.get('confidence') or 0),
+                    'CapturedAt': str(row.get('captured_at') or datetime.utcnow().isoformat()),
+                }
+                create_response = requests.post(items_url, headers=headers, json={'fields': fields_payload}, timeout=30)
+                if create_response.status_code not in [200, 201]:
+                    logger.warning(
+                        f"[STORAGE] Failed creating LeaseTermEvidence row {evidence_key}: "
+                        f"{create_response.status_code} - {create_response.text}"
+                    )
+
+            return True
+        except Exception as e:
+            logger.error(f"[STORAGE] Error replacing LeaseTermEvidence rows: {e}", exc_info=True)
+            return False
+
+    def load_lease_terms_for_lease_key_from_sharepoint_list(self, lease_key: str) -> pd.DataFrame:
+        """Load active LeaseTerms rows by LeaseKey."""
+        if not self._can_use_sharepoint_lists():
+            return pd.DataFrame()
+
+        lease_key = str(lease_key or '').strip()
+        if not lease_key:
+            return pd.DataFrame()
+
+        try:
+            site_id = self._get_site_id()
+            list_id = self._get_lease_terms_list_id()
+            if not site_id or not list_id:
+                return pd.DataFrame()
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            params = {
+                '$expand': 'fields',
+                '$filter': f"fields/LeaseKey eq '{lease_key}' and fields/IsActive eq 1",
+                '$top': 5000,
+            }
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+            if response.status_code != 200:
+                logger.warning(f"[STORAGE] Failed loading LeaseTerms for {lease_key}: {response.status_code} - {response.text}")
+                return pd.DataFrame()
+
+            rows = []
+            for item in response.json().get('value', []):
+                fields = item.get('fields', {})
+                rows.append({
+                    'term_key': fields.get('TermKey'),
+                    'lease_key': fields.get('LeaseKey'),
+                    'property_id': fields.get('PropertyId'),
+                    'lease_interval_id': fields.get('LeaseIntervalId'),
+                    'lease_id': fields.get('LeaseId'),
+                    'term_set_version': fields.get('TermSetVersion'),
+                    'is_active': fields.get('IsActive'),
+                    'term_type': fields.get('TermType'),
+                    'mapped_ar_code': fields.get('MappedArCode'),
+                    'amount': fields.get('Amount'),
+                    'frequency': fields.get('Frequency'),
+                    'start_date': fields.get('StartDate'),
+                    'end_date': fields.get('EndDate'),
+                    'term_source_doc_id': fields.get('TermSourceDocId'),
+                    'term_source_doc_name': fields.get('TermSourceDocName'),
+                    'mapping_confidence': fields.get('MappingConfidence'),
+                })
+            return pd.DataFrame(rows)
+        except Exception as e:
+            logger.error(f"[STORAGE] Error loading LeaseTerms rows: {e}", exc_info=True)
+            return pd.DataFrame()
+
+    def load_lease_term_set_for_lease_key(self, lease_key: str) -> Dict[str, Any]:
+        """Load LeaseTermSet row by LeaseKey."""
+        if not self._can_use_sharepoint_lists():
+            return {}
+
+        lease_key = str(lease_key or '').strip()
+        if not lease_key:
+            return {}
+
+        try:
+            site_id = self._get_site_id()
+            list_id = self._get_lease_term_set_list_id()
+            if not site_id or not list_id:
+                return {}
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            params = {
+                '$expand': 'fields',
+                '$filter': f"fields/LeaseKey eq '{lease_key}'",
+                '$top': 1,
+            }
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+            if response.status_code != 200:
+                return {}
+
+            items = response.json().get('value', [])
+            if not items:
+                return {}
+
+            fields = items[0].get('fields', {})
+            return {
+                'lease_key': fields.get('LeaseKey'),
+                'property_id': fields.get('PropertyId'),
+                'lease_interval_id': fields.get('LeaseIntervalId'),
+                'lease_id': fields.get('LeaseId'),
+                'term_set_version': fields.get('TermSetVersion'),
+                'fingerprint_hash': fields.get('FingerprintHash'),
+                'selected_doc_ids': fields.get('SelectedDocIds'),
+                'last_checked_at': fields.get('LastCheckedAt'),
+                'last_refreshed_at': fields.get('LastRefreshedAt'),
+                'status': fields.get('Status'),
+                'refresh_error': fields.get('RefreshError'),
+                'run_id_last_seen': fields.get('RunIdLastSeen'),
+            }
+        except Exception as e:
+            logger.error(f"[STORAGE] Error loading LeaseTermSet row: {e}", exc_info=True)
+            return {}
+
     def load_exception_months_from_sharepoint_list(self, run_id: str, property_id: int, 
                                                    lease_interval_id: int, ar_code_id: str) -> List[Dict[str, Any]]:
         """
@@ -2559,7 +2949,8 @@ class StorageService:
         findings: pd.DataFrame,
         metadata: Dict[str, Any],
         variance_detail: Optional[pd.DataFrame] = None,
-        original_file_path: Optional[Path] = None
+        original_file_path: Optional[Path] = None,
+        property_name_map: Optional[Dict[int, str]] = None,
     ):
         """Save complete audit run to storage."""
         logger.info(f"[STORAGE] 💾 Starting save for run: {run_id}")
@@ -2618,6 +3009,8 @@ class StorageService:
                 run_id,
                 bucket_results,
                 actual_detail=actual_detail,
+                expected_detail=expected_detail,
+                property_name_map=property_name_map,
             )
             if snapshot_write_ok:
                 validation = self.validate_run_display_snapshots(run_id, bucket_results)

@@ -36,6 +36,7 @@ Property managers need to ensure that all scheduled rent and fee charges are bil
 - **Automated Reconciliation**: Matches thousands of transactions using a three-tier matching algorithm
 - **Exception Management**: Track and resolve billing exceptions by month and AR code
 - **SharePoint Integration**: Store audit runs, track exceptions, and log user activity in SharePoint
+- **Entrata Lease-Term Sidecar**: Extract lease expectations from Entrata documents and overlay on AR-code review without changing core match statuses
 - **Portfolio Dashboard**: Real-time KPIs showing current and historical undercharge/overcharge
 - **Drill-Down Views**: Property → Lease → Exception detail hierarchy
 - **Azure AD Authentication**: Secure, role-based access using Microsoft accounts
@@ -96,6 +97,7 @@ LeaseFileAudit/
 │   ├── rules.py                   # Business rule validation
 │   ├── findings.py                # Exception detection and categorization
 │   ├── metrics.py                 # KPI calculations
+│   ├── entrata_lease_terms.py     # Entrata lease doc selection, term extraction, AR overlay, incremental refresh
 │   └── schemas.py                 # Data validation schemas
 │
 ├── storage/                       # Data persistence layer
@@ -343,6 +345,40 @@ StorageService:
 - `POST /api/exception-months` - Update month status
 - `GET /api/exception-months/<...>` - Get month statuses
 - `GET /api/exception-months/ar-status/<...>` - Get calculated AR code status
+
+### 5. Entrata Lease-Term Sidecar (`audit_engine/entrata_lease_terms.py`)
+
+**Purpose**: Extract lease expectations from Entrata lease packets/addenda and display them in lease drawer UX as a non-disruptive comparison layer.
+
+**Design Guardrail**:
+- Does **not** modify reconciliation status calculation (`MATCHED`, `SCHEDULED_NOT_BILLED`, etc.)
+- Runs as a sidecar enrichment for lease-level display
+
+**Major Responsibilities**:
+- Entrata API helper (`post_entrata`) and lease picklist caching (`fetch_lease_picklist`)
+- Signed packet + addenda selection (`select_lease_packet_and_addenda` / `download_lease_document`)
+- PDF parsing helpers (`parse_pdf_to_text_pack`, `identify_relevant_pages`) with optional PyMuPDF import
+- Scalable term→AR mapping registry (`build_term_ar_code_registry`)
+- AR drawer overlay builder (`build_lease_expectation_overlay`)
+- Incremental refresh pipeline (`refresh_lease_terms_for_lease_interval`)
+
+**Incremental Refresh Model**:
+1. Build lease key (`PROPERTY_ID:LEASE_INTERVAL_ID`)
+2. Check `LeaseTermSet` for last check timestamp and fingerprint
+3. Skip full parse if within recheck TTL
+4. Re-fetch doc metadata and compute deterministic selected-doc fingerprint
+5. Re-parse only when fingerprint changes (or forced)
+6. Fail open: if refresh errors and cached terms exist, return stale cached terms
+
+**Lease View Integration (`web/views.py`)**:
+- `lease_view()` calls `refresh_lease_terms_for_lease_interval(...)`
+- Loads active term rows from SharePoint (`load_lease_terms_for_lease_key_from_sharepoint_list`)
+- Builds AR-code overlay and lease-only expectation list
+- Passes `lease_only_expectations` + `lease_mapping_diagnostics` to `templates/lease.html`
+
+**UI Behavior (`templates/lease.html`)**:
+- Adds lease-only alert block when lease terms exist without matching SC/AR rows
+- Drawer shows `Lease Expectations` section per AR code with summary + evidence when mapped
 
 ---
 
@@ -595,6 +631,57 @@ storage.upsert_exception_month_to_sharepoint_list({
 - Portfolio and Property routes now load bucket/finding result sets from `AuditRuns` (with CSV fallback), instead of relying on full `load_run()` for core result queries.
 - Lease route now loads lease bucket data from `AuditRuns` and only uses persisted `expected_detail`/`actual_detail` inputs for transaction/date enrichment in the drawer.
 
+#### 6. LeaseTermSet
+**Purpose**: One row per lease key with refresh/fingerprint control metadata.
+
+**Required Columns**:
+- `Title` (text)
+- `LeaseKey` (text, indexed)
+- `PropertyId` (number)
+- `LeaseIntervalId` (number)
+- `LeaseId` (number)
+- `TermSetVersion` (number)
+- `FingerprintHash` (text)
+- `SelectedDocIds` (text)
+- `LastCheckedAt` (datetime)
+- `LastRefreshedAt` (datetime)
+- `Status` (text; e.g., `active`, `stale`, `error`)
+- `RefreshError` (multiline text or text)
+- `RunIdLastSeen` (text)
+
+**Usage**:
+- Upserted by `upsert_lease_term_set_to_sharepoint_list()`
+- Read by `load_lease_term_set_for_lease_key()`
+
+#### 7. LeaseTerms
+**Purpose**: Normalized active lease term rows used to build AR overlays.
+
+**Required Columns**:
+- `Title`, `TermKey`, `LeaseKey` (text; `LeaseKey` indexed)
+- `PropertyId`, `LeaseIntervalId`, `LeaseId`, `TermSetVersion` (number)
+- `IsActive` (boolean)
+- `TermType`, `MappedArCode`, `Frequency`, `ConditionsKey`, `MappingVersion` (text)
+- `Amount`, `MappingConfidence` (number)
+- `StartDate`, `EndDate`, `UpdatedAt` (datetime/text per list setup)
+- `TermSourceDocId`, `TermSourceDocName` (text)
+
+**Usage**:
+- Replaced atomically per lease key via `replace_lease_terms_to_sharepoint_list()`
+- Loaded for lease view via `load_lease_terms_for_lease_key_from_sharepoint_list()`
+
+#### 8. LeaseTermEvidence
+**Purpose**: Evidence snippets/page references for extracted lease terms.
+
+**Required Columns**:
+- `Title`, `EvidenceKey`, `TermKey`, `LeaseKey`, `DocId`, `DocName` (text)
+- `PropertyId`, `LeaseIntervalId`, `LeaseId`, `PageNumber` (number)
+- `ExcerptText` (multiline text)
+- `Confidence` (number)
+- `CapturedAt` (datetime)
+
+**Usage**:
+- Replaced per lease key via `replace_lease_term_evidence_to_sharepoint_list()`
+
 ### Document Library Structure
 
 ```
@@ -685,6 +772,23 @@ Status Logic:
 # SharePoint Storage
 USE_SHAREPOINT_STORAGE=true
 SHAREPOINT_LIBRARY_NAME=LeaseFileAudit Runs
+
+# Entrata Lease-Term Extraction
+ENTRATA_API_KEY=<secret>
+ENTRATA_ORG=peakmade
+ENTRATA_DEFAULT_PROPERTY_ID=<optional>
+ENTRATA_DEFAULT_LEASE_ID=<optional>
+OUT_DIR=C:\Users\<user>\Downloads\EntrataLeases
+LEASE_TERM_REFRESH_TTL_HOURS=24
+LEASE_TERM_FORCE_REFRESH=false
+
+# SharePoint Lease-Term Lists (GUID or full list URL)
+LEASE_TERM_SET_LIST_ID=<optional-guid>
+LEASE_TERM_SET_LIST_URL=<optional-list-url>
+LEASE_TERMS_LIST_ID=<optional-guid>
+LEASE_TERMS_LIST_URL=<optional-list-url>
+LEASE_TERM_EVIDENCE_LIST_ID=<optional-guid>
+LEASE_TERM_EVIDENCE_LIST_URL=<optional-list-url>
 
 # Azure AD Authentication
 SHAREPOINT_CLIENT_ID=03cbb033-c84b-4f5e-a348-ddf5cca87fff
@@ -1123,6 +1227,8 @@ def calculate_cumulative_metrics(run_id):
 | `apply_source_mapping()` | `audit_engine/mappings.py` | Convert raw → canonical |
 | `load_exception_months_from_sharepoint_list()` | `storage/service.py` | Get resolution status |
 | `execute_audit_run()` | `web/views.py` | Full audit pipeline |
+| `refresh_lease_terms_for_lease_interval()` | `audit_engine/entrata_lease_terms.py` | Lease-term incremental refresh + fail-open cached fallback |
+| `build_lease_expectation_overlay()` | `audit_engine/entrata_lease_terms.py` | Map lease terms onto AR-code drawer rows |
 
 ### Data Flow Diagram
 
@@ -1172,6 +1278,9 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-02-26**: Added Entrata lease-term sidecar module (`audit_engine/entrata_lease_terms.py`) with document selection, optional PDF parsing, term mapping registry, AR overlay generation, and incremental fingerprint refresh pipeline
+- **2026-02-26**: Added SharePoint normalized lease-term persistence in `storage/service.py` (`LeaseTermSet`, `LeaseTerms`, `LeaseTermEvidence`) including env-driven list ID/URL resolution and lease-key read/write methods
+- **2026-02-26**: Updated lease view/UI integration in `web/views.py` and `templates/lease.html` to render lease expectations by AR code and lease-only expectation alerts without changing reconciliation status logic
 - **2026-02-25**: Made portfolio route snapshot-only in `web/views.py` by loading KPIs/property rows from `RunDisplaySnapshots` without recomputing from run detail payloads
 - **2026-02-25**: Added snapshot write-time validation and run-scoped snapshot loaders in `storage/service.py` to verify expected snapshot counts and improve load reliability
 - **2026-02-25**: Expanded snapshot payload support with `PropertyNameStatic`, `TotalVarianceStatic`, and `TotalLeaseIntervalsStatic` fallback handling so UI display fields persist in snapshots
@@ -1218,6 +1327,6 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 
 ---
 
-**Last Updated**: February 25, 2026  
+**Last Updated**: February 26, 2026  
 **Version**: 1.0  
 **Maintained By**: PeakMade Development Team

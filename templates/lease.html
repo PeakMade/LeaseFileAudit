@@ -45,6 +45,21 @@
         </div>
     </div>
 
+    {% if lease_only_expectations %}
+    <div class="row mb-3">
+        <div class="col-12">
+            <div class="alert alert-warning border" role="alert">
+                <strong>Lease-only Expectations (no SC/AR):</strong>
+                <ul class="mb-0 mt-2">
+                    {% for item in lease_only_expectations %}
+                    <li>{{ item.message if item.message else (item.term_label or 'Unmapped lease term') }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Unified AR Codes Table -->
     <div class="row">
         <div class="col-12">
@@ -207,6 +222,23 @@
         }
         content += `<span class="badge bg-${statusColor}" id="drawerStatusBadge">${backendStatus}</span>`;
         content += '</div>';
+
+        const leaseExpectation = data.lease_expectation || null;
+        if (leaseExpectation) {
+            content += '<div class="mb-3 p-2 border rounded bg-light">';
+            content += '<h6 class="mb-2"><i class="fas fa-file-contract"></i> Lease Expectations</h6>';
+            if (leaseExpectation.has_term) {
+                if (leaseExpectation.summary_text) {
+                    content += `<div><strong>Lease:</strong> ${leaseExpectation.summary_text}</div>`;
+                }
+                if (leaseExpectation.evidence) {
+                    content += `<div class="text-muted mt-1"><small><strong>Evidence:</strong> ${leaseExpectation.evidence}</small></div>`;
+                }
+            } else {
+                content += `<div class="text-muted">${leaseExpectation.message || 'No mapped lease term found for this AR code.'}</div>`;
+            }
+            content += '</div>';
+        }
 
         // Exception Workflow section - moved to top
         if (data.exception_count > 0 || (data.monthly_details || []).some(m => m.status !== 'matched' && m.month_status === 'Resolved')) {

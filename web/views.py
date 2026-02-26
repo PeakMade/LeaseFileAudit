@@ -6,6 +6,7 @@ from werkzeug.utils import secure_filename
 from pathlib import Path
 import pandas as pd
 import logging
+import json
 from datetime import datetime
 from time import perf_counter
 
@@ -18,7 +19,9 @@ from audit_engine import (
     RuleContext,
     generate_findings,
     calculate_kpis,
-    calculate_property_summary
+    calculate_property_summary,
+    build_lease_expectation_overlay,
+    refresh_lease_terms_for_lease_interval,
 )
 from audit_engine.reconcile import reconcile_detail
 from audit_engine.rules import default_registry
@@ -1015,6 +1018,44 @@ def execute_audit_run(
     print(f"\n[EXECUTE_AUDIT_RUN] Loaded raw sources:")
     print(f"  AR Transactions: {sources[config.ar_source.name].shape}")
     print(f"  Scheduled Charges: {sources[config.scheduled_source.name].shape}")
+
+    # Build property name lookup from original uploaded source tabs (authoritative first-pass source).
+    # This is passed through to snapshot persistence so portfolio names are stored correctly at write time.
+    def _safe_int_property_id(value):
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+        try:
+            return int(float(value))
+        except Exception:
+            return None
+
+    def _extract_property_names_from_raw(df: pd.DataFrame, target_map: dict) -> None:
+        if df is None or df.empty:
+            return
+
+        property_id_candidates = ['PROPERTY_ID', 'property_id', 'PropertyId', 'Property ID']
+        property_name_candidates = ['PROPERTY_NAME', 'property_name', 'PropertyName', 'Property Name']
+
+        property_id_column = next((col for col in property_id_candidates if col in df.columns), None)
+        property_name_column = next((col for col in property_name_candidates if col in df.columns), None)
+        if not property_id_column or not property_name_column:
+            return
+
+        for _, row in df[[property_id_column, property_name_column]].dropna().iterrows():
+            property_id_int = _safe_int_property_id(row.get(property_id_column))
+            property_name = str(row.get(property_name_column)).strip()
+            if property_id_int is None or not property_name or property_name.lower() == 'nan':
+                continue
+            if property_id_int not in target_map:
+                target_map[property_id_int] = property_name
+
+    property_name_map = {}
+    _extract_property_names_from_raw(sources.get(config.ar_source.name), property_name_map)
+    _extract_property_names_from_raw(sources.get(config.scheduled_source.name), property_name_map)
+    print(f"[EXECUTE_AUDIT_RUN] Upload-time property name map size: {len(property_name_map)}")
     
     # Apply source mappings to convert RAW -> CANONICAL
     print(f"\n[EXECUTE_AUDIT_RUN] Applying source mappings...")
@@ -1266,6 +1307,7 @@ def execute_audit_run(
         "property_summary": property_summary,
         "portfolio_totals": portfolio_totals,
         "property_execution_stats": property_execution_stats,
+        "property_name_map": property_name_map,
     }
 
 
@@ -1432,7 +1474,8 @@ def upload():
             results["findings"],
             metadata,
             results.get("variance_detail"),
-            file_path  # Pass the original Excel file path
+            file_path,  # Pass the original Excel file path
+            property_name_map=results.get("property_name_map"),
         )
         
         # 🧹 CLEAR CACHE after new upload
@@ -2734,6 +2777,51 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         status_sort_order = {'Open': 0, 'Resolved': 1, 'Passed': 2}
         all_ar_codes = sorted(all_ar_codes, key=lambda x: (status_sort_order.get(x['status_label'], 99), -x['exception_count'], x['ar_code_id']))
 
+        lease_only_expectations = []
+        lease_mapping_diagnostics = {}
+        try:
+            lease_key = f"{int(float(property_id))}:{int(float(lease_interval_id))}"
+
+            refresh_ttl_hours = int(os.getenv('LEASE_TERM_REFRESH_TTL_HOURS', '24'))
+            force_refresh = os.getenv('LEASE_TERM_FORCE_REFRESH', 'false').lower() == 'true'
+
+            refresh_result = refresh_lease_terms_for_lease_interval(
+                storage_service=storage,
+                property_id=int(float(property_id)),
+                lease_interval_id=int(float(lease_interval_id)),
+                lease_id=lease_id,
+                force_refresh=force_refresh,
+                min_recheck_hours=refresh_ttl_hours,
+            )
+
+            lease_terms_df = refresh_result.get('terms_df')
+            if isinstance(lease_terms_df, pd.DataFrame) and not lease_terms_df.empty:
+                lease_term_records = lease_terms_df.to_dict(orient='records')
+            else:
+                lease_terms_df = storage.load_lease_terms_for_lease_key_from_sharepoint_list(lease_key)
+                lease_term_records = lease_terms_df.to_dict(orient='records') if not lease_terms_df.empty else []
+
+            if not lease_term_records:
+                lease_term_records = (
+                    run_metadata.get('lease_terms_extracted')
+                    or run_metadata.get('lease_terms')
+                    or run_metadata.get('entrata_lease_terms')
+                    or []
+                )
+
+            if isinstance(lease_term_records, str):
+                try:
+                    lease_term_records = json.loads(lease_term_records)
+                except Exception:
+                    lease_term_records = []
+
+            overlay = build_lease_expectation_overlay(all_ar_codes, lease_term_records)
+            all_ar_codes = overlay.get('ar_groups', all_ar_codes)
+            lease_only_expectations = overlay.get('lease_only_expectations', [])
+            lease_mapping_diagnostics = overlay.get('mapping_diagnostics', {})
+        except Exception as lease_overlay_error:
+            logger.warning(f"[LEASE_VIEW] Lease expectation overlay skipped: {lease_overlay_error}")
+
         # Recalculate lease summary totals from unresolved exception months only.
         # Keep undercharge and overcharge independent (do not net them).
         unresolved_exception_months = []
@@ -2808,6 +2896,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             matched_records=matched_list,
             matched_count=len(matched_list),
             all_ar_codes=all_ar_codes,
+            lease_only_expectations=lease_only_expectations,
+            lease_mapping_diagnostics=lease_mapping_diagnostics,
             total_variance=total_variance,
             total_expected=total_expected,
             total_actual=total_actual,
