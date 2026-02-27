@@ -398,20 +398,114 @@ def parse_pdf_to_text_pack(pdf_path: str) -> dict:
         doc = fitz.open(pdf_path)
         result["total_pages"] = len(doc)
 
+        def _score_text_candidate(candidate_text: str) -> float:
+            text_value = str(candidate_text or "")
+            if not text_value.strip():
+                return -1.0
+
+            length = len(text_value)
+            alpha_count = sum(1 for ch in text_value if ch.isalpha())
+            digit_count = sum(1 for ch in text_value if ch.isdigit())
+            alnum_count = alpha_count + digit_count
+            symbol_count = sum(1 for ch in text_value if not ch.isalnum() and not ch.isspace())
+
+            alnum_ratio = alnum_count / max(1, length)
+            symbol_ratio = symbol_count / max(1, length)
+
+            keyword_hits = len(re.findall(
+                r"rent|lease|term|amount|installment|monthly|start|end|date|application|administration",
+                text_value,
+                re.IGNORECASE,
+            ))
+
+            score = (
+                alnum_ratio * 100.0
+                - symbol_ratio * 40.0
+                + min(length, 12000) / 400.0
+                + keyword_hits * 2.0
+            )
+            return score
+
+        def _extract_page_text_best_effort(page: Any) -> tuple[str, str]:
+            candidates: list[tuple[str, str]] = []
+
+            try:
+                candidates.append(("text", page.get_text("text") or ""))
+            except Exception:
+                pass
+
+            try:
+                blocks = page.get_text("blocks") or []
+                block_parts = []
+                for block in blocks:
+                    if len(block) >= 5 and isinstance(block[4], str):
+                        block_parts.append(block[4])
+                candidates.append(("blocks", "\n".join(block_parts)))
+            except Exception:
+                pass
+
+            try:
+                words = page.get_text("words") or []
+                words_sorted = sorted(words, key=lambda item: (item[5], item[6], item[7], item[1], item[0]))
+                word_parts = [str(item[4]) for item in words_sorted if len(item) >= 5 and str(item[4]).strip()]
+                candidates.append(("words", " ".join(word_parts)))
+            except Exception:
+                pass
+
+            try:
+                text_dict = page.get_text("dict") or {}
+                dict_parts: list[str] = []
+                for block in text_dict.get("blocks", []):
+                    for line in block.get("lines", []):
+                        line_parts = []
+                        for span in line.get("spans", []):
+                            span_text = str(span.get("text") or "")
+                            if span_text:
+                                line_parts.append(span_text)
+                        if line_parts:
+                            dict_parts.append("".join(line_parts))
+                candidates.append(("dict", "\n".join(dict_parts)))
+            except Exception:
+                pass
+
+            if not candidates:
+                return "", "none"
+
+            best_mode, best_text = "none", ""
+            best_score = -1.0
+            for mode, candidate_text in candidates:
+                score = _score_text_candidate(candidate_text)
+                if score > best_score:
+                    best_score = score
+                    best_mode = mode
+                    best_text = candidate_text
+
+            return best_text or "", best_mode
+
         logger.info(f"Extracting all pages (total pages: {len(doc)})...")
         for page_index in range(len(doc)):
             page = doc[page_index]
             page_num = page_index + 1
 
-            text = page.get_text("text") or ""
+            text, extraction_mode = _extract_page_text_best_effort(page)
 
-            if len(text.strip()) < 100:
-                blocks = page.get_text("blocks")
-                text_parts = []
-                for block in blocks:
-                    if len(block) >= 5 and isinstance(block[4], str):
-                        text_parts.append(block[4])
-                text = "\n".join(text_parts)
+            form_field_lines: list[str] = []
+            try:
+                widgets = page.widgets() or []
+                for widget in widgets:
+                    field_name = str(getattr(widget, "field_name", "") or "").strip()
+                    field_value = str(getattr(widget, "field_value", "") or "").strip()
+                    if not field_value:
+                        continue
+                    if field_name:
+                        form_field_lines.append(f"{field_name}: {field_value}")
+                    else:
+                        form_field_lines.append(field_value)
+            except Exception:
+                form_field_lines = []
+
+            if form_field_lines:
+                text = (text + "\n\n[FORM_FIELDS]\n" + "\n".join(form_field_lines)).strip()
 
             char_count = len(text)
             preview = text[:300] if text else ""
@@ -420,10 +514,11 @@ def parse_pdf_to_text_pack(pdf_path: str) -> dict:
                 "page_number": page_num,
                 "char_count": char_count,
                 "text": text,
-                "preview": preview
+                "preview": preview,
+                "extraction_mode": extraction_mode,
             })
 
-            logger.info(f"Page {page_num}: Extracted {char_count} characters")
+            logger.info(f"Page {page_num}: Extracted {char_count} characters (mode={extraction_mode})")
 
         doc.close()
     except Exception as e:
@@ -1505,17 +1600,45 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     base_rent_candidates: list[dict[str, Any]] = []
 
     installment_pattern = re.compile(
-        r"installments?\s+of\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)\s*(?:each|per\s+installment)?",
+        r"installments?\s+of\s*\$?\s*([0-9][0-9,\s]*(?:\.\s*\d{2})?)\s*(?:each|per\s+installment)?",
         re.IGNORECASE,
     )
     monthly_patterns = [
-        re.compile(r"(?:monthly|base)\s+rent(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)", re.IGNORECASE),
-        re.compile(r"rent\s+amount(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)", re.IGNORECASE),
-        re.compile(r"amount\s+of\s+each\s+rent\s+installment(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)", re.IGNORECASE),
+        re.compile(r"(?:monthly|base)\s+rent(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,\s]*(?:\.\s*\d{2})?)", re.IGNORECASE),
+        re.compile(r"rent\s+amount(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,\s]*(?:\.\s*\d{2})?)", re.IGNORECASE),
+        re.compile(r"amount\s+of\s+each\s+rent\s+installment(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,\s]*(?:\.\s*\d{2})?)", re.IGNORECASE),
     ]
 
+    def _normalize_amount_fragment(amount_fragment: str) -> str | None:
+        fragment = str(amount_fragment or "")
+        if not fragment.strip():
+            return None
+
+        fragment = re.sub(r"\s+", "", fragment)
+        fragment = re.sub(r"[^0-9.,]", "", fragment)
+        if not fragment:
+            return None
+
+        if "," in fragment and "." in fragment:
+            fragment = fragment.replace(",", "")
+        elif "," in fragment and "." not in fragment:
+            comma_parts = fragment.split(",")
+            if len(comma_parts[-1]) == 2:
+                fragment = "".join(comma_parts[:-1]) + "." + comma_parts[-1]
+            else:
+                fragment = "".join(comma_parts)
+
+        if fragment.count(".") > 1:
+            first = fragment.find(".")
+            fragment = fragment[: first + 1] + fragment[first + 1 :].replace(".", "")
+
+        return fragment if re.search(r"\d", fragment) else None
+
     def _append_rent_candidate(amount_str: str, context: str, score: int) -> None:
-        normalized = normalize_money(f"${amount_str}")
+        normalized_fragment = _normalize_amount_fragment(amount_str)
+        if not normalized_fragment:
+            return
+        normalized = normalize_money(f"${normalized_fragment}")
         if not normalized:
             return
         amount_value = _as_float(normalized)
@@ -1583,14 +1706,92 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
 
         return candidates
 
+    def _extract_application_admin_from_clause_windows(text_value: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Multi-capture extraction for clauses that mention application/admin fees together.
+
+        Example target:
+        "Non-Refundable Application Fee shall be $50 and the Administration Fee shall be $20"
+        """
+        application_candidates: list[dict[str, Any]] = []
+        admin_candidates: list[dict[str, Any]] = []
+
+        clause_anchor = re.compile(
+            r"(?:application\s+fee|admin(?:istration|istrative)?\s+fee).{0,260}",
+            re.IGNORECASE | re.DOTALL,
+        )
+        app_amount_regex = re.compile(
+            r"application\s+fee.{0,60}?\$\s*([0-9][0-9,]*(?:\.\d{2})?)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        admin_amount_regex = re.compile(
+            r"admin(?:istration|istrative)?\s+fee.{0,60}?\$\s*([0-9][0-9,]*(?:\.\d{2})?)",
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        for clause_match in clause_anchor.finditer(text_value):
+            window_text = text_value[max(0, clause_match.start() - 40):min(len(text_value), clause_match.end() + 40)]
+            window_text_normalized = re.sub(r"\s+", " ", window_text).strip()
+            window_lower = window_text_normalized.lower()
+
+            if any(token in window_lower for token in ["waived", "waiver", "refund", "credited"]):
+                continue
+
+            app_match = app_amount_regex.search(window_text)
+            if app_match:
+                app_normalized = normalize_money(f"${app_match.group(1)}")
+                app_amount = _as_float(app_normalized) if app_normalized else None
+                if app_amount is not None and app_amount > 0:
+                    application_candidates.append({
+                        "amount": app_amount,
+                        "evidence": window_text_normalized,
+                    })
+
+            admin_match = admin_amount_regex.search(window_text)
+            if admin_match:
+                admin_normalized = normalize_money(f"${admin_match.group(1)}")
+                admin_amount = _as_float(admin_normalized) if admin_normalized else None
+                if admin_amount is not None and admin_amount > 0:
+                    admin_candidates.append({
+                        "amount": admin_amount,
+                        "evidence": window_text_normalized,
+                    })
+
+        return application_candidates, admin_candidates
+
+    def _dedupe_fee_candidates(candidates: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[float, str]] = set()
+        for candidate in candidates:
+            amount = _as_float(candidate.get("amount"))
+            evidence = re.sub(r"\s+", " ", str(candidate.get("evidence") or "")).strip()
+            if amount is None or amount <= 0 or not evidence:
+                continue
+            key = (amount, evidence.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append({"amount": amount, "evidence": evidence})
+        return deduped
+
     application_fee_candidates = _extract_fee_candidates(
         all_text,
         include_patterns=[r"application\s+fee"],
     )
     admin_fee_candidates = _extract_fee_candidates(
         all_text,
-        include_patterns=[r"admin(?:istrative)?\s+fee"],
+        include_patterns=[r"admin(?:istration|istrative)?\s+fee"],
     )
+    clause_app_candidates, clause_admin_candidates = _extract_application_admin_from_clause_windows(all_text)
+    if clause_app_candidates:
+        application_fee_candidates = _dedupe_fee_candidates(clause_app_candidates)
+    else:
+        application_fee_candidates = _dedupe_fee_candidates(application_fee_candidates)
+
+    if clause_admin_candidates:
+        admin_fee_candidates = _dedupe_fee_candidates(clause_admin_candidates)
+    else:
+        admin_fee_candidates = _dedupe_fee_candidates(admin_fee_candidates)
     amenity_patterns = [r"amenity\s+premium", r"premium\s+feature", r"premium\s+amount", r"floorplan\s+rate\s+addendum"]
     amenity_candidates = _extract_fee_candidates(
         addenda_text if addenda_text.strip() else all_text,
