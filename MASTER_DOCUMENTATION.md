@@ -357,10 +357,31 @@ StorageService:
 **Major Responsibilities**:
 - Entrata API helper (`post_entrata`) and lease picklist caching (`fetch_lease_picklist`)
 - Signed packet + addenda selection (`select_lease_packet_and_addenda` / `download_lease_document`)
-- PDF parsing helpers (`parse_pdf_to_text_pack`, `identify_relevant_pages`) with optional PyMuPDF import
+- PDF parsing helpers (`parse_pdf_to_text_pack`, `identify_relevant_pages`) with PyMuPDF text extraction
+- Parking-specific extraction helper (`extract_parking_fee`) to prioritize addendum parking cost language
+- Primary packet + addenda split extraction model (base rent/dates from packet; fees from addenda/context)
 - Scalable term→AR mapping registry (`build_term_ar_code_registry`)
 - AR drawer overlay builder (`build_lease_expectation_overlay`)
 - Incremental refresh pipeline (`refresh_lease_terms_for_lease_interval`)
+
+**Term Mapping Rules Source**:
+- Default term→AR-code mappings are centralized in `audit_engine/lease_term_rules.py` (`DEFAULT_TERM_TO_AR_CODE_RULES`)
+- `build_term_ar_code_registry(...)` in `audit_engine/entrata_lease_terms.py` loads these defaults and supports optional overrides
+- Current defaults include numeric Entrata AR-code IDs for:
+   - `BASE_RENT` (`154771`)
+   - `PET_RENT` (`155034`)
+   - `PARKING` (`155052`, `155385`)
+   - `UTILITY` (`155026`, `155030`, `155023`)
+   - `APPLICATION_FEE` (`154788`)
+   - `ADMIN_FEE` (`155012`)
+   - `AMENITY_PREMIUM` (`155007`)
+
+**Current Extraction Notes (v2)**:
+- Avoids hard dependency on numbered clause anchors; uses keyword/context scoring
+- Base rent prioritizes monthly/installment language over total-rent-only values
+- Date parsing normalizes mixed formats (numeric + textual/ordinal)
+- Parking extraction uses section-aware scoring to avoid unrelated `$` values and improve addendum capture
+- Extraction emits `[LEASE TERMS]` logs for term rows and evidence snippets (including page number)
 
 **Incremental Refresh Model**:
 1. Build lease key (`PROPERTY_ID:LEASE_INTERVAL_ID`)
@@ -1215,6 +1236,7 @@ def calculate_cumulative_metrics(run_id):
 | `audit_engine/mappings.py` | Source data transformations, ONLY place with raw column names |
 | `audit_engine/canonical_fields.py` | Field name standardization |
 | `storage/service.py` | SharePoint + local file operations |
+| `audit_engine/lease_term_rules.py` | Default lease term → AR code/frequency mapping rules |
 | `config.py` | All configuration, read from environment variables |
 | `templates/lease.html` | Exception detail view with resolution UI |
 
@@ -1278,6 +1300,9 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-02-27**: Externalized default lease-term AR mapping rules to `audit_engine/lease_term_rules.py` and wired `audit_engine/entrata_lease_terms.py` to import shared defaults (`DEFAULT_TERM_TO_AR_CODE_RULES`)
+- **2026-02-27**: Updated lease-term extraction to v2 behavior in `audit_engine/entrata_lease_terms.py` (primary/addenda-aware parsing, monthly/installment base-rent prioritization, expanded date normalization, application/admin/amenity term extraction, parking section-scored extraction)
+- **2026-02-27**: Added richer lease-term extraction logs (`[LEASE TERMS]`) including mapped term rows and page-linked evidence snippets for troubleshooting
 - **2026-02-26**: Added Entrata lease-term sidecar module (`audit_engine/entrata_lease_terms.py`) with document selection, optional PDF parsing, term mapping registry, AR overlay generation, and incremental fingerprint refresh pipeline
 - **2026-02-26**: Added SharePoint normalized lease-term persistence in `storage/service.py` (`LeaseTermSet`, `LeaseTerms`, `LeaseTermEvidence`) including env-driven list ID/URL resolution and lease-key read/write methods
 - **2026-02-26**: Updated lease view/UI integration in `web/views.py` and `templates/lease.html` to render lease expectations by AR code and lease-only expectation alerts without changing reconciliation status logic

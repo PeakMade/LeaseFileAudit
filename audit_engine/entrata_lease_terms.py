@@ -26,6 +26,7 @@ import pandas as pd
 import requests
 
 from .canonical_fields import CanonicalField
+from .lease_term_rules import DEFAULT_TERM_TO_AR_CODE_RULES
 
 
 def _load_dotenv_if_available() -> None:
@@ -523,6 +524,208 @@ def identify_relevant_pages(text_pack: dict) -> dict:
         "rent_pages": rent_pages,
         "premium_pages": premium_pages,
         "parking_pages": parking_pages
+    }
+
+
+def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None:
+    """Extract parking-related amount, prioritizing parking addendum sections."""
+    if page_hints is None:
+        page_hints = identify_relevant_pages(text_pack)
+
+    pages_by_number = {
+        page_info["page_number"]: page_info.get("text", page_info.get("preview", ""))
+        for page_info in text_pack.get("pages", [])
+        if page_info.get("page_number") is not None
+    }
+
+    parking_pages = page_hints.get("parking_pages", [])
+    if not parking_pages:
+        parking_pages = [
+            page_number
+            for page_number, page_text in pages_by_number.items()
+            if re.search(r"parking|garage|carport", page_text or "", re.IGNORECASE)
+        ]
+
+    if not parking_pages:
+        return None
+
+    amount_pattern = re.compile(r"\$\s*(\d{1,4}(?:,\d{3})*(?:\.\d{2})?)")
+    parking_signal_pattern = re.compile(
+        r"parking\s+addendum|parking\s+fee|monthly\s+parking|garage\s+fee|carport|reserved\s+parking|cost\s+for\s+parking",
+        re.IGNORECASE,
+    )
+    monthly_signal_pattern = re.compile(r"monthly|per\s+month|/\s*month|per\s+vehicle", re.IGNORECASE)
+
+    candidates = []
+
+    for page_number in parking_pages:
+        page_text = pages_by_number.get(page_number, "")
+        if not page_text:
+            continue
+
+        space_rent_match = re.search(
+            r"rent\s+for\s+the\s+space.{0,220}?\$\s*(\d{1,4}(?:,\d{3})*(?:\.\d{2})?)\s*(?:per\s+month|monthly)",
+            page_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if space_rent_match:
+            raw_amount = space_rent_match.group(1)
+            normalized = normalize_money(raw_amount)
+            if normalized:
+                snippet_start = max(0, space_rent_match.start() - 120)
+                snippet_end = min(len(page_text), space_rent_match.end() + 120)
+                snippet = re.sub(r"\s+", " ", page_text[snippet_start:snippet_end]).strip()
+                candidates.append({
+                    "value": f"${float(normalized):.2f}",
+                    "normalized": normalized,
+                    "page_number": page_number,
+                    "evidence": snippet,
+                    "score": 14,
+                })
+
+        lines = [re.sub(r"\s+", " ", raw).strip() for raw in page_text.splitlines() if raw.strip()]
+        for index, line in enumerate(lines):
+            if not re.search(r"parking|garage|carport", line, re.IGNORECASE):
+                continue
+
+            amount_match = amount_pattern.search(line)
+            evidence_line = line
+
+            if not amount_match and index + 1 < len(lines):
+                next_line = lines[index + 1]
+                next_amount_match = amount_pattern.search(next_line)
+                if next_amount_match:
+                    amount_match = next_amount_match
+                    evidence_line = f"{line} | {next_line}"
+
+            if not amount_match:
+                continue
+
+            amount_str = amount_match.group(1)
+            normalized = normalize_money(amount_str)
+            if not normalized:
+                continue
+
+            evidence_lower = evidence_line.lower()
+            if any(token in evidence_lower for token in ["replacement", "decal", "unreturned", "fine", "violation", "nsf"]):
+                continue
+
+            score = 0
+            if parking_signal_pattern.search(evidence_line):
+                score += 3
+            if monthly_signal_pattern.search(evidence_line):
+                score += 2
+            if re.search(r"addendum", evidence_line, re.IGNORECASE):
+                score += 1
+
+            candidates.append({
+                "value": f"${amount_str}",
+                "normalized": normalized,
+                "page_number": page_number,
+                "evidence": evidence_line,
+                "score": score,
+            })
+
+        lower_text = page_text.lower()
+        cost_section_index = lower_text.find("cost for parking")
+        has_parking_cost_section = (
+            cost_section_index >= 0
+            or ("resident agrees to pay" in lower_text and "per vehicle" in lower_text)
+            or ("parking fee" in lower_text and "per vehicle" in lower_text)
+        )
+
+        if has_parking_cost_section:
+            ordinal_sequence_match = re.search(
+                r"\b\d{1,2}(?:st|nd|rd|th)\b\s+(\d{1,4}(?:\.\d{2})?)\s+(\d{1,3})\s+(\d{1,4}(?:\.\d{2})?)\b",
+                page_text,
+                re.IGNORECASE,
+            )
+            if ordinal_sequence_match:
+                parking_fee_raw = ordinal_sequence_match.group(1)
+                parking_fee_normalized = normalize_money(parking_fee_raw)
+                if parking_fee_normalized:
+                    snippet_start = max(0, ordinal_sequence_match.start() - 120)
+                    snippet_end = min(len(page_text), ordinal_sequence_match.end() + 120)
+                    snippet = re.sub(r"\s+", " ", page_text[snippet_start:snippet_end]).strip()
+                    candidates.append({
+                        "value": f"${float(parking_fee_normalized):.2f}",
+                        "normalized": parking_fee_normalized,
+                        "page_number": page_number,
+                        "evidence": snippet,
+                        "score": 12,
+                    })
+
+            for match in re.finditer(r"\b(\d{1,4}(?:\.\d{2})?)\b", page_text):
+                raw_number = match.group(1)
+                try:
+                    amount_value = float(raw_number)
+                except ValueError:
+                    continue
+
+                if amount_value <= 0 or amount_value > 250:
+                    continue
+
+                context_start = max(0, match.start() - 140)
+                context_end = min(len(page_text), match.end() + 140)
+                context = page_text[context_start:context_end]
+                context_lower = context.lower()
+                in_cost_section_tail = cost_section_index >= 0 and match.start() >= cost_section_index
+
+                score = 0
+                if any(token in context_lower for token in ["cost for parking", "parking fee", "per vehicle"]):
+                    score += 5
+                if any(token in context_lower for token in ["monthly", "one-time"]):
+                    score += 2
+                if 20 <= amount_value <= 500:
+                    score += 2
+                if in_cost_section_tail:
+                    score += 3
+
+                if any(token in context_lower for token in ["nsf", "returned check"]):
+                    score -= 6
+                if any(token in context_lower for token in ["day of the month", "days delinquent"]):
+                    score -= 4
+                if any(token in context_lower for token in ["vehicle 1", "vehicle 2", "vehicle 3", "parking space", "permit number", "license plate", "unit no", "zip code"]):
+                    score -= 6
+                if any(token in context_lower for token in ["ip address", "date signed", "signature details", "replacement", "decal", "fine", "violation", "unreturned"]):
+                    score -= 8
+                if re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", context):
+                    score -= 8
+                if re.search(r"\b\d{1,2}:\d{2}:\d{2}\b", context):
+                    score -= 8
+
+                if score < 1:
+                    continue
+
+                normalized = normalize_money(raw_number)
+                if not normalized:
+                    continue
+
+                evidence_line = re.sub(r"\s+", " ", context).strip()
+                candidates.append({
+                    "value": f"${float(normalized):.2f}",
+                    "normalized": normalized,
+                    "page_number": page_number,
+                    "evidence": evidence_line,
+                    "score": score,
+                })
+
+    if not candidates:
+        return None
+
+    candidates_sorted = sorted(
+        candidates,
+        key=lambda item: (item["score"], item["page_number"], -float(item["normalized"])),
+        reverse=True,
+    )
+    best = candidates_sorted[0]
+
+    return {
+        "value": best["value"],
+        "normalized": best["normalized"],
+        "page_number": best["page_number"],
+        "evidence": best["evidence"],
+        "candidates": candidates_sorted if len(candidates_sorted) > 1 else None,
     }
 
 
@@ -1165,60 +1368,470 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     all_text = "\n".join([str(page.get("text") or "") for page in pages])
     all_text_lower = all_text.lower()
 
+    primary_pages = pages
+    source_packet_path = str(doc_info.get("source_packet_path") or "").strip()
+    if source_packet_path and os.path.exists(source_packet_path):
+        try:
+            primary_pack = parse_pdf_to_text_pack(source_packet_path)
+            candidate_primary_pages = list(primary_pack.get("pages", []))
+            if candidate_primary_pages:
+                primary_pages = candidate_primary_pages
+        except Exception as e:
+            logger.warning(f"[LEASE TERMS] Could not parse source packet path for primary-only extraction: {e}")
+
+    primary_text = "\n".join([str(page.get("text") or "") for page in primary_pages])
+    primary_text_lower = primary_text.lower()
+    primary_page_count = len(primary_pages)
+    addenda_pages = pages[primary_page_count:] if len(pages) > primary_page_count else []
+    addenda_text = "\n".join([str(page.get("text") or "") for page in addenda_pages])
+
     terms: list[dict[str, Any]] = []
     evidence_rows: list[dict[str, Any]] = []
 
-    date_pattern = r"\b\d{1,2}/\d{1,2}/\d{4}\b"
-    date_matches = re.findall(date_pattern, all_text)
-    lease_start = date_matches[0] if len(date_matches) > 0 else None
-    lease_end = date_matches[1] if len(date_matches) > 1 else None
+    def _normalize_date_value(raw_date: str) -> str | None:
+        cleaned = str(raw_date or "").strip()
+        if not cleaned:
+            return None
+        cleaned = re.sub(r"(\d{1,2})(st|nd|rd|th)\b", r"\1", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bday\s+of\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        parsed = pd.to_datetime(cleaned, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        return parsed.strftime("%Y-%m-%d")
 
-    term_specs = [
-        ("BASE_RENT", "RENT", [r"base\s+rent", r"monthly\s+rent", r"rent\s+amount"]),
-        ("PARKING", "PARK", [r"parking\s+fee", r"monthly\s+parking", r"garage\s+fee", r"reserved\s+parking"]),
-        ("PET_RENT", "PETR", [r"pet\s+rent", r"pet\s+fee"]),
+    date_patterns = [
+        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b",
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b",
+        r"\b\d{1,2}(?:st|nd|rd|th)?\s+day\s+of\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*,?\s*\d{4}\b",
+    ]
+    date_candidates: list[dict[str, Any]] = []
+    for pattern in date_patterns:
+        for match in re.finditer(pattern, primary_text, re.IGNORECASE):
+            raw_date = match.group(0)
+            normalized = _normalize_date_value(raw_date)
+            if not normalized:
+                continue
+            context_start = max(0, match.start() - 80)
+            context_end = min(len(primary_text), match.end() + 80)
+            context = primary_text[context_start:context_end]
+            context_lower = context.lower()
+            start_score = 0
+            end_score = 0
+            if any(token in context_lower for token in ["begin", "start", "commencement", "move-in", "move in", "from"]):
+                start_score += 2
+            if any(token in context_lower for token in ["end", "expiration", "expire", "terminate", "move-out", "move out", "to"]):
+                end_score += 2
+            date_candidates.append({
+                "raw": raw_date,
+                "normalized": normalized,
+                "index": match.start(),
+                "context": re.sub(r"\s+", " ", context).strip(),
+                "start_score": start_score,
+                "end_score": end_score,
+            })
+
+    lease_start = None
+    lease_end = None
+
+    def _lease_window_months(start_value: str | None, end_value: str | None) -> float | None:
+        if not start_value or not end_value:
+            return None
+        start_dt = pd.to_datetime(start_value, errors="coerce")
+        end_dt = pd.to_datetime(end_value, errors="coerce")
+        if pd.isna(start_dt) or pd.isna(end_dt) or end_dt <= start_dt:
+            return None
+        return (end_dt - start_dt).days / 30.4375
+
+    def _is_valid_lease_window(start_value: str | None, end_value: str | None) -> bool:
+        months = _lease_window_months(start_value, end_value)
+        return months is not None and 6.0 <= months <= 18.0
+
+    if date_candidates:
+        start_choice = sorted(date_candidates, key=lambda d: (d["start_score"], -d["index"]), reverse=True)[0]
+        end_choice = sorted(date_candidates, key=lambda d: (d["end_score"], -d["index"]), reverse=True)[0]
+        if start_choice["normalized"] != end_choice["normalized"]:
+            start_dt = pd.to_datetime(start_choice["normalized"], errors="coerce")
+            end_dt = pd.to_datetime(end_choice["normalized"], errors="coerce")
+            if not pd.isna(start_dt) and not pd.isna(end_dt) and start_dt < end_dt:
+                lease_start = start_choice["normalized"]
+                lease_end = end_choice["normalized"]
+
+    if not lease_start or not lease_end:
+        ordered_unique_dates = []
+        seen_dates = set()
+        for item in sorted(date_candidates, key=lambda d: d["index"]):
+            norm_val = item["normalized"]
+            if norm_val in seen_dates:
+                continue
+            seen_dates.add(norm_val)
+            ordered_unique_dates.append(norm_val)
+        if len(ordered_unique_dates) >= 2:
+            lease_start = lease_start or ordered_unique_dates[0]
+            lease_end = lease_end or ordered_unique_dates[1]
+
+    if not _is_valid_lease_window(lease_start, lease_end):
+        unique_dates = []
+        seen = set()
+        for item in sorted(date_candidates, key=lambda d: d["index"]):
+            value = item["normalized"]
+            if value in seen:
+                continue
+            seen.add(value)
+            unique_dates.append(value)
+
+        best_pair: tuple[str, str] | None = None
+        best_distance = float("inf")
+        for i in range(len(unique_dates)):
+            for j in range(i + 1, len(unique_dates)):
+                start_val = unique_dates[i]
+                end_val = unique_dates[j]
+                months = _lease_window_months(start_val, end_val)
+                if months is None or months < 6.0 or months > 18.0:
+                    continue
+                distance = abs(months - 12.0)
+                if distance < best_distance:
+                    best_distance = distance
+                    best_pair = (start_val, end_val)
+
+        if best_pair is not None:
+            lease_start, lease_end = best_pair
+        else:
+            lease_start = None
+            lease_end = None
+
+    base_rent_amount: float | None = None
+    base_rent_evidence: str | None = None
+    base_rent_candidates: list[dict[str, Any]] = []
+
+    installment_pattern = re.compile(
+        r"installments?\s+of\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)\s*(?:each|per\s+installment)?",
+        re.IGNORECASE,
+    )
+    monthly_patterns = [
+        re.compile(r"(?:monthly|base)\s+rent(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)", re.IGNORECASE),
+        re.compile(r"rent\s+amount(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)", re.IGNORECASE),
+        re.compile(r"amount\s+of\s+each\s+rent\s+installment(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,]*(?:\.\d{2})?)", re.IGNORECASE),
     ]
 
-    for term_type, mapped_ar_code, patterns in term_specs:
-        matched_pattern = None
-        for pattern in patterns:
-            if re.search(pattern, all_text_lower, re.IGNORECASE):
-                matched_pattern = pattern
-                break
-        if not matched_pattern:
-            continue
+    def _append_rent_candidate(amount_str: str, context: str, score: int) -> None:
+        normalized = normalize_money(f"${amount_str}")
+        if not normalized:
+            return
+        amount_value = _as_float(normalized)
+        if amount_value is None or amount_value <= 0:
+            return
+        context_lower = context.lower()
+        if "total rent" in context_lower and "installment" not in context_lower:
+            return
+        if any(token in context_lower for token in ["income", "salary", "wage", "premium"]):
+            return
+        base_rent_candidates.append({
+            "amount": amount_value,
+            "context": re.sub(r"\s+", " ", context).strip(),
+            "score": score,
+        })
 
-        amount_match = re.search(r"\$\s*([0-9][0-9,]*(?:\.\d{2})?)", all_text)
-        amount = None
-        if amount_match:
-            amount = _as_float(amount_match.group(1))
+    for page in primary_pages:
+        page_text = str(page.get("text") or "")
+        for match in installment_pattern.finditer(page_text):
+            context = page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]
+            _append_rent_candidate(match.group(1), context, score=10)
 
-        term_key = f"{term_type}:{mapped_ar_code}:{lease_start or ''}:{lease_end or ''}"
+        for pattern in monthly_patterns:
+            for match in pattern.finditer(page_text):
+                context = page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]
+                _append_rent_candidate(match.group(1), context, score=8)
+
+    if base_rent_candidates:
+        best_rent = sorted(base_rent_candidates, key=lambda c: (c["score"], c["amount"]), reverse=True)[0]
+        base_rent_amount = best_rent["amount"]
+        base_rent_evidence = best_rent["context"]
+
+    def _extract_fee_candidates(
+        text_value: str,
+        include_patterns: Sequence[str],
+        exclude_patterns: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        exclude_patterns = list(exclude_patterns or [])
+        candidates: list[dict[str, Any]] = []
+        seen_keys: set[tuple[float, str]] = set()
+        for include_pattern in include_patterns:
+            forward_regex = re.compile(
+                rf"{include_pattern}.{{0,40}}?\$\s*([0-9][0-9,]*(?:\.\d{{2}})?)",
+                re.IGNORECASE | re.DOTALL,
+            )
+            for match in forward_regex.finditer(text_value):
+                evidence = text_value[max(0, match.start() - 40):min(len(text_value), match.end() + 40)]
+                evidence_lower = evidence.lower()
+                if any(re.search(pattern, evidence_lower, re.IGNORECASE) for pattern in exclude_patterns):
+                    continue
+                normalized = normalize_money(f"${match.group(1)}")
+                if not normalized:
+                    continue
+                amount = _as_float(normalized)
+                if amount is None or amount <= 0:
+                    continue
+                key = (amount, re.sub(r"\s+", " ", evidence).strip().lower())
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                candidates.append({
+                    "amount": amount,
+                    "evidence": re.sub(r"\s+", " ", evidence).strip(),
+                })
+
+        return candidates
+
+    application_fee_candidates = _extract_fee_candidates(
+        all_text,
+        include_patterns=[r"application\s+fee"],
+    )
+    admin_fee_candidates = _extract_fee_candidates(
+        all_text,
+        include_patterns=[r"admin(?:istrative)?\s+fee"],
+    )
+    amenity_patterns = [r"amenity\s+premium", r"premium\s+feature", r"premium\s+amount", r"floorplan\s+rate\s+addendum"]
+    amenity_candidates = _extract_fee_candidates(
+        addenda_text if addenda_text.strip() else all_text,
+        include_patterns=amenity_patterns,
+        exclude_patterns=[r"income", r"salary", r"wage"],
+    )
+    if not amenity_candidates and addenda_text.strip():
+        amenity_candidates = _extract_fee_candidates(
+            all_text,
+            include_patterns=amenity_patterns,
+            exclude_patterns=[r"income", r"salary", r"wage"],
+        )
+
+    amenity_premium = amenity_candidates[0]["amount"] if amenity_candidates else None
+    amenity_evidence = amenity_candidates[0]["evidence"] if amenity_candidates else None
+
+    def _add_term_row(
+        term_type: str,
+        mapped_ar_code: str,
+        amount: float | None,
+        evidence: str | None,
+        frequency: str = "monthly",
+        confidence: float = 0.7,
+        key_suffix: str | None = None,
+    ) -> None:
+        if amount is None:
+            return
+        term_key = f"{term_type}:{mapped_ar_code}:{lease_start or ''}:{lease_end or ''}{f':{key_suffix}' if key_suffix else ''}"
         terms.append({
             "term_key": term_key,
             "term_type": term_type,
             "mapped_ar_code": mapped_ar_code,
             "term_label": term_type.replace("_", " ").title(),
             "amount": amount,
-            "frequency": "monthly",
+            "frequency": frequency,
             "start_date": lease_start,
             "end_date": lease_end,
             "term_source_doc_id": str(doc_info.get("doc_id") or ""),
             "term_source_doc_name": str(doc_info.get("title") or ""),
-            "mapping_confidence": 0.5,
+            "mapping_confidence": confidence,
+        })
+        evidence_rows.append({
+            "term_key": term_key,
+            "doc_id": str(doc_info.get("doc_id") or ""),
+            "doc_name": str(doc_info.get("title") or ""),
+            "page_number": None,
+            "excerpt_text": str(evidence or "")[:500],
+            "confidence": confidence,
         })
 
-        page_hit = next((page for page in pages if re.search(matched_pattern, str(page.get("text") or ""), re.IGNORECASE)), None)
-        if page_hit:
-            snippet = str(page_hit.get("text") or "")[:500]
-            evidence_rows.append({
-                "term_key": term_key,
-                "doc_id": str(doc_info.get("doc_id") or ""),
-                "doc_name": str(doc_info.get("title") or ""),
-                "page_number": page_hit.get("page_number"),
-                "excerpt_text": snippet,
-                "confidence": 0.5,
-            })
+    _add_term_row("BASE_RENT", "RENT", base_rent_amount, base_rent_evidence, frequency="monthly", confidence=0.85)
+
+    def _extract_amount_by_anchors(
+        source_pages: Sequence[Mapping[str, Any]],
+        anchor_patterns: Sequence[str],
+        preferred_tokens: Sequence[str] | None = None,
+        excluded_tokens: Sequence[str] | None = None,
+        fallback_anchor_token: str | None = None,
+    ) -> dict[str, Any] | None:
+        preferred_tokens = [str(token).lower() for token in (preferred_tokens or [])]
+        excluded_tokens = [str(token).lower() for token in (excluded_tokens or [])]
+
+        def _iter_currency_matches(text_value: str):
+            for match in re.finditer(r"\$\s*[_:\-\.]*\s*([0-9][0-9,]*(?:\.\d{2})?)", text_value):
+                yield match
+            for match in re.finditer(r"\b([0-9][0-9,]*\.\d{2})\b", text_value):
+                yield match
+
+        best: dict[str, Any] | None = None
+        for page in source_pages:
+            page_text = str(page.get("text") or "")
+            page_number = page.get("page_number")
+
+            for anchor_pattern in anchor_patterns:
+                for anchor_match in re.finditer(anchor_pattern, page_text, re.IGNORECASE):
+                    window_start = max(0, anchor_match.start() - 120)
+                    window_end = min(len(page_text), anchor_match.end() + 220)
+                    window_text = page_text[window_start:window_end]
+                    window_lower = window_text.lower()
+
+                    if excluded_tokens and any(token in window_lower for token in excluded_tokens):
+                        continue
+
+                    for amount_match in _iter_currency_matches(window_text):
+                        normalized = normalize_money(f"${amount_match.group(1)}")
+                        if not normalized:
+                            continue
+                        amount = _as_float(normalized)
+                        if amount is None or amount <= 0:
+                            continue
+
+                        amount_context_start = max(0, amount_match.start() - 80)
+                        amount_context_end = min(len(window_text), amount_match.end() + 80)
+                        amount_context = window_text[amount_context_start:amount_context_end]
+                        amount_context_lower = amount_context.lower()
+
+                        if excluded_tokens and any(token in amount_context_lower for token in excluded_tokens):
+                            continue
+                        if any(token in amount_context_lower for token in ["replacement fee", "replacement", "damaged", "lost", "unreturned", "decal", "security deposit", "move-out", "move out", "fine", "violation", "unauthorized animal", "animal"]):
+                            continue
+
+                        score = 1
+                        if preferred_tokens:
+                            score += sum(1 for token in preferred_tokens if token in amount_context_lower)
+                        if "monthly" in amount_context_lower:
+                            score += 2
+                        if "cost for parking" in window_lower:
+                            score += 3
+                        if "resident agrees to pay" in window_lower:
+                            score += 2
+                        if fallback_anchor_token and fallback_anchor_token in window_lower:
+                            score += 1
+
+                        candidate = {
+                            "amount": amount,
+                            "evidence": re.sub(r"\s+", " ", amount_context).strip(),
+                            "page_number": page_number,
+                            "score": score,
+                        }
+
+                        if best is None or (candidate["score"], candidate["amount"]) > (best["score"], best["amount"]):
+                            best = candidate
+
+        if best is not None:
+            return best
+
+        if fallback_anchor_token:
+            fallback_pages = []
+            for page in source_pages:
+                page_text = str(page.get("text") or "")
+                if fallback_anchor_token.lower() in page_text.lower():
+                    fallback_pages.append(page)
+
+            for page in fallback_pages:
+                page_text = str(page.get("text") or "")
+                page_number = page.get("page_number")
+                for amount_match in _iter_currency_matches(page_text):
+                    normalized = normalize_money(f"${amount_match.group(1)}")
+                    if not normalized:
+                        continue
+                    amount = _as_float(normalized)
+                    if amount is None or amount <= 0:
+                        continue
+                    context_start = max(0, amount_match.start() - 120)
+                    context_end = min(len(page_text), amount_match.end() + 120)
+                    amount_context = page_text[context_start:context_end]
+                    amount_context_lower = amount_context.lower()
+                    if excluded_tokens and any(token in amount_context_lower for token in excluded_tokens):
+                        continue
+                    if any(token in amount_context_lower for token in ["replacement fee", "replacement", "damaged", "lost", "unreturned", "decal", "security deposit", "move-out", "move out", "fine", "violation", "unauthorized animal", "animal"]):
+                        continue
+                    if fallback_anchor_token and fallback_anchor_token.lower() not in amount_context_lower:
+                        continue
+                    score = 1 + sum(1 for token in preferred_tokens if token in amount_context_lower)
+                    if "monthly" in amount_context_lower:
+                        score += 2
+                    if "cost for parking" in amount_context_lower:
+                        score += 3
+                    if "resident agrees to pay" in amount_context_lower:
+                        score += 2
+                    if "per vehicle" in amount_context_lower or "per space" in amount_context_lower:
+                        score += 1
+                    candidate = {
+                        "amount": amount,
+                        "evidence": re.sub(r"\s+", " ", amount_context).strip(),
+                        "page_number": page_number,
+                        "score": score,
+                    }
+                    if best is None or (candidate["score"], candidate["amount"]) > (best["score"], best["amount"]):
+                        best = candidate
+
+        return best
+
+    parking_candidate = extract_parking_fee(text_pack, identify_relevant_pages(text_pack))
+    if parking_candidate:
+        term_key_suffix = "PARKING"
+        _add_term_row("PARKING", "PARK", _as_float(parking_candidate.get("normalized") or parking_candidate.get("value")), parking_candidate.get("evidence"), frequency="monthly", confidence=0.75, key_suffix=term_key_suffix)
+        if evidence_rows:
+            evidence_rows[-1]["page_number"] = parking_candidate.get("page_number")
+
+    pet_candidate = _extract_amount_by_anchors(
+        source_pages=pages,
+        anchor_patterns=[r"pet\s+rent", r"pet\s+fee"],
+        preferred_tokens=["pet", "monthly"],
+        excluded_tokens=["parking", "application fee", "admin fee", "administrative fee"],
+    )
+    if pet_candidate:
+        term_key_suffix = "PET"
+        _add_term_row("PET_RENT", "PETR", pet_candidate.get("amount"), pet_candidate.get("evidence"), frequency="monthly", confidence=0.7, key_suffix=term_key_suffix)
+        if evidence_rows:
+            evidence_rows[-1]["page_number"] = pet_candidate.get("page_number")
+
+    for idx, candidate in enumerate(application_fee_candidates):
+        _add_term_row(
+            "APPLICATION_FEE",
+            "APPF",
+            candidate.get("amount"),
+            candidate.get("evidence"),
+            frequency="one_time",
+            confidence=0.8,
+            key_suffix=f"{idx + 1}",
+        )
+
+    for idx, candidate in enumerate(admin_fee_candidates):
+        _add_term_row(
+            "ADMIN_FEE",
+            "ADMF",
+            candidate.get("amount"),
+            candidate.get("evidence"),
+            frequency="one_time",
+            confidence=0.8,
+            key_suffix=f"{idx + 1}",
+        )
+
+    _add_term_row("AMENITY_PREMIUM", "AMEN", amenity_premium, amenity_evidence, frequency="monthly", confidence=0.75)
+
+    logger.info(
+        "[LEASE TERMS] Extracted %s term rows for doc_id=%s title=%s",
+        len(terms),
+        str(doc_info.get("doc_id") or ""),
+        str(doc_info.get("title") or ""),
+    )
+    for term in terms:
+        logger.info(
+            "[LEASE TERMS] term_type=%s ar_code=%s amount=%s frequency=%s start=%s end=%s confidence=%s",
+            term.get("term_type"),
+            term.get("mapped_ar_code"),
+            term.get("amount"),
+            term.get("frequency"),
+            term.get("start_date"),
+            term.get("end_date"),
+            term.get("mapping_confidence"),
+        )
+
+    for evidence in evidence_rows:
+        logger.info(
+            "[LEASE TERMS] evidence term_key=%s page=%s excerpt=%s",
+            evidence.get("term_key"),
+            evidence.get("page_number"),
+            str(evidence.get("excerpt_text") or "")[:220],
+        )
 
     return terms, evidence_rows
 
@@ -1402,34 +2015,6 @@ def refresh_lease_terms_for_lease_interval(
             "error": str(refresh_error),
             "terms_df": cached_terms_df,
         }
-
-
-DEFAULT_TERM_TO_AR_CODE_RULES: list[dict[str, Any]] = [
-    {
-        "term_type": "BASE_RENT",
-        "label_patterns": [r"base\s*rent", r"monthly\s*rent", r"rent"],
-        "accepted_ar_codes": ["RENT"],
-        "expected_frequency": "monthly",
-    },
-    {
-        "term_type": "PET_RENT",
-        "label_patterns": [r"pet\s*rent", r"pet\s*fee"],
-        "accepted_ar_codes": ["PETR", "PET"],
-        "expected_frequency": "monthly",
-    },
-    {
-        "term_type": "PARKING",
-        "label_patterns": [r"parking", r"garage", r"carport", r"reserved\s*parking"],
-        "accepted_ar_codes": ["PARK", "PRKG"],
-        "expected_frequency": "monthly",
-    },
-    {
-        "term_type": "UTILITY",
-        "label_patterns": [r"utility", r"water", r"sewer", r"electric", r"trash"],
-        "accepted_ar_codes": ["UTIL", "WATR", "SEWR", "TRSH", "ELEC"],
-        "expected_frequency": "monthly",
-    },
-]
 
 
 def _coerce_to_date_string(value: Any) -> str | None:
