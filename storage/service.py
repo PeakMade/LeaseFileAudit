@@ -1932,6 +1932,10 @@ class StorageService:
 
             for idx, row in enumerate(rows or []):
                 term_key = str(row.get('term_key') or f"{lease_key}:row:{idx}")
+                start_date_raw = row.get('start_date')
+                end_date_raw = row.get('end_date')
+                start_date_value = str(start_date_raw).strip() if start_date_raw is not None else ''
+                end_date_value = str(end_date_raw).strip() if end_date_raw is not None else ''
                 fields_payload = {
                     'Title': term_key,
                     'TermKey': term_key,
@@ -1945,8 +1949,8 @@ class StorageService:
                     'MappedArCode': str(row.get('mapped_ar_code') or ''),
                     'Amount': float(row.get('amount') or 0),
                     'Frequency': str(row.get('frequency') or ''),
-                    'StartDate': str(row.get('start_date') or ''),
-                    'EndDate': str(row.get('end_date') or ''),
+                    'StartDate': start_date_value or None,
+                    'EndDate': end_date_value or None,
                     'DueDay': self._safe_int(row.get('due_day')),
                     'ConditionsKey': str(row.get('conditions_key') or ''),
                     'TermSourceDocId': str(row.get('term_source_doc_id') or ''),
