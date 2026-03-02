@@ -2782,6 +2782,44 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         try:
             lease_key = f"{int(float(property_id))}:{int(float(lease_interval_id))}"
 
+            lease_term_period_start = None
+            lease_term_period_end = None
+
+            audit_period_meta = run_metadata.get('audit_period') if isinstance(run_metadata, dict) else None
+            audit_year = None
+            audit_month = None
+            if isinstance(audit_period_meta, dict):
+                try:
+                    audit_year = int(audit_period_meta.get('year')) if audit_period_meta.get('year') else None
+                except Exception:
+                    audit_year = None
+                try:
+                    audit_month = int(audit_period_meta.get('month')) if audit_period_meta.get('month') else None
+                except Exception:
+                    audit_month = None
+
+            if audit_year and audit_month:
+                lease_term_period_start = pd.Timestamp(year=audit_year, month=audit_month, day=1)
+                lease_term_period_end = lease_term_period_start + pd.offsets.MonthEnd(1)
+            elif audit_year:
+                lease_term_period_start = pd.Timestamp(year=audit_year, month=1, day=1)
+                lease_term_period_end = pd.Timestamp(year=audit_year, month=12, day=31)
+            else:
+                audit_month_values = []
+                for source_df in (lease_expected, lease_actual):
+                    if source_df is None or source_df.empty:
+                        continue
+                    if CanonicalField.AUDIT_MONTH.value not in source_df.columns:
+                        continue
+                    audit_month_values.append(source_df[CanonicalField.AUDIT_MONTH.value])
+
+                if audit_month_values:
+                    combined_months = pd.concat(audit_month_values, ignore_index=True)
+                    parsed_months = pd.to_datetime(combined_months, errors='coerce').dropna()
+                    if not parsed_months.empty:
+                        lease_term_period_start = parsed_months.min().replace(day=1)
+                        lease_term_period_end = parsed_months.max() + pd.offsets.MonthEnd(0)
+
             refresh_ttl_hours = int(os.getenv('LEASE_TERM_REFRESH_TTL_HOURS', '24'))
             force_refresh = os.getenv('LEASE_TERM_FORCE_REFRESH', 'false').lower() == 'true'
 
@@ -2790,6 +2828,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 property_id=int(float(property_id)),
                 lease_interval_id=int(float(lease_interval_id)),
                 lease_id=lease_id,
+                audit_period_start=lease_term_period_start.isoformat() if lease_term_period_start is not None else None,
+                audit_period_end=lease_term_period_end.isoformat() if lease_term_period_end is not None else None,
                 force_refresh=force_refresh,
                 min_recheck_hours=refresh_ttl_hours,
             )

@@ -296,6 +296,46 @@ def get_doc_recency_key(doc: dict) -> tuple:
     return (activity_ts, name_ts, doc_id_num)
 
 
+def get_doc_declared_lease_start(doc: Mapping[str, Any]) -> datetime:
+    """Get declared lease interval start date from doc metadata."""
+    return parse_doc_datetime((doc or {}).get("leaseIntervalStartDate"))
+
+
+def get_doc_declared_file_size(doc: Mapping[str, Any]) -> int:
+    """Best-effort parse of file size metadata for tie-breaking."""
+    candidates = [
+        (doc or {}).get("FileSize"),
+        (doc or {}).get("fileSize"),
+        (doc or {}).get("Size"),
+        (doc or {}).get("size"),
+    ]
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            parsed = int(float(value))
+            if parsed >= 0:
+                return parsed
+        except Exception:
+            continue
+    return 0
+
+
+def _coerce_period_datetime(value: Any) -> datetime | None:
+    """Coerce period boundary input to datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        parsed = pd.to_datetime(value, errors="coerce")
+    except Exception:
+        return None
+    if pd.isna(parsed):
+        return None
+    return parsed.to_pydatetime()
+
+
 def is_signed_addendum(doc: dict) -> bool:
     """Return True when doc appears to be an addendum eligible for inclusion."""
     title_text = get_doc_title(doc).lower()
@@ -855,7 +895,13 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
     }
 
 
-def download_lease_document(property_id=None, lease_id=None):
+def download_lease_document(
+    property_id=None,
+    lease_id=None,
+    docs: Sequence[Mapping[str, Any]] | None = None,
+    audit_period_start: Any = None,
+    audit_period_end: Any = None,
+):
     """
     Download the most recent signed lease document.
 
@@ -878,83 +924,46 @@ def download_lease_document(property_id=None, lease_id=None):
     logger.info(f"Using - prop_id: {prop_id}, l_id: {l_id}")
     logger.info("#" * 80)
 
-    list_payload = {
-        "auth": {"type": "apikey"},
-        "requestId": "doc-list",
-        "method": {
-            "name": "getLeaseDocumentsList",
-            "params": {
-                "propertyId": prop_id,
-                "leaseId": l_id,
-                "showDeletedFile": "0",
-            },
-        },
-    }
-
-    list_json = post_entrata(list_payload)
-
-    result = list_json.get("response", {}).get("result", {})
-    lease_documents = result.get("LeaseDocuments") or result.get("leaseDocuments", {})
-    docs_raw = lease_documents.get("LeaseDocument") or lease_documents.get("leaseDocument", [])
-
-    if isinstance(docs_raw, dict):
-        docs = list(docs_raw.values())
+    docs_list: list[dict[str, Any]] = []
+    if docs is not None:
+        docs_list = [dict(doc) for doc in docs if isinstance(doc, Mapping)]
     else:
-        docs = docs_raw if isinstance(docs_raw, list) else []
+        list_payload = {
+            "auth": {"type": "apikey"},
+            "requestId": "doc-list",
+            "method": {
+                "name": "getLeaseDocumentsList",
+                "params": {
+                    "propertyId": prop_id,
+                    "leaseId": l_id,
+                    "showDeletedFile": "0",
+                },
+            },
+        }
 
-    logger.info(f"Found {len(docs)} total documents")
+        list_json = post_entrata(list_payload)
 
-    if not docs:
+        result = list_json.get("response", {}).get("result", {})
+        lease_documents = result.get("LeaseDocuments") or result.get("leaseDocuments", {})
+        docs_raw = lease_documents.get("LeaseDocument") or lease_documents.get("leaseDocument", [])
+
+        if isinstance(docs_raw, dict):
+            docs_list = [doc for doc in docs_raw.values() if isinstance(doc, dict)]
+        else:
+            docs_list = [doc for doc in docs_raw if isinstance(doc, dict)] if isinstance(docs_raw, list) else []
+
+    logger.info(f"Found {len(docs_list)} total documents")
+
+    if not docs_list:
         logger.error("No documents returned from getLeaseDocumentsList")
         raise ValueError("No documents returned from getLeaseDocumentsList.")
 
-    preferred_codes_1 = {"LP", "OEP", "PACKET"}
-    preferred_codes_2 = {"LEASE", "LD", "OEL"}
-
-    def sort_key(d):
-        lease_start = parse_doc_datetime(d.get("leaseIntervalStartDate"))
-        added_on = parse_doc_datetime(d.get("AddedOn") or d.get("addedOn"))
-        modified_on = parse_doc_datetime(d.get("ModifiedOn") or d.get("modifiedOn"))
-        name_ts = parse_doc_name_timestamp(d)
-        doc_id_value = get_doc_id(d)
-        try:
-            doc_id_num = int(str(doc_id_value))
-        except (TypeError, ValueError):
-            doc_id_num = 0
-        return (lease_start, added_on, modified_on, name_ts, doc_id_num)
-
-    code_bucket_1 = [d for d in docs if get_doc_code(d) in preferred_codes_1]
-    code_bucket_2 = [d for d in docs if get_doc_code(d) in preferred_codes_2]
-    signed_lease_packet = [
-        d for d in docs
-        if is_signed(d) and (
-            ("lease" in (d.get("Title") or d.get("title") or "").lower()) or
-            ("packet" in (d.get("Title") or d.get("title") or "").lower())
-        )
-    ]
-
-    logger.info(f"Found {len(code_bucket_1)} docs in primary code bucket {sorted(preferred_codes_1)}")
-    logger.info(f"Found {len(code_bucket_2)} docs in secondary code bucket {sorted(preferred_codes_2)}")
-    logger.info(f"Found {len(signed_lease_packet)} signed docs with lease/packet in title")
-
-    selected_reason = None
-    selected_pool = None
-
-    if code_bucket_1:
-        selected_pool = code_bucket_1
-        selected_reason = "priority code bucket 1 (LP/OEP/PACKET)"
-    elif code_bucket_2:
-        selected_pool = code_bucket_2
-        selected_reason = "priority code bucket 2 (LEASE/LD/OEL)"
-    elif signed_lease_packet:
-        selected_pool = signed_lease_packet
-        selected_reason = "fallback signed doc with lease/packet in title"
-
-    if not selected_pool:
-        logger.error("No eligible lease document found after code-priority and signed fallback checks")
-        raise ValueError("No eligible lease document found after code-priority and signed fallback checks.")
-
-    signed_latest = sorted(selected_pool, key=sort_key, reverse=True)[0]
+    selected_primary_doc, _, selected_reason = select_lease_packet_and_addenda(
+        docs_list,
+        audit_period_start=audit_period_start,
+        audit_period_end=audit_period_end,
+    )
+    signed_latest = dict(selected_primary_doc)
     doc_id = get_doc_id(signed_latest)
     title = get_doc_title(signed_latest) or f"signed_lease_{doc_id}"
     selected_code = get_doc_code(signed_latest)
@@ -966,7 +975,7 @@ def download_lease_document(property_id=None, lease_id=None):
     logger.info(f"Document details: {json.dumps(signed_latest, indent=2, default=str)}")
 
     newer_signed_addenda = []
-    for candidate in docs:
+    for candidate in docs_list:
         candidate_id = get_doc_id(candidate)
         if not candidate_id or candidate_id == doc_id:
             continue
@@ -1386,7 +1395,11 @@ def fetch_lease_documents_list(property_id: Any, lease_id: Any) -> list[dict[str
     return []
 
 
-def select_lease_packet_and_addenda(docs: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+def select_lease_packet_and_addenda(
+    docs: Sequence[Mapping[str, Any]],
+    audit_period_start: Any = None,
+    audit_period_end: Any = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
     """Select primary signed packet and eligible newer addenda from document metadata."""
     docs = [dict(doc) for doc in docs if isinstance(doc, Mapping)]
     if not docs:
@@ -1396,16 +1409,17 @@ def select_lease_packet_and_addenda(docs: Sequence[Mapping[str, Any]]) -> tuple[
     preferred_codes_2 = {"LEASE", "LD", "OEL"}
 
     def sort_key(d):
-        lease_start = parse_doc_datetime(d.get("leaseIntervalStartDate"))
+        lease_start = get_doc_declared_lease_start(d)
         added_on = parse_doc_datetime(d.get("AddedOn") or d.get("addedOn"))
         modified_on = parse_doc_datetime(d.get("ModifiedOn") or d.get("modifiedOn"))
         name_ts = parse_doc_name_timestamp(d)
+        file_size = get_doc_declared_file_size(d)
         doc_id_value = get_doc_id(d)
         try:
             doc_id_num = int(str(doc_id_value))
         except (TypeError, ValueError):
             doc_id_num = 0
-        return (lease_start, added_on, modified_on, name_ts, doc_id_num)
+        return (lease_start, added_on, modified_on, name_ts, file_size, doc_id_num)
 
     code_bucket_1 = [d for d in docs if get_doc_code(d) in preferred_codes_1]
     code_bucket_2 = [d for d in docs if get_doc_code(d) in preferred_codes_2]
@@ -1431,6 +1445,39 @@ def select_lease_packet_and_addenda(docs: Sequence[Mapping[str, Any]]) -> tuple[
 
     if not selected_pool:
         raise ValueError("No eligible lease document found after code-priority and signed fallback checks")
+
+    period_start = _coerce_period_datetime(audit_period_start)
+    period_end = _coerce_period_datetime(audit_period_end)
+    if period_start and period_end and period_end < period_start:
+        period_start, period_end = period_end, period_start
+
+    if period_start or period_end:
+        period_matched_pool = []
+        for candidate in selected_pool:
+            lease_start = get_doc_declared_lease_start(candidate)
+            if lease_start == datetime.min:
+                continue
+            if period_start and lease_start < period_start:
+                continue
+            if period_end and lease_start > period_end:
+                continue
+            period_matched_pool.append(candidate)
+
+        if period_matched_pool:
+            selected_pool = period_matched_pool
+            if period_start and period_end:
+                selected_reason = (
+                    f"{selected_reason}; audit-period lease start match "
+                    f"({period_start.strftime('%Y-%m-%d')} to {period_end.strftime('%Y-%m-%d')})"
+                )
+            elif period_start:
+                selected_reason = (
+                    f"{selected_reason}; audit-period lease start match from {period_start.strftime('%Y-%m-%d')}"
+                )
+            else:
+                selected_reason = (
+                    f"{selected_reason}; audit-period lease start match through {period_end.strftime('%Y-%m-%d')}"
+                )
 
     primary = sorted(selected_pool, key=sort_key, reverse=True)[0]
     primary_doc_id = get_doc_id(primary)
@@ -2481,6 +2528,8 @@ def refresh_lease_terms_for_lease_interval(
     property_id: int,
     lease_interval_id: int,
     lease_id: int | None = None,
+    audit_period_start: Any = None,
+    audit_period_end: Any = None,
     force_refresh: bool = False,
     min_recheck_hours: int = 24,
     term_extractor: Callable[[Mapping[str, Any], Mapping[str, Any]], tuple[list[dict[str, Any]], list[dict[str, Any]]]] | None = None,
@@ -2522,7 +2571,11 @@ def refresh_lease_terms_for_lease_interval(
 
     try:
         docs = fetch_lease_documents_list(property_id=property_id, lease_id=lease_identifier)
-        primary_doc, addenda_docs, selection_reason = select_lease_packet_and_addenda(docs)
+        primary_doc, addenda_docs, selection_reason = select_lease_packet_and_addenda(
+            docs,
+            audit_period_start=audit_period_start,
+            audit_period_end=audit_period_end,
+        )
         fingerprint_hash = build_selected_docs_fingerprint(primary_doc, addenda_docs)
 
         existing_fingerprint = str(cached_term_set.get("fingerprint_hash") or "")
@@ -2552,7 +2605,13 @@ def refresh_lease_terms_for_lease_interval(
                 "term_set": cached_term_set,
             }
 
-        pdf_path, _, doc_info = download_lease_document(property_id=property_id, lease_id=lease_identifier)
+        pdf_path, _, doc_info = download_lease_document(
+            property_id=property_id,
+            lease_id=lease_identifier,
+            docs=docs,
+            audit_period_start=audit_period_start,
+            audit_period_end=audit_period_end,
+        )
         text_pack = parse_pdf_to_text_pack(pdf_path)
         extractor = term_extractor or _extract_basic_terms_from_text_pack
         extracted_terms, evidence_rows = extractor(text_pack, doc_info)
