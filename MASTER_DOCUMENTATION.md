@@ -1300,6 +1300,8 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-02**: Added layout/coordinate-first base-rent extraction in `audit_engine/entrata_lease_terms.py` using PyMuPDF `words` anchors (`RENT AND CHARGES` / `RENT`), proximity scoring, repeated-amount inference fallback, and pdfplumber coordinate fallback with method-level diagnostic logging
+- **2026-03-02**: Fixed SharePoint lease-term list writes in `storage/service.py` by sending `LeaseId` as text for `LeaseTermSet`, `LeaseTerms`, and `LeaseTermEvidence` payloads to match list column typing and prevent Graph `500 generalException` insert failures
 - **2026-02-27**: Enhanced non-OCR PDF extraction in `audit_engine/entrata_lease_terms.py` with per-page multi-mode PyMuPDF selection (`text`/`blocks`/`words`/`dict`) and extraction-mode telemetry for problematic lease packets
 - **2026-02-27**: Added clause-window fee multi-capture so a single clause can emit both `APPLICATION_FEE` and `ADMIN_FEE` with independently parsed dynamic amounts
 - **2026-02-27**: Externalized default lease-term AR mapping rules to `audit_engine/lease_term_rules.py` and wired `audit_engine/entrata_lease_terms.py` to import shared defaults (`DEFAULT_TERM_TO_AR_CODE_RULES`)

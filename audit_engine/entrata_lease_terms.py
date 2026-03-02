@@ -46,8 +46,16 @@ def _load_pymupdf_if_available():
         return None
 
 
+def _load_pdfplumber_if_available():
+    try:
+        return importlib.import_module("pdfplumber")
+    except Exception:
+        return None
+
+
 _load_dotenv_if_available()
 fitz = _load_pymupdf_if_available()
+pdfplumber = _load_pdfplumber_if_available()
 logger = logging.getLogger(__name__)
 
 
@@ -380,7 +388,7 @@ def parse_pdf_to_text_pack(pdf_path: str) -> dict:
     Returns:
         dict with:
             - total_pages: int
-            - pages: list of dicts with page_number, char_count, text, preview
+            - pages: list of dicts with page_number, char_count, text, preview, words
     """
     result = {
         "total_pages": 0,
@@ -510,12 +518,35 @@ def parse_pdf_to_text_pack(pdf_path: str) -> dict:
             char_count = len(text)
             preview = text[:300] if text else ""
 
+            words_serialized: list[dict[str, Any]] = []
+            try:
+                words_raw = page.get_text("words") or []
+                for item in words_raw:
+                    if len(item) < 5:
+                        continue
+                    token_text = str(item[4] or "").strip()
+                    if not token_text:
+                        continue
+                    words_serialized.append({
+                        "x0": float(item[0]),
+                        "y0": float(item[1]),
+                        "x1": float(item[2]),
+                        "y1": float(item[3]),
+                        "text": token_text,
+                        "block_no": int(item[5]) if len(item) > 5 else -1,
+                        "line_no": int(item[6]) if len(item) > 6 else -1,
+                        "word_no": int(item[7]) if len(item) > 7 else -1,
+                    })
+            except Exception:
+                words_serialized = []
+
             result["pages"].append({
                 "page_number": page_num,
                 "char_count": char_count,
                 "text": text,
                 "preview": preview,
                 "extraction_mode": extraction_mode,
+                "words": words_serialized,
             })
 
             logger.info(f"Page {page_num}: Extracted {char_count} characters (mode={extraction_mode})")
@@ -1599,6 +1630,408 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     base_rent_evidence: str | None = None
     base_rent_candidates: list[dict[str, Any]] = []
 
+    def _normalized_word_token(word_value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(word_value or "").lower())
+
+    def _money_value_from_token(token_text: str) -> float | None:
+        normalized = str(token_text or "").strip()
+        if not normalized:
+            return None
+        normalized = normalized.replace("$", "").replace(",", "")
+        if not re.fullmatch(r"\d{1,6}\.\d{2}", normalized):
+            return None
+        return _as_float(normalized)
+
+    def _extract_money_tokens_from_words(words: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        tokens: list[dict[str, Any]] = []
+        for word in words:
+            amount_value = _money_value_from_token(str(word.get("text") or ""))
+            if amount_value is None or amount_value <= 0:
+                continue
+            x0 = float(word.get("x0") or 0.0)
+            y0 = float(word.get("y0") or 0.0)
+            x1 = float(word.get("x1") or x0)
+            y1 = float(word.get("y1") or y0)
+            tokens.append({
+                "amount": amount_value,
+                "text": str(word.get("text") or ""),
+                "x0": x0,
+                "y0": y0,
+                "x1": x1,
+                "y1": y1,
+                "cx": (x0 + x1) / 2.0,
+                "cy": (y0 + y1) / 2.0,
+            })
+        return tokens
+
+    def _build_anchor_boxes_from_words(words: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        anchors: list[dict[str, Any]] = []
+        sequence = []
+        for word in words:
+            token_text = str(word.get("text") or "").strip()
+            if not token_text:
+                continue
+            sequence.append({
+                "token": _normalized_word_token(token_text),
+                "x0": float(word.get("x0") or 0.0),
+                "y0": float(word.get("y0") or 0.0),
+                "x1": float(word.get("x1") or 0.0),
+                "y1": float(word.get("y1") or 0.0),
+            })
+
+        for idx in range(len(sequence) - 2):
+            first, second, third = sequence[idx], sequence[idx + 1], sequence[idx + 2]
+            if first["token"] == "rent" and second["token"] == "and" and third["token"] == "charges":
+                if abs(first["y0"] - second["y0"]) <= 4.0 and abs(second["y0"] - third["y0"]) <= 4.0:
+                    anchors.append({
+                        "label": "rent_and_charges",
+                        "x0": min(first["x0"], second["x0"], third["x0"]),
+                        "y0": min(first["y0"], second["y0"], third["y0"]),
+                        "x1": max(first["x1"], second["x1"], third["x1"]),
+                        "y1": max(first["y1"], second["y1"], third["y1"]),
+                    })
+
+        for token in sequence:
+            if token["token"] != "rent":
+                continue
+            anchors.append({
+                "label": "rent",
+                "x0": token["x0"],
+                "y0": token["y0"],
+                "x1": token["x1"],
+                "y1": token["y1"],
+            })
+
+        return anchors
+
+    def _extract_line_excerpt(words: Sequence[Mapping[str, Any]], target_cy: float) -> str:
+        same_row = [
+            word for word in words
+            if abs(float((float(word.get("y0") or 0.0) + float(word.get("y1") or 0.0)) / 2.0) - target_cy) <= 3.0
+            and str(word.get("text") or "").strip()
+        ]
+        same_row = sorted(same_row, key=lambda item: float(item.get("x0") or 0.0))
+        return re.sub(r"\s+", " ", " ".join([str(item.get("text") or "").strip() for item in same_row])).strip()
+
+    def _fitz_anchor_monthly_rent() -> tuple[float | None, str | None, str | None, list[dict[str, Any]]]:
+        heading_pattern = re.compile(r"rent\s+and\s+charges", re.IGNORECASE)
+        fallback_heading_pattern = re.compile(r"\brent\b", re.IGNORECASE)
+
+        heading_pages = [
+            page for page in primary_pages
+            if heading_pattern.search(str(page.get("text") or ""))
+        ]
+        if not heading_pages:
+            heading_pages = [
+                page for page in primary_pages
+                if fallback_heading_pattern.search(str(page.get("text") or ""))
+            ]
+
+        debug_tokens: list[dict[str, Any]] = []
+        best_candidate: dict[str, Any] | None = None
+
+        for page in heading_pages:
+            page_num = int(page.get("page_number") or 0)
+            words = list(page.get("words") or [])
+            if not words:
+                continue
+
+            anchors = _build_anchor_boxes_from_words(words)
+            money_tokens = _extract_money_tokens_from_words(words)
+
+            debug_tokens.extend([
+                {
+                    "page": page_num,
+                    "text": token.get("text"),
+                    "amount": token.get("amount"),
+                    "x0": round(float(token.get("x0") or 0.0), 2),
+                    "y0": round(float(token.get("y0") or 0.0), 2),
+                    "x1": round(float(token.get("x1") or 0.0), 2),
+                    "y1": round(float(token.get("y1") or 0.0), 2),
+                }
+                for token in money_tokens
+            ])
+
+            if not anchors or not money_tokens:
+                continue
+
+            for anchor in anchors:
+                anchor_cy = (float(anchor["y0"]) + float(anchor["y1"])) / 2.0
+                anchor_height = max(1.0, float(anchor["y1"]) - float(anchor["y0"]))
+                y_tolerance = max(3.0, anchor_height * 0.75)
+
+                for token in money_tokens:
+                    dx = float(token["x0"]) - float(anchor["x1"])
+                    dy = abs(float(token["cy"]) - anchor_cy)
+                    same_row = dy <= y_tolerance
+                    to_right = dx >= -1.5
+                    below = float(token["cy"]) > anchor_cy
+
+                    proximity_score = -((abs(dx) * 1.2) + (dy * 14.0))
+                    rule = "other"
+                    score_boost = 0.0
+
+                    if to_right and same_row:
+                        rule = "right_same_row"
+                        score_boost = 3000.0
+                    elif to_right:
+                        rule = "right_diff_row"
+                        score_boost = 2000.0
+                    elif below:
+                        rule = "below"
+                        score_boost = 1000.0
+
+                    if anchor.get("label") == "rent_and_charges":
+                        score_boost += 120.0
+
+                    line_excerpt = _extract_line_excerpt(words, float(token["cy"]))
+                    line_excerpt_lower = line_excerpt.lower()
+                    if "total" in line_excerpt_lower and "installment" not in line_excerpt_lower:
+                        score_boost -= 120.0
+
+                    score = score_boost + proximity_score
+                    candidate = {
+                        "amount": float(token["amount"]),
+                        "page": page_num,
+                        "anchor_label": anchor.get("label"),
+                        "rule": rule,
+                        "score": score,
+                        "x0": float(token["x0"]),
+                        "y0": float(token["y0"]),
+                        "x1": float(token["x1"]),
+                        "y1": float(token["y1"]),
+                        "evidence": line_excerpt,
+                    }
+
+                    if best_candidate is None or float(candidate["score"]) > float(best_candidate["score"]):
+                        best_candidate = candidate
+
+        if best_candidate is None:
+            return None, None, None, debug_tokens
+
+        evidence = best_candidate.get("evidence") or (
+            f"Rent anchor {best_candidate.get('anchor_label')} selected {best_candidate.get('amount'):.2f}"
+        )
+        method_detail = (
+            f"fitz-anchor:{best_candidate.get('rule')} page={best_candidate.get('page')} "
+            f"anchor={best_candidate.get('anchor_label')} "
+            f"coords=({best_candidate.get('x0'):.1f},{best_candidate.get('y0'):.1f},"
+            f"{best_candidate.get('x1'):.1f},{best_candidate.get('y1'):.1f})"
+        )
+        return float(best_candidate["amount"]), str(evidence), method_detail, debug_tokens
+
+    def _multiple_inference_monthly_rent() -> tuple[float | None, str | None, str | None]:
+        heading_pattern = re.compile(r"rent\s+and\s+charges", re.IGNORECASE)
+        rent_pages = [
+            page for page in primary_pages
+            if heading_pattern.search(str(page.get("text") or ""))
+        ]
+        if not rent_pages:
+            rent_pages = [
+                page for page in primary_pages
+                if re.search(r"\brent\b", str(page.get("text") or ""), re.IGNORECASE)
+            ]
+
+        amounts: list[float] = []
+        for page in rent_pages:
+            words = list(page.get("words") or [])
+            for token in _extract_money_tokens_from_words(words):
+                amounts.append(round(float(token["amount"]), 2))
+
+            page_text = str(page.get("text") or "")
+            for raw in re.findall(r"(?<!\d)(\d{1,6}\.\d{2})(?!\d)", page_text.replace(",", "")):
+                value = _as_float(raw)
+                if value is not None and value > 0:
+                    amounts.append(round(float(value), 2))
+
+        if not amounts:
+            return None, None, None
+
+        counts: dict[float, int] = {}
+        for amount in amounts:
+            counts[amount] = counts.get(amount, 0) + 1
+
+        unique_amounts = sorted(counts.keys())
+        repeated_amounts = sorted([amount for amount, count in counts.items() if count >= 2])
+        if not repeated_amounts:
+            return None, None, None
+
+        for monthly in repeated_amounts:
+            for total in unique_amounts:
+                if total <= monthly:
+                    continue
+                ratio = total / monthly
+                n = int(round(ratio))
+                if 6 <= n <= 24 and abs(total - (monthly * n)) <= 0.02:
+                    evidence = f"Repeated amount {monthly:.2f} with total {total:.2f} = {n} x monthly"
+                    method_detail = f"multiple-inference:n={n} repeated={monthly:.2f} total={total:.2f}"
+                    return float(monthly), evidence, method_detail
+
+        return None, None, None
+
+    def _pdfplumber_anchor_monthly_rent() -> tuple[float | None, str | None, str | None, list[dict[str, Any]]]:
+        if pdfplumber is None:
+            return None, None, None, []
+
+        pdf_path = str(doc_info.get("source_packet_path") or "").strip()
+        if not pdf_path or not os.path.exists(pdf_path):
+            return None, None, None, []
+
+        heading_pattern = re.compile(r"rent\s+and\s+charges", re.IGNORECASE)
+        target_pages = [
+            int(page.get("page_number") or 0)
+            for page in primary_pages
+            if heading_pattern.search(str(page.get("text") or ""))
+        ]
+        if not target_pages:
+            target_pages = [
+                int(page.get("page_number") or 0)
+                for page in primary_pages
+                if re.search(r"\brent\b", str(page.get("text") or ""), re.IGNORECASE)
+            ]
+
+        debug_tokens: list[dict[str, Any]] = []
+        best_candidate: dict[str, Any] | None = None
+
+        try:
+            with pdfplumber.open(pdf_path) as pdf_doc:
+                page_count = len(pdf_doc.pages)
+                for page_num in target_pages:
+                    if page_num < 1 or page_num > page_count:
+                        continue
+                    page = pdf_doc.pages[page_num - 1]
+                    words_raw = page.extract_words() or []
+                    words = [
+                        {
+                            "x0": float(word.get("x0") or 0.0),
+                            "y0": float(word.get("top") or 0.0),
+                            "x1": float(word.get("x1") or 0.0),
+                            "y1": float(word.get("bottom") or 0.0),
+                            "text": str(word.get("text") or ""),
+                        }
+                        for word in words_raw
+                        if str(word.get("text") or "").strip()
+                    ]
+
+                    anchors = _build_anchor_boxes_from_words(words)
+                    money_tokens = _extract_money_tokens_from_words(words)
+
+                    debug_tokens.extend([
+                        {
+                            "page": page_num,
+                            "text": token.get("text"),
+                            "amount": token.get("amount"),
+                            "x0": round(float(token.get("x0") or 0.0), 2),
+                            "y0": round(float(token.get("y0") or 0.0), 2),
+                            "x1": round(float(token.get("x1") or 0.0), 2),
+                            "y1": round(float(token.get("y1") or 0.0), 2),
+                        }
+                        for token in money_tokens
+                    ])
+
+                    if not anchors or not money_tokens:
+                        continue
+
+                    for anchor in anchors:
+                        anchor_cy = (float(anchor["y0"]) + float(anchor["y1"])) / 2.0
+                        anchor_height = max(1.0, float(anchor["y1"]) - float(anchor["y0"]))
+                        y_tolerance = max(3.0, anchor_height * 0.75)
+
+                        for token in money_tokens:
+                            dx = float(token["x0"]) - float(anchor["x1"])
+                            dy = abs(float(token["cy"]) - anchor_cy)
+                            same_row = dy <= y_tolerance
+                            to_right = dx >= -1.5
+                            below = float(token["cy"]) > anchor_cy
+
+                            rule = "other"
+                            score_boost = 0.0
+                            if to_right and same_row:
+                                rule = "right_same_row"
+                                score_boost = 3000.0
+                            elif to_right:
+                                rule = "right_diff_row"
+                                score_boost = 2000.0
+                            elif below:
+                                rule = "below"
+                                score_boost = 1000.0
+
+                            if anchor.get("label") == "rent_and_charges":
+                                score_boost += 120.0
+
+                            score = score_boost - ((abs(dx) * 1.2) + (dy * 14.0))
+                            evidence = _extract_line_excerpt(words, float(token["cy"]))
+
+                            candidate = {
+                                "amount": float(token["amount"]),
+                                "page": page_num,
+                                "anchor_label": anchor.get("label"),
+                                "rule": rule,
+                                "score": score,
+                                "x0": float(token["x0"]),
+                                "y0": float(token["y0"]),
+                                "x1": float(token["x1"]),
+                                "y1": float(token["y1"]),
+                                "evidence": evidence,
+                            }
+                            if best_candidate is None or float(candidate["score"]) > float(best_candidate["score"]):
+                                best_candidate = candidate
+        except Exception as e:
+            logger.warning(f"[LEASE TERMS] pdfplumber fallback failed: {e}")
+            return None, None, None, debug_tokens
+
+        if best_candidate is None:
+            return None, None, None, debug_tokens
+
+        evidence = best_candidate.get("evidence") or (
+            f"Rent anchor {best_candidate.get('anchor_label')} selected {best_candidate.get('amount'):.2f}"
+        )
+        method_detail = (
+            f"pdfplumber-anchor:{best_candidate.get('rule')} page={best_candidate.get('page')} "
+            f"anchor={best_candidate.get('anchor_label')} "
+            f"coords=({best_candidate.get('x0'):.1f},{best_candidate.get('y0'):.1f},"
+            f"{best_candidate.get('x1'):.1f},{best_candidate.get('y1'):.1f})"
+        )
+        return float(best_candidate["amount"]), str(evidence), method_detail, debug_tokens
+
+    fitz_rent_amount, fitz_rent_evidence, fitz_method_detail, fitz_debug_tokens = _fitz_anchor_monthly_rent()
+    if fitz_rent_amount is not None:
+        base_rent_amount = fitz_rent_amount
+        base_rent_evidence = fitz_rent_evidence
+        logger.info(
+            "[LEASE TERMS] BASE_RENT extracted method=%s value=%.2f",
+            fitz_method_detail,
+            float(base_rent_amount),
+        )
+    else:
+        inferred_rent_amount, inferred_rent_evidence, inferred_method_detail = _multiple_inference_monthly_rent()
+        if inferred_rent_amount is not None:
+            base_rent_amount = inferred_rent_amount
+            base_rent_evidence = inferred_rent_evidence
+            logger.info(
+                "[LEASE TERMS] BASE_RENT extracted method=%s value=%.2f",
+                inferred_method_detail,
+                float(base_rent_amount),
+            )
+        else:
+            plumber_rent_amount, plumber_rent_evidence, plumber_method_detail, plumber_debug_tokens = _pdfplumber_anchor_monthly_rent()
+            if plumber_rent_amount is not None:
+                base_rent_amount = plumber_rent_amount
+                base_rent_evidence = plumber_rent_evidence
+                logger.info(
+                    "[LEASE TERMS] BASE_RENT extracted method=%s value=%.2f",
+                    plumber_method_detail,
+                    float(base_rent_amount),
+                )
+            else:
+                logger.warning(
+                    "[LEASE TERMS] BASE_RENT extraction failed for doc_id=%s fitz_tokens=%s pdfplumber_tokens=%s rule_failure=%s",
+                    str(doc_info.get("doc_id") or ""),
+                    json.dumps(fitz_debug_tokens[:120], default=str),
+                    json.dumps(plumber_debug_tokens[:120], default=str),
+                    "anchor_and_multiple_inference_failed",
+                )
+
     installment_pattern = re.compile(
         r"installments?\s+of\s*\$?\s*([0-9][0-9,\s]*(?:\.\s*\d{2})?)\s*(?:each|per\s+installment)?",
         re.IGNORECASE,
@@ -1655,21 +2088,27 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
             "score": score,
         })
 
-    for page in primary_pages:
-        page_text = str(page.get("text") or "")
-        for match in installment_pattern.finditer(page_text):
-            context = page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]
-            _append_rent_candidate(match.group(1), context, score=10)
-
-        for pattern in monthly_patterns:
-            for match in pattern.finditer(page_text):
+    if base_rent_amount is None:
+        for page in primary_pages:
+            page_text = str(page.get("text") or "")
+            for match in installment_pattern.finditer(page_text):
                 context = page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]
-                _append_rent_candidate(match.group(1), context, score=8)
+                _append_rent_candidate(match.group(1), context, score=10)
 
-    if base_rent_candidates:
-        best_rent = sorted(base_rent_candidates, key=lambda c: (c["score"], c["amount"]), reverse=True)[0]
-        base_rent_amount = best_rent["amount"]
-        base_rent_evidence = best_rent["context"]
+            for pattern in monthly_patterns:
+                for match in pattern.finditer(page_text):
+                    context = page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]
+                    _append_rent_candidate(match.group(1), context, score=8)
+
+        if base_rent_candidates:
+            best_rent = sorted(base_rent_candidates, key=lambda c: (c["score"], c["amount"]), reverse=True)[0]
+            base_rent_amount = best_rent["amount"]
+            base_rent_evidence = best_rent["context"]
+            logger.info(
+                "[LEASE TERMS] BASE_RENT extracted method=%s value=%.2f",
+                "regex-fallback",
+                float(base_rent_amount),
+            )
 
     def _extract_fee_candidates(
         text_value: str,
