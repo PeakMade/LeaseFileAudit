@@ -1300,6 +1300,7 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-02**: Hardened parking fee extraction in `audit_engine/entrata_lease_terms.py` to exclude NSF/returned-check rows from coordinate candidates and prioritize explicit monthly parking phrasing (e.g., "monthly per vehicle") so monthly parking amounts are selected over penalties/one-time fees
 - **2026-03-02**: Updated lease packet selection to prefer docs whose `leaseIntervalStartDate` falls inside the active audit period window, with deterministic tie-breakers by recency and declared file size; wired lease view to pass derived period bounds into lease-term refresh
 - **2026-03-02**: Added layout/coordinate-first base-rent extraction in `audit_engine/entrata_lease_terms.py` using PyMuPDF `words` anchors (`RENT AND CHARGES` / `RENT`), proximity scoring, repeated-amount inference fallback, and pdfplumber coordinate fallback with method-level diagnostic logging
 - **2026-03-02**: Fixed SharePoint lease-term list writes in `storage/service.py` by sending `LeaseId` as text for `LeaseTermSet`, `LeaseTerms`, and `LeaseTermEvidence` payloads to match list column typing and prevent Graph `500 generalException` insert failures

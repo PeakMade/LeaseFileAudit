@@ -694,205 +694,257 @@ def identify_relevant_pages(text_pack: dict) -> dict:
 
 
 def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None:
-    """Extract parking-related amount, prioritizing parking addendum sections."""
+    """Extract parking monthly amount using coordinate anchors first, then text fallback."""
     if page_hints is None:
         page_hints = identify_relevant_pages(text_pack)
 
-    pages_by_number = {
-        page_info["page_number"]: page_info.get("text", page_info.get("preview", ""))
-        for page_info in text_pack.get("pages", [])
-        if page_info.get("page_number") is not None
-    }
+    pages = [page for page in text_pack.get("pages", []) if page.get("page_number") is not None]
+    pages_by_number = {int(page["page_number"]): page for page in pages}
 
-    parking_pages = page_hints.get("parking_pages", [])
+    parking_pages = list(page_hints.get("parking_pages") or [])
     if not parking_pages:
         parking_pages = [
-            page_number
-            for page_number, page_text in pages_by_number.items()
-            if re.search(r"parking|garage|carport", page_text or "", re.IGNORECASE)
+            page_num
+            for page_num, page_info in pages_by_number.items()
+            if re.search(r"parking|garage|carport", str(page_info.get("text") or ""), re.IGNORECASE)
         ]
 
     if not parking_pages:
         return None
 
-    amount_pattern = re.compile(r"\$\s*(\d{1,4}(?:,\d{3})*(?:\.\d{2})?)")
-    parking_signal_pattern = re.compile(
-        r"parking\s+addendum|parking\s+fee|monthly\s+parking|garage\s+fee|carport|reserved\s+parking|cost\s+for\s+parking",
-        re.IGNORECASE,
-    )
-    monthly_signal_pattern = re.compile(r"monthly|per\s+month|/\s*month|per\s+vehicle", re.IGNORECASE)
+    def _normalized_token(text_value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(text_value or "").lower())
 
-    candidates = []
+    def _money_value(token_text: str) -> float | None:
+        normalized = str(token_text or "").strip().replace("$", "").replace(",", "")
+        if not re.fullmatch(r"\d{1,6}\.\d{2}", normalized):
+            return None
+        parsed = _as_float(normalized)
+        if parsed is None or parsed <= 0:
+            return None
+        return parsed
 
-    for page_number in parking_pages:
-        page_text = pages_by_number.get(page_number, "")
-        if not page_text:
-            continue
-
-        space_rent_match = re.search(
-            r"rent\s+for\s+the\s+space.{0,220}?\$\s*(\d{1,4}(?:,\d{3})*(?:\.\d{2})?)\s*(?:per\s+month|monthly)",
-            page_text,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if space_rent_match:
-            raw_amount = space_rent_match.group(1)
-            normalized = normalize_money(raw_amount)
-            if normalized:
-                snippet_start = max(0, space_rent_match.start() - 120)
-                snippet_end = min(len(page_text), space_rent_match.end() + 120)
-                snippet = re.sub(r"\s+", " ", page_text[snippet_start:snippet_end]).strip()
-                candidates.append({
-                    "value": f"${float(normalized):.2f}",
-                    "normalized": normalized,
-                    "page_number": page_number,
-                    "evidence": snippet,
-                    "score": 14,
-                })
-
-        lines = [re.sub(r"\s+", " ", raw).strip() for raw in page_text.splitlines() if raw.strip()]
-        for index, line in enumerate(lines):
-            if not re.search(r"parking|garage|carport", line, re.IGNORECASE):
+    def _money_tokens(words: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        tokens: list[dict[str, Any]] = []
+        for word in words:
+            value = _money_value(str(word.get("text") or ""))
+            if value is None:
                 continue
+            x0 = float(word.get("x0") or 0.0)
+            y0 = float(word.get("y0") or 0.0)
+            x1 = float(word.get("x1") or x0)
+            y1 = float(word.get("y1") or y0)
+            tokens.append({
+                "amount": float(value),
+                "text": str(word.get("text") or ""),
+                "x0": x0,
+                "y0": y0,
+                "x1": x1,
+                "y1": y1,
+                "cx": (x0 + x1) / 2.0,
+                "cy": (y0 + y1) / 2.0,
+            })
+        return tokens
 
-            amount_match = amount_pattern.search(line)
-            evidence_line = line
-
-            if not amount_match and index + 1 < len(lines):
-                next_line = lines[index + 1]
-                next_amount_match = amount_pattern.search(next_line)
-                if next_amount_match:
-                    amount_match = next_amount_match
-                    evidence_line = f"{line} | {next_line}"
-
-            if not amount_match:
+    def _anchor_boxes(words: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        seq = []
+        for word in words:
+            token_text = str(word.get("text") or "").strip()
+            if not token_text:
                 continue
-
-            amount_str = amount_match.group(1)
-            normalized = normalize_money(amount_str)
-            if not normalized:
-                continue
-
-            evidence_lower = evidence_line.lower()
-            if any(token in evidence_lower for token in ["replacement", "decal", "unreturned", "fine", "violation", "nsf"]):
-                continue
-
-            score = 0
-            if parking_signal_pattern.search(evidence_line):
-                score += 3
-            if monthly_signal_pattern.search(evidence_line):
-                score += 2
-            if re.search(r"addendum", evidence_line, re.IGNORECASE):
-                score += 1
-
-            candidates.append({
-                "value": f"${amount_str}",
-                "normalized": normalized,
-                "page_number": page_number,
-                "evidence": evidence_line,
-                "score": score,
+            seq.append({
+                "token": _normalized_token(token_text),
+                "x0": float(word.get("x0") or 0.0),
+                "y0": float(word.get("y0") or 0.0),
+                "x1": float(word.get("x1") or 0.0),
+                "y1": float(word.get("y1") or 0.0),
             })
 
-        lower_text = page_text.lower()
-        cost_section_index = lower_text.find("cost for parking")
-        has_parking_cost_section = (
-            cost_section_index >= 0
-            or ("resident agrees to pay" in lower_text and "per vehicle" in lower_text)
-            or ("parking fee" in lower_text and "per vehicle" in lower_text)
+        anchors: list[dict[str, Any]] = []
+        for idx in range(len(seq) - 2):
+            first, second, third = seq[idx], seq[idx + 1], seq[idx + 2]
+            if first["token"] == "cost" and second["token"] == "for" and third["token"] == "parking":
+                anchors.append({
+                    "label": "cost_for_parking",
+                    "x0": min(first["x0"], second["x0"], third["x0"]),
+                    "y0": min(first["y0"], second["y0"], third["y0"]),
+                    "x1": max(first["x1"], second["x1"], third["x1"]),
+                    "y1": max(first["y1"], second["y1"], third["y1"]),
+                })
+
+        for item in seq:
+            if item["token"] in {"parking", "garage", "carport"}:
+                anchors.append({
+                    "label": item["token"],
+                    "x0": item["x0"],
+                    "y0": item["y0"],
+                    "x1": item["x1"],
+                    "y1": item["y1"],
+                })
+
+        return anchors
+
+    def _row_excerpt(words: Sequence[Mapping[str, Any]], target_cy: float) -> str:
+        row_words = [
+            word for word in words
+            if abs(float((float(word.get("y0") or 0.0) + float(word.get("y1") or 0.0)) / 2.0) - target_cy) <= 3.0
+            and str(word.get("text") or "").strip()
+        ]
+        row_words = sorted(row_words, key=lambda item: float(item.get("x0") or 0.0))
+        return re.sub(r"\s+", " ", " ".join([str(item.get("text") or "").strip() for item in row_words])).strip()
+
+    coordinate_candidates: list[dict[str, Any]] = []
+
+    for page_number in parking_pages:
+        page_info = pages_by_number.get(int(page_number))
+        if not page_info:
+            continue
+        words = list(page_info.get("words") or [])
+        if not words:
+            continue
+
+        anchors = _anchor_boxes(words)
+        tokens = _money_tokens(words)
+        if not anchors or not tokens:
+            continue
+
+        for anchor in anchors:
+            anchor_cy = (float(anchor["y0"]) + float(anchor["y1"])) / 2.0
+            y_tolerance = max(3.0, (float(anchor["y1"]) - float(anchor["y0"])) * 0.75)
+            for token in tokens:
+                dx = float(token["x0"]) - float(anchor["x1"])
+                dy = abs(float(token["cy"]) - anchor_cy)
+                to_right = dx >= -1.5
+                same_row = dy <= y_tolerance
+                below = float(token["cy"]) > anchor_cy
+
+                rule = "other"
+                score_boost = 0.0
+                if to_right and same_row:
+                    rule = "right_same_row"
+                    score_boost = 3000.0
+                elif to_right:
+                    rule = "right_diff_row"
+                    score_boost = 1800.0
+                elif below:
+                    rule = "below"
+                    score_boost = 900.0
+
+                if anchor.get("label") == "cost_for_parking":
+                    score_boost += 180.0
+
+                row_text = _row_excerpt(words, float(token["cy"]))
+                row_lower = row_text.lower()
+                if any(
+                    signal in row_lower
+                    for signal in [
+                        "nsf",
+                        "non-sufficient",
+                        "non sufficient",
+                        "returned check",
+                        "checks returned",
+                    ]
+                ):
+                    continue
+
+                monthly_parking_signals = [
+                    "monthly",
+                    "per month",
+                    "per vehicle",
+                    "parking fee",
+                    "cost for parking",
+                ]
+
+                if any(signal in row_lower for signal in monthly_parking_signals):
+                    score_boost += 350.0
+                if any(signal in row_lower for signal in ["monthly per vehicle", "per vehicle due on or before"]):
+                    score_boost += 220.0
+                if any(signal in row_lower for signal in ["one-time", "onetime", "one time"]):
+                    score_boost -= 260.0
+                if anchor.get("label") == "cost_for_parking" and not any(signal in row_lower for signal in monthly_parking_signals):
+                    score_boost -= 140.0
+                if any(signal in row_lower for signal in ["replacement", "decal", "violation", "fine"]):
+                    score_boost -= 220.0
+
+                score = score_boost - ((abs(dx) * 1.1) + (dy * 14.0))
+                coordinate_candidates.append({
+                    "value": f"${float(token['amount']):.2f}",
+                    "normalized": f"{float(token['amount']):.2f}",
+                    "page_number": int(page_number),
+                    "evidence": row_text,
+                    "score": score,
+                    "rule": rule,
+                    "anchor": anchor.get("label"),
+                })
+
+    if coordinate_candidates:
+        coordinate_candidates_sorted = sorted(
+            coordinate_candidates,
+            key=lambda item: (item["score"], float(item["normalized"])),
+            reverse=True,
         )
+        best = coordinate_candidates_sorted[0]
+        logger.info(
+            "[LEASE TERMS] PARKING extracted method=fitz-anchor rule=%s anchor=%s page=%s value=%s",
+            best.get("rule"),
+            best.get("anchor"),
+            best.get("page_number"),
+            best.get("value"),
+        )
+        return {
+            "value": best["value"],
+            "normalized": best["normalized"],
+            "page_number": best["page_number"],
+            "evidence": best["evidence"],
+            "candidates": coordinate_candidates_sorted[:20],
+        }
 
-        if has_parking_cost_section:
-            ordinal_sequence_match = re.search(
-                r"\b\d{1,2}(?:st|nd|rd|th)\b\s+(\d{1,4}(?:\.\d{2})?)\s+(\d{1,3})\s+(\d{1,4}(?:\.\d{2})?)\b",
-                page_text,
-                re.IGNORECASE,
-            )
-            if ordinal_sequence_match:
-                parking_fee_raw = ordinal_sequence_match.group(1)
-                parking_fee_normalized = normalize_money(parking_fee_raw)
-                if parking_fee_normalized:
-                    snippet_start = max(0, ordinal_sequence_match.start() - 120)
-                    snippet_end = min(len(page_text), ordinal_sequence_match.end() + 120)
-                    snippet = re.sub(r"\s+", " ", page_text[snippet_start:snippet_end]).strip()
-                    candidates.append({
-                        "value": f"${float(parking_fee_normalized):.2f}",
-                        "normalized": parking_fee_normalized,
-                        "page_number": page_number,
-                        "evidence": snippet,
-                        "score": 12,
-                    })
+    regex_candidates: list[dict[str, Any]] = []
+    monthly_regexes = [
+        re.compile(r"cost\s+for\s+parking.{0,260}?\$\s*(\d{1,6}(?:,\d{3})*(?:\.\d{2})?).{0,80}?(monthly|per\s+month|per\s+vehicle)", re.IGNORECASE | re.DOTALL),
+        re.compile(r"\$\s*(\d{1,6}(?:,\d{3})*(?:\.\d{2})?).{0,60}?(monthly|per\s+month|per\s+vehicle).{0,120}?parking", re.IGNORECASE | re.DOTALL),
+    ]
 
-            for match in re.finditer(r"\b(\d{1,4}(?:\.\d{2})?)\b", page_text):
-                raw_number = match.group(1)
-                try:
-                    amount_value = float(raw_number)
-                except ValueError:
-                    continue
-
-                if amount_value <= 0 or amount_value > 250:
-                    continue
-
-                context_start = max(0, match.start() - 140)
-                context_end = min(len(page_text), match.end() + 140)
-                context = page_text[context_start:context_end]
-                context_lower = context.lower()
-                in_cost_section_tail = cost_section_index >= 0 and match.start() >= cost_section_index
-
-                score = 0
-                if any(token in context_lower for token in ["cost for parking", "parking fee", "per vehicle"]):
-                    score += 5
-                if any(token in context_lower for token in ["monthly", "one-time"]):
-                    score += 2
-                if 20 <= amount_value <= 500:
-                    score += 2
-                if in_cost_section_tail:
-                    score += 3
-
-                if any(token in context_lower for token in ["nsf", "returned check"]):
-                    score -= 6
-                if any(token in context_lower for token in ["day of the month", "days delinquent"]):
-                    score -= 4
-                if any(token in context_lower for token in ["vehicle 1", "vehicle 2", "vehicle 3", "parking space", "permit number", "license plate", "unit no", "zip code"]):
-                    score -= 6
-                if any(token in context_lower for token in ["ip address", "date signed", "signature details", "replacement", "decal", "fine", "violation", "unreturned"]):
-                    score -= 8
-                if re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", context):
-                    score -= 8
-                if re.search(r"\b\d{1,2}:\d{2}:\d{2}\b", context):
-                    score -= 8
-
-                if score < 1:
-                    continue
-
-                normalized = normalize_money(raw_number)
+    for page_number in parking_pages:
+        page_info = pages_by_number.get(int(page_number))
+        page_text = str((page_info or {}).get("text") or "")
+        if not page_text:
+            continue
+        for regex in monthly_regexes:
+            for match in regex.finditer(page_text):
+                normalized = normalize_money(match.group(1))
                 if not normalized:
                     continue
-
-                evidence_line = re.sub(r"\s+", " ", context).strip()
-                candidates.append({
+                snippet = re.sub(r"\s+", " ", page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]).strip()
+                score = 500.0
+                if "cost for parking" in snippet.lower():
+                    score += 120.0
+                regex_candidates.append({
                     "value": f"${float(normalized):.2f}",
                     "normalized": normalized,
-                    "page_number": page_number,
-                    "evidence": evidence_line,
+                    "page_number": int(page_number),
+                    "evidence": snippet,
                     "score": score,
                 })
 
-    if not candidates:
-        return None
+    if regex_candidates:
+        regex_sorted = sorted(regex_candidates, key=lambda item: (item["score"], float(item["normalized"])), reverse=True)
+        best = regex_sorted[0]
+        logger.info(
+            "[LEASE TERMS] PARKING extracted method=regex-monthly page=%s value=%s",
+            best.get("page_number"),
+            best.get("value"),
+        )
+        return {
+            "value": best["value"],
+            "normalized": best["normalized"],
+            "page_number": best["page_number"],
+            "evidence": best["evidence"],
+            "candidates": regex_sorted[:20],
+        }
 
-    candidates_sorted = sorted(
-        candidates,
-        key=lambda item: (item["score"], item["page_number"], -float(item["normalized"])),
-        reverse=True,
-    )
-    best = candidates_sorted[0]
-
-    return {
-        "value": best["value"],
-        "normalized": best["normalized"],
-        "page_number": best["page_number"],
-        "evidence": best["evidence"],
-        "candidates": candidates_sorted if len(candidates_sorted) > 1 else None,
-    }
+    logger.warning("[LEASE TERMS] PARKING extraction failed: no anchor or monthly regex match")
+    return None
 
 
 def download_lease_document(
