@@ -2672,6 +2672,7 @@ def refresh_lease_terms_for_lease_interval(
     property_id: int,
     lease_interval_id: int,
     lease_id: int | None = None,
+    run_id: str | None = None,
     audit_period_start: Any = None,
     audit_period_end: Any = None,
     force_refresh: bool = False,
@@ -2699,13 +2700,22 @@ def refresh_lease_terms_for_lease_interval(
     except Exception:
         cached_terms_df = pd.DataFrame()
 
+    cached_run_id_last_seen = str(cached_term_set.get("run_id_last_seen") or "").strip()
+    current_run_id = str(run_id or "").strip()
+    is_new_run_context = bool(current_run_id and current_run_id != cached_run_id_last_seen)
+
     if not force_refresh and cached_term_set:
         last_checked_raw = cached_term_set.get("last_checked_at")
         existing_doc_list_fingerprint = str(cached_term_set.get("doc_list_fingerprint") or "").strip()
-        last_checked = pd.to_datetime(last_checked_raw, errors="coerce")
+        last_checked = pd.to_datetime(last_checked_raw, errors="coerce", utc=True)
         if not pd.isna(last_checked):
-            age = now - last_checked.to_pydatetime()
-            if age <= timedelta(hours=max(1, int(min_recheck_hours))) and existing_doc_list_fingerprint:
+            now_utc = pd.Timestamp.now(tz="UTC")
+            age = now_utc - last_checked
+            if (
+                age <= timedelta(hours=max(1, int(min_recheck_hours)))
+                and existing_doc_list_fingerprint
+                and not is_new_run_context
+            ):
                 return {
                     "lease_key": lease_key,
                     "status": "cached_recent",
@@ -2737,6 +2747,7 @@ def refresh_lease_terms_for_lease_interval(
                 "last_checked_at": now.isoformat(),
                 "last_refreshed_at": cached_term_set.get("last_refreshed_at") or now.isoformat(),
                 "status": "active",
+                "run_id_last_seen": current_run_id,
             })
 
             return {
@@ -2771,6 +2782,7 @@ def refresh_lease_terms_for_lease_interval(
                 "last_checked_at": now.isoformat(),
                 "last_refreshed_at": cached_term_set.get("last_refreshed_at") or now.isoformat(),
                 "status": "active",
+                "run_id_last_seen": current_run_id,
             })
 
             return {
@@ -2860,7 +2872,7 @@ def refresh_lease_terms_for_lease_interval(
             "last_checked_at": now.isoformat(),
             "last_refreshed_at": now.isoformat(),
             "status": "active",
-            "run_id_last_seen": "",
+            "run_id_last_seen": current_run_id,
             "refresh_error": "",
         })
 
@@ -2888,6 +2900,7 @@ def refresh_lease_terms_for_lease_interval(
                 "last_refreshed_at": cached_term_set.get("last_refreshed_at") or "",
                 "status": "stale" if not cached_terms_df.empty else "error",
                 "refresh_error": str(refresh_error),
+                "run_id_last_seen": current_run_id or cached_run_id_last_seen,
             })
         except Exception:
             pass

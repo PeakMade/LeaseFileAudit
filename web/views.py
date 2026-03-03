@@ -2976,6 +2976,7 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 property_id=int(float(property_id)),
                 lease_interval_id=int(float(lease_interval_id)),
                 lease_id=lease_id,
+                run_id=run_id,
                 audit_period_start=lease_term_period_start.isoformat() if lease_term_period_start is not None else None,
                 audit_period_end=lease_term_period_end.isoformat() if lease_term_period_end is not None else None,
                 force_refresh=force_refresh,

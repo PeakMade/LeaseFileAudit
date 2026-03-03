@@ -2024,7 +2024,7 @@ class StorageService:
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
             params = {
                 '$expand': 'fields',
-                '$filter': f"fields/LeaseKey eq '{lease_key}' and fields/IsActive eq 1",
+                '$filter': f"fields/LeaseKey eq '{lease_key}'",
                 '$top': 5000,
             }
             response = requests.get(items_url, headers=headers, params=params, timeout=30)
@@ -2035,6 +2035,19 @@ class StorageService:
             rows = []
             for item in response.json().get('value', []):
                 fields = item.get('fields', {})
+                is_active_raw = fields.get('IsActive')
+                is_active = True
+                if is_active_raw is not None:
+                    if isinstance(is_active_raw, bool):
+                        is_active = is_active_raw
+                    elif isinstance(is_active_raw, (int, float)):
+                        is_active = int(is_active_raw) == 1
+                    else:
+                        is_active = str(is_active_raw).strip().lower() in {'1', 'true', 'yes'}
+
+                if not is_active:
+                    continue
+
                 rows.append({
                     'term_key': fields.get('TermKey'),
                     'lease_key': fields.get('LeaseKey'),

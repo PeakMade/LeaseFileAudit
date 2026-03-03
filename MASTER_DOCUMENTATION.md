@@ -390,7 +390,8 @@ StorageService:
 4. Re-fetch full doc metadata and compute deterministic `DocListFingerprint`
 5. If `DocListFingerprint` is unchanged and cached `LeaseTerms` exist, reuse cached terms (no download)
 6. Otherwise compute selected-doc fingerprint and re-parse only when selected parse inputs changed (or forced)
-6. Fail open: if refresh errors and cached terms exist, return stale cached terms
+7. New audit run context (`run_id` changed) bypasses TTL short-circuit to ensure doc-list check occurs on first lease open in that run
+8. Fail open: if refresh errors and cached terms exist, return stale cached terms
 
 **Lease View Integration (`web/views.py`)**:
 - `lease_view()` calls `refresh_lease_terms_for_lease_interval(...)`
@@ -1302,6 +1303,9 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-03**: Fixed lease-view overlay skip caused by mixed offset-naive/offset-aware datetime subtraction in `audit_engine/entrata_lease_terms.py` by normalizing TTL age comparison timestamps to UTC-aware values before subtraction
+- **2026-03-03**: Updated lease-term refresh in `audit_engine/entrata_lease_terms.py` and `web/views.py` to pass `run_id` into refresh and bypass TTL short-circuit for new audit runs, so first lease open in a new run always re-checks resident doc list while still reusing cached terms when `DocListFingerprint` is unchanged
+- **2026-03-03**: Fixed persisted lease-term display on unchanged document lists by relaxing SharePoint `LeaseTerms` query filtering in `storage/service.py` (load by `LeaseKey`, then normalize/filter `IsActive` in Python), avoiding Graph boolean-filter mismatches that could return empty term sets on subsequent lease views
 - **2026-03-03**: Improved base-rent extraction in `audit_engine/entrata_lease_terms.py` for Bibby-style lease formats by increasing monthly/installment context scoring near rent anchors, adding stronger penalties for total-term rent context, and applying safe monthly-inference override when anchor-selected values appear to be term totals
 - **2026-03-03**: Fixed `LeaseTerms` unique-constraint collisions by scoping extracted `term_key` values with lease key (`PROPERTY_ID:LEASE_INTERVAL_ID`) in `audit_engine/entrata_lease_terms.py` before SharePoint writes, preventing cross-lease duplicates for keys like `BASE_RENT:RENT:::`
 - **2026-03-03**: Updated lease-term refresh gating in `audit_engine/entrata_lease_terms.py` to use `DocListFingerprint` as the primary no-download reuse check (after doc-list fetch), so unchanged resident document lists return cached `LeaseTerms` from SharePoint without re-downloading packets/addenda; selected-doc `FingerprintHash` remains as secondary parse-input guard
