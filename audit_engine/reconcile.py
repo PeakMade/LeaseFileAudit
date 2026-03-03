@@ -463,6 +463,9 @@ def _match_tertiary_date_mismatch(
         return ar_result, scheduled_result
     
     matched_count = 0
+    bucket_count = 0
+    unusual_bucket_count = 0
+    missing_post_date_events = 0
     logger.info(
         f"[TERTIARY] Starting tertiary matching: unmatched_ar={len(ar_df)}, "
         f"unmatched_scheduled={len(scheduled_df)}"
@@ -470,6 +473,7 @@ def _match_tertiary_date_mismatch(
     
     # Group by lease interval and AR code to find date mismatches
     for (lease_id, ar_code), ar_group in ar_df.groupby([CanonicalField.LEASE_INTERVAL_ID.value, CanonicalField.AR_CODE_ID.value]):
+        bucket_count += 1
         # Find matching scheduled charges for this lease + AR code (that aren't already matched)
         sched_candidates = scheduled_result[
             (scheduled_result[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id) &
@@ -510,7 +514,8 @@ def _match_tertiary_date_mismatch(
             else:
                 # No date field or can't check, treat all as potential mismatches
                 date_mismatch_candidates = available_candidates
-                logger.warning(
+                missing_post_date_events += 1
+                logger.debug(
                     f"[TERTIARY] Bucket lease={lease_id} ar_code={ar_code}: "
                     f"AR transaction {ar_id} missing post_date; using all candidates for tertiary evaluation"
                 )
@@ -560,19 +565,24 @@ def _match_tertiary_date_mismatch(
             matched_count += 1
             bucket_matched += 1
 
-        logger.info(
+        logger.debug(
             f"[TERTIARY] Bucket summary lease={lease_id} ar_code={ar_code}: "
             f"ar_rows={len(ar_group)} sched_unmatched={len(sched_candidates)} matched={bucket_matched}"
         )
         if bucket_no_date_mismatch > 0 or bucket_amount_fallback > 0 or bucket_ambiguous_amount_matches > 0:
-            logger.warning(
+            unusual_bucket_count += 1
+            logger.debug(
                 f"[TERTIARY] Bucket unusual lease={lease_id} ar_code={ar_code}: "
                 f"no_date_mismatch={bucket_no_date_mismatch}, "
                 f"amount_fallback_matches={bucket_amount_fallback}, "
                 f"ambiguous_amount_candidates={bucket_ambiguous_amount_matches}"
             )
 
-    logger.info(f"Tertiary matching: {matched_count} AR transactions matched to scheduled charges (date mismatches)")
+    logger.info(
+        f"Tertiary matching: {matched_count} AR transactions matched to scheduled charges (date mismatches); "
+        f"buckets={bucket_count}, unusual_buckets={unusual_bucket_count}, "
+        f"missing_post_date_events={missing_post_date_events}"
+    )
 
     return ar_result, scheduled_result
 
