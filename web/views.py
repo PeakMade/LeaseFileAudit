@@ -1,7 +1,7 @@
 """
 Flask views for Lease File Audit application.
 """
-from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, session
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, jsonify, session, has_request_context
 from werkzeug.utils import secure_filename
 from pathlib import Path
 import pandas as pd
@@ -30,11 +30,56 @@ from storage.service import StorageService
 from config import config
 from web.auth import require_auth, optional_auth, get_current_user, get_access_token
 from activity_logging.sharepoint import log_user_activity
-from app import cache  # Import cache instance
+from extensions import cache
 import os
 
 logger = logging.getLogger(__name__)
 bp = Blueprint('main', __name__)
+
+
+def _session_cache_token() -> str:
+    """Return a stable cache key segment that rotates with session lifecycle."""
+    if not has_request_context():
+        return "no-request"
+    return session.get('session_id') or "no-session"
+
+
+def _safe_seconds_from_iso(started_at_iso: str) -> float:
+    if not started_at_iso:
+        return 0.0
+    try:
+        started_at = datetime.fromisoformat(started_at_iso)
+        return max(0.0, (datetime.utcnow() - started_at).total_seconds())
+    except Exception:
+        return 0.0
+
+
+def _log_and_clear_pending_upload_timing(run_id: str, destination: str, destination_route_seconds: float) -> None:
+    pending = session.get('pending_upload_timing')
+    if not isinstance(pending, dict):
+        return
+
+    pending_run_id = str(pending.get('run_id') or '')
+    if pending_run_id != str(run_id):
+        return
+
+    end_to_end_seconds = _safe_seconds_from_iso(str(pending.get('request_started_at_utc') or ''))
+    logger.info(
+        "[AUDIT TIMER][E2E] "
+        f"run_id={run_id} "
+        f"destination={destination} "
+        f"upload_request_seconds={float(pending.get('upload_request_seconds') or 0):.2f} "
+        f"file_save_seconds={float(pending.get('file_save_seconds') or 0):.2f} "
+        f"execute_seconds={float(pending.get('execute_seconds') or 0):.2f} "
+        f"overlay_seconds={float(pending.get('overlay_seconds') or 0):.2f} "
+        f"save_run_seconds={float(pending.get('save_run_seconds') or 0):.2f} "
+        f"cache_clear_seconds={float(pending.get('cache_clear_seconds') or 0):.2f} "
+        f"cleanup_seconds={float(pending.get('cleanup_seconds') or 0):.2f} "
+        f"activity_log_seconds={float(pending.get('activity_log_seconds') or 0):.2f} "
+        f"post_upload_route_seconds={destination_route_seconds:.2f} "
+        f"end_to_end_seconds={end_to_end_seconds:.2f}"
+    )
+    session.pop('pending_upload_timing', None)
 
 
 def get_storage_service() -> StorageService:
@@ -51,8 +96,8 @@ def get_storage_service() -> StorageService:
     )
 
 
-@cache.memoize(timeout=600)  # Cache for 10 minutes
-def cached_load_run(run_id: str):
+@cache.memoize(timeout=14400)  # Cache for 4 hours per session
+def cached_load_run(run_id: str, session_cache_key: str = None):
     """
     Cached wrapper for load_run() to avoid repeated CSV downloads.
     Cache key includes run_id automatically.
@@ -62,8 +107,8 @@ def cached_load_run(run_id: str):
     return storage.load_run(run_id)
 
 
-@cache.memoize(timeout=300)  # Cache for 5 minutes
-def cached_load_property_exception_months(run_id: str, property_id: int):
+@cache.memoize(timeout=14400)  # Cache for 4 hours per session
+def cached_load_property_exception_months(run_id: str, property_id: int, session_cache_key: str = None):
     """
     Cached bulk fetch of all exception months for a property.
     Replaces hundreds of individual API calls with ONE cached result.
@@ -73,8 +118,8 @@ def cached_load_property_exception_months(run_id: str, property_id: int):
     return storage.load_property_exception_months_bulk(run_id, property_id)
 
 
-@cache.memoize(timeout=300)
-def cached_load_bucket_results(run_id: str, property_id=None, lease_interval_id=None):
+@cache.memoize(timeout=14400)
+def cached_load_bucket_results(run_id: str, property_id=None, lease_interval_id=None, session_cache_key: str = None):
     """Cached wrapper for bucket results by run and optional scope."""
     logger.info(
         f"[CACHE] ⏬ Cache MISS: Loading bucket_results for run={run_id}, "
@@ -84,8 +129,8 @@ def cached_load_bucket_results(run_id: str, property_id=None, lease_interval_id=
     return storage.load_bucket_results(run_id, property_id=property_id, lease_interval_id=lease_interval_id)
 
 
-@cache.memoize(timeout=300)
-def cached_load_findings(run_id: str, property_id=None, lease_interval_id=None):
+@cache.memoize(timeout=14400)
+def cached_load_findings(run_id: str, property_id=None, lease_interval_id=None, session_cache_key: str = None):
     """Cached wrapper for findings by run and optional scope."""
     logger.info(
         f"[CACHE] ⏬ Cache MISS: Loading findings for run={run_id}, "
@@ -95,32 +140,32 @@ def cached_load_findings(run_id: str, property_id=None, lease_interval_id=None):
     return storage.load_findings(run_id, property_id=property_id, lease_interval_id=lease_interval_id)
 
 
-@cache.memoize(timeout=300)
-def cached_load_actual_detail(run_id: str):
+@cache.memoize(timeout=14400)
+def cached_load_actual_detail(run_id: str, session_cache_key: str = None):
     """Cached wrapper for actual_detail by run."""
     logger.info(f"[CACHE] ⏬ Cache MISS: Loading actual_detail for run={run_id}")
     storage = get_storage_service()
     return storage.load_actual_detail(run_id)
 
 
-@cache.memoize(timeout=300)
-def cached_load_expected_detail(run_id: str):
+@cache.memoize(timeout=14400)
+def cached_load_expected_detail(run_id: str, session_cache_key: str = None):
     """Cached wrapper for expected_detail by run."""
     logger.info(f"[CACHE] ⏬ Cache MISS: Loading expected_detail for run={run_id}")
     storage = get_storage_service()
     return storage.load_expected_detail(run_id)
 
 
-@cache.memoize(timeout=300)
-def cached_load_metadata(run_id: str):
+@cache.memoize(timeout=14400)
+def cached_load_metadata(run_id: str, session_cache_key: str = None):
     """Cached wrapper for run metadata by run."""
     logger.info(f"[CACHE] ⏬ Cache MISS: Loading metadata for run={run_id}")
     storage = get_storage_service()
     return storage.load_metadata(run_id)
 
 
-@cache.memoize(timeout=300)
-def cached_load_run_display_snapshot(run_id: str, scope_type: str, property_id=None, lease_interval_id=None):
+@cache.memoize(timeout=14400)
+def cached_load_run_display_snapshot(run_id: str, scope_type: str, property_id=None, lease_interval_id=None, session_cache_key: str = None):
     """Cached wrapper for run display snapshot lookup."""
     logger.info(
         f"[CACHE] ⏬ Cache MISS: Loading run display snapshot for run={run_id}, "
@@ -135,8 +180,8 @@ def cached_load_run_display_snapshot(run_id: str, scope_type: str, property_id=N
     )
 
 
-@cache.memoize(timeout=300)
-def cached_load_run_display_snapshots_for_property(run_id: str, property_id: int, scope_type: str = 'lease'):
+@cache.memoize(timeout=14400)
+def cached_load_run_display_snapshots_for_property(run_id: str, property_id: int, scope_type: str = 'lease', session_cache_key: str = None):
     """Cached wrapper for all snapshot rows for a property."""
     logger.info(
         f"[CACHE] ⏬ Cache MISS: Loading run display snapshots for run={run_id}, "
@@ -150,8 +195,8 @@ def cached_load_run_display_snapshots_for_property(run_id: str, property_id: int
     )
 
 
-@cache.memoize(timeout=300)
-def cached_load_run_display_snapshots_for_run(run_id: str, scope_type: str = 'property'):
+@cache.memoize(timeout=14400)
+def cached_load_run_display_snapshots_for_run(run_id: str, scope_type: str = 'property', session_cache_key: str = None):
     """Cached wrapper for all snapshot rows for a run and scope."""
     logger.info(
         f"[CACHE] ⏬ Cache MISS: Loading run display snapshots for run={run_id}, "
@@ -166,6 +211,7 @@ def cached_load_run_display_snapshots_for_run(run_id: str, scope_type: str = 'pr
 
 def _clear_run_scoped_caches(run_id: str, property_id=None, lease_interval_id=None):
     """Clear memoized caches for a specific run and optional property/lease scope."""
+    session_cache_key = _session_cache_token()
 
     def _safe_delete(func, *args):
         try:
@@ -175,28 +221,28 @@ def _clear_run_scoped_caches(run_id: str, property_id=None, lease_interval_id=No
         except Exception as e:
             logger.warning(f"[CACHE] delete_memoized failed for {func.__name__}{args}: {e}")
 
-    _safe_delete(cached_load_run, run_id)
-    _safe_delete(cached_load_bucket_results, run_id, None, None)
-    _safe_delete(cached_load_findings, run_id, None, None)
-    _safe_delete(cached_load_actual_detail, run_id)
-    _safe_delete(cached_load_expected_detail, run_id)
-    _safe_delete(cached_load_metadata, run_id)
-    _safe_delete(cached_load_run_display_snapshot, run_id, 'portfolio', None, None)
-    _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'property')
-    _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'lease')
+    _safe_delete(cached_load_run, run_id, session_cache_key)
+    _safe_delete(cached_load_bucket_results, run_id, None, None, session_cache_key)
+    _safe_delete(cached_load_findings, run_id, None, None, session_cache_key)
+    _safe_delete(cached_load_actual_detail, run_id, session_cache_key)
+    _safe_delete(cached_load_expected_detail, run_id, session_cache_key)
+    _safe_delete(cached_load_metadata, run_id, session_cache_key)
+    _safe_delete(cached_load_run_display_snapshot, run_id, 'portfolio', None, None, session_cache_key)
+    _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'property', session_cache_key)
+    _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'lease', session_cache_key)
 
     if property_id is not None:
         property_id_int = int(float(property_id))
-        _safe_delete(cached_load_bucket_results, run_id, property_id_int, None)
-        _safe_delete(cached_load_findings, run_id, property_id_int, None)
-        _safe_delete(cached_load_property_exception_months, run_id, property_id_int)
-        _safe_delete(cached_load_run_display_snapshot, run_id, 'property', property_id_int, None)
-        _safe_delete(cached_load_run_display_snapshots_for_property, run_id, property_id_int, 'lease')
+        _safe_delete(cached_load_bucket_results, run_id, property_id_int, None, session_cache_key)
+        _safe_delete(cached_load_findings, run_id, property_id_int, None, session_cache_key)
+        _safe_delete(cached_load_property_exception_months, run_id, property_id_int, session_cache_key)
+        _safe_delete(cached_load_run_display_snapshot, run_id, 'property', property_id_int, None, session_cache_key)
+        _safe_delete(cached_load_run_display_snapshots_for_property, run_id, property_id_int, 'lease', session_cache_key)
 
         if lease_interval_id is not None:
             lease_interval_id_int = int(float(lease_interval_id))
-            _safe_delete(cached_load_bucket_results, run_id, property_id_int, lease_interval_id_int)
-            _safe_delete(cached_load_run_display_snapshot, run_id, 'lease', property_id_int, lease_interval_id_int)
+            _safe_delete(cached_load_bucket_results, run_id, property_id_int, lease_interval_id_int, session_cache_key)
+            _safe_delete(cached_load_run_display_snapshot, run_id, 'lease', property_id_int, lease_interval_id_int, session_cache_key)
 
     _safe_delete(calculate_cumulative_metrics)
 
@@ -479,10 +525,6 @@ def clear_run_cache(run_id: str = None):
     if run_id:
         logger.info(f"[CACHE] 🧹 Clearing cache for run {run_id}")
         _clear_run_scoped_caches(run_id)
-        try:
-            cache.delete_memoized(get_available_runs)
-        except Exception as e:
-            logger.warning(f"[CACHE] Failed to clear available runs cache: {e}")
         logger.info(f"[CACHE] ✅ Cleared run-scoped cache entries for run {run_id}")
         return
     else:
@@ -516,8 +558,8 @@ def clear_run_cache(run_id: str = None):
         logger.warning(f"[CACHE] Fallback clear failed; continuing without hard failure: {e}")
 
 
-@cache.cached(timeout=300)  # Cache run list for 5 minutes
-def get_available_runs() -> list:
+@cache.memoize(timeout=43200)  # Cache run list for 12 hours per session
+def get_available_runs(session_cache_key: str = None) -> list:
     """Get all available runs sorted by date (most recent first)."""
     logger.info("[CACHE] ⏬ Cache MISS: Loading available runs list from SharePoint")
     storage = get_storage_service()
@@ -543,16 +585,47 @@ def get_available_runs() -> list:
     return formatted_runs
 
 
+@cache.memoize(timeout=3600)  # Cache latest run lookup for 1 hour per session
+def get_latest_run(session_cache_key: str = None) -> dict:
+    """Get most recent run metadata without loading full run history."""
+    logger.info("[CACHE] ⏬ Cache MISS: Loading latest run metadata")
+    storage = get_storage_service()
+    runs = storage.list_runs(limit=1)
+    if not runs:
+        return {}
+
+    run = runs[0]
+    return {
+        'run_id': run.get('run_id'),
+        'timestamp': run.get('timestamp', 'Unknown'),
+        'audit_period': run.get('audit_period', {}),
+        'run_type': run.get('run_type', 'Manual')
+    }
+
+
+def invalidate_runs_cache() -> None:
+    """Invalidate run-picker caches. Call only when runs are added/removed."""
+    cache_token = _session_cache_token()
+    try:
+        cache.delete_memoized(get_available_runs, cache_token)
+    except Exception as e:
+        logger.warning(f"[CACHE] Failed to clear available runs cache: {e}")
+    try:
+        cache.delete_memoized(get_latest_run, cache_token)
+    except Exception as e:
+        logger.warning(f"[CACHE] Failed to clear latest run cache: {e}")
+
+
 @bp.route('/api/runs', methods=['GET'])
 @require_auth
 def get_available_runs_api():
     """Return available runs for lazy-loaded run pickers."""
-    runs = get_available_runs()
+    runs = get_available_runs(_session_cache_token())
     return jsonify({'runs': runs})
 
 
-@cache.cached(timeout=300)  # Cache metrics for 5 minutes
-def calculate_cumulative_metrics() -> dict:
+@cache.memoize(timeout=3600)  # Cache metrics for 1 hour per session
+def calculate_cumulative_metrics(session_cache_key: str = None) -> dict:
     """Calculate cumulative portfolio metrics across all audit runs."""
     logger.info("[CACHE] ⏬ Cache MISS: Calculating cumulative metrics")
     storage = get_storage_service()
@@ -599,7 +672,7 @@ def calculate_cumulative_metrics() -> dict:
             for property_id in unique_properties:
                 # Use cached bulk fetch
                 bulk_exception_data = cached_load_property_exception_months(
-                    most_recent_run_id, int(float(property_id))
+                    most_recent_run_id, int(float(property_id)), session_cache_key
                 )
                 
                 # Process all resolved exceptions from bulk data
@@ -1381,8 +1454,12 @@ def upload():
         return redirect(url_for('main.index'))
     
     audit_started_at = None
+    request_started_at_utc = None
 
     try:
+        request_started_at_utc = datetime.utcnow()
+        audit_started_at = perf_counter()
+
         # Get audit period filters from form
         audit_year = request.form.get('audit_year')
         audit_month = request.form.get('audit_month')
@@ -1415,10 +1492,12 @@ def upload():
         else:
             file_path = run_dir / filename
         
+        file_save_started = perf_counter()
         file.save(str(file_path))
+        file_save_seconds = perf_counter() - file_save_started
         
         # Execute audit with period filter and optional property scope.
-        audit_started_at = perf_counter()
+        execute_started = perf_counter()
         results = execute_audit_run(
             file_path,
             run_id,
@@ -1426,10 +1505,13 @@ def upload():
             audit_month,
             scoped_property_ids=scoped_property_ids
         )
+        execute_seconds = perf_counter() - execute_started
 
         # For property-scoped runs, overlay onto latest baseline run so portfolio remains complete.
         base_run_id = None
+        overlay_seconds = 0.0
         if scoped_property_ids:
+            overlay_started = perf_counter()
             try:
                 prior_runs = storage.list_runs(limit=50)
                 for run in prior_runs:
@@ -1451,6 +1533,8 @@ def upload():
                     )
             except Exception as overlay_error:
                 logger.warning(f"[PROPERTY SCOPE] Baseline overlay skipped due to error: {overlay_error}")
+            finally:
+                overlay_seconds = perf_counter() - overlay_started
         
         # Save results
         metadata = storage.create_metadata(run_id, file_path)
@@ -1466,6 +1550,7 @@ def upload():
                 'month': audit_month
             }
         
+        save_run_started = perf_counter()
         storage.save_run(
             run_id,
             results["expected_detail"],
@@ -1477,19 +1562,29 @@ def upload():
             file_path,  # Pass the original Excel file path
             property_name_map=results.get("property_name_map"),
         )
+
+        # New run added: invalidate run-picker caches.
+        invalidate_runs_cache()
+        save_run_seconds = perf_counter() - save_run_started
         
         # 🧹 CLEAR CACHE after new upload
         logger.info(f"[CACHE] Clearing cache after new upload (run_id: {run_id})")
+        cache_clear_started = perf_counter()
         clear_run_cache(run_id)
+        cache_clear_seconds = perf_counter() - cache_clear_started
         
         # Clean up temp file if using SharePoint
+        cleanup_seconds = 0.0
         if storage.use_sharepoint:
+            cleanup_started = perf_counter()
             import shutil
             try:
                 shutil.rmtree(file_path.parent)  # Remove temp directory
             except Exception as e:
                 import logging
                 logging.warning(f"Failed to cleanup temp directory: {e}")
+            finally:
+                cleanup_seconds = perf_counter() - cleanup_started
         
         # Create success message with period info
         period_msg = ""
@@ -1505,7 +1600,9 @@ def upload():
         
         # Log successful audit completion to SharePoint
         user = get_current_user()
+        activity_log_seconds = 0.0
         if user and config.auth.can_log_to_sharepoint():
+            activity_started = perf_counter()
             log_user_activity(
                 user_info=user,
                 activity_type='Successful Audit',
@@ -1520,13 +1617,34 @@ def upload():
                     'user_role': 'user'
                 }
             )
+            activity_log_seconds = perf_counter() - activity_started
 
         if audit_started_at is not None:
             elapsed_seconds = perf_counter() - audit_started_at
             logger.info(
                 f"[AUDIT TIMER] SUCCESS run_id={run_id} file={filename} "
-                f"elapsed_seconds={elapsed_seconds:.2f}"
+                f"elapsed_seconds={elapsed_seconds:.2f} "
+                f"file_save_seconds={file_save_seconds:.2f} "
+                f"execute_seconds={execute_seconds:.2f} "
+                f"overlay_seconds={overlay_seconds:.2f} "
+                f"save_run_seconds={save_run_seconds:.2f} "
+                f"cache_clear_seconds={cache_clear_seconds:.2f} "
+                f"cleanup_seconds={cleanup_seconds:.2f} "
+                f"activity_log_seconds={activity_log_seconds:.2f}"
             )
+
+        session['pending_upload_timing'] = {
+            'run_id': run_id,
+            'request_started_at_utc': request_started_at_utc.isoformat() if request_started_at_utc else '',
+            'upload_request_seconds': float(perf_counter() - audit_started_at) if audit_started_at is not None else 0.0,
+            'file_save_seconds': float(file_save_seconds),
+            'execute_seconds': float(execute_seconds),
+            'overlay_seconds': float(overlay_seconds),
+            'save_run_seconds': float(save_run_seconds),
+            'cache_clear_seconds': float(cache_clear_seconds),
+            'cleanup_seconds': float(cleanup_seconds),
+            'activity_log_seconds': float(activity_log_seconds),
+        }
 
         if len(scoped_property_ids) == 1:
             return redirect(url_for('main.property_view', property_id=scoped_property_ids[0], run_id=run_id))
@@ -1573,24 +1691,25 @@ def upload():
 def portfolio(run_id: str = None):
     """Portfolio view - Cumulative KPIs across all runs."""
     try:
-        available_runs = get_available_runs()
-        if not available_runs:
-            flash('No audit runs available', 'warning')
-            return redirect(url_for('main.index'))
-
-        # Use most recent run if not specified
+        route_started = perf_counter()
+        cache_token = _session_cache_token()
         if not run_id:
-            run_id = available_runs[0]['run_id']
+            latest_run = get_latest_run(cache_token)
+            run_id = latest_run.get('run_id')
+            if not run_id:
+                flash('No audit runs available', 'warning')
+                return redirect(url_for('main.index'))
 
         try:
-            metadata = cached_load_metadata(run_id)
+            metadata = cached_load_metadata(run_id, cache_token)
         except Exception:
             metadata = {'timestamp': 'Unknown'}
 
         # Snapshot-only header metrics.
         portfolio_snapshot = cached_load_run_display_snapshot(
             run_id=run_id,
-            scope_type='portfolio'
+            scope_type='portfolio',
+            session_cache_key=cache_token
         )
 
         kpis = {
@@ -1600,8 +1719,8 @@ def portfolio(run_id: str = None):
             'historical_overcharge': 0.0,
             'open_exceptions': 0,
             'match_rate': 0.0,
-            'total_runs': len(available_runs),
-            'most_recent_run': {'run_id': available_runs[0]['run_id']} if available_runs else None,
+            'total_runs': 0,
+            'most_recent_run': {'run_id': run_id} if run_id else None,
         }
 
         if portfolio_snapshot:
@@ -1622,7 +1741,11 @@ def portfolio(run_id: str = None):
             )
 
         # Snapshot-only property rows (no bucket/findings recompute path).
-        property_snapshots = cached_load_run_display_snapshots_for_run(run_id=run_id, scope_type='property')
+        property_snapshots = cached_load_run_display_snapshots_for_run(
+            run_id=run_id,
+            scope_type='property',
+            session_cache_key=cache_token
+        )
         logger.info(f"[SNAPSHOT][PORTFOLIO] Loaded {len(property_snapshots)} property snapshot rows for run {run_id}")
 
         properties = []
@@ -1651,14 +1774,21 @@ def portfolio(run_id: str = None):
 
         properties.sort(key=lambda p: p.get('exception_buckets', 0), reverse=True)
         
-        return render_template(
+        response = render_template(
             'portfolio.html',
             run_id=run_id,
             metadata=metadata,
             kpis=kpis,
             properties=properties,
-            total_runs=kpis['total_runs']
+            total_runs=kpis['total_runs'],
+            current_run_id=run_id,
         )
+        _log_and_clear_pending_upload_timing(
+            run_id=run_id,
+            destination='portfolio',
+            destination_route_seconds=(perf_counter() - route_started)
+        )
+        return response
     except Exception as e:
         import traceback
         print(f"[ERROR] Portfolio view error: {str(e)}")
@@ -1789,11 +1919,13 @@ def get_ar_code_status_api(run_id: str, property_id: int, lease_interval_id: int
 def property_view(property_id: str, run_id: str = None):
     """Property view - exceptions grouped by lease with run selector."""
     try:
+        route_started = perf_counter()
         storage = get_storage_service()
+        cache_token = _session_cache_token()
 
         # Resolve selected run without loading full run list unless needed.
         if not run_id:
-            latest_runs = get_available_runs()
+            latest_runs = get_available_runs(cache_token)
             if latest_runs:
                 run_id = latest_runs[0]['run_id']
             else:
@@ -1801,25 +1933,28 @@ def property_view(property_id: str, run_id: str = None):
                 return redirect(url_for('main.index'))
         
         try:
-            metadata = cached_load_metadata(run_id)
+            metadata = cached_load_metadata(run_id, cache_token)
         except Exception:
             metadata = {'timestamp': 'Unknown'}
 
         # Get bucket results for this property from AuditRuns
         all_property_buckets = cached_load_bucket_results(
             run_id,
-            property_id=int(float(property_id))
+            property_id=int(float(property_id)),
+            session_cache_key=cache_token
         )
 
         property_snapshot = cached_load_run_display_snapshot(
             run_id=run_id,
             scope_type='property',
-            property_id=int(float(property_id))
+            property_id=int(float(property_id)),
+            session_cache_key=cache_token
         )
         lease_snapshot_map = cached_load_run_display_snapshots_for_property(
             run_id=run_id,
             property_id=int(float(property_id)),
-            scope_type='lease'
+            scope_type='lease',
+            session_cache_key=cache_token
         )
         if property_snapshot:
             logger.info(
@@ -1837,7 +1972,7 @@ def property_view(property_id: str, run_id: str = None):
         # Resolve property name from uploaded run data (actual first, expected fallback)
         property_name = None
         try:
-            actual_detail_for_name = cached_load_actual_detail(run_id)
+            actual_detail_for_name = cached_load_actual_detail(run_id, cache_token)
             if not actual_detail_for_name.empty and CanonicalField.PROPERTY_NAME.value in actual_detail_for_name.columns:
                 property_matches = actual_detail_for_name[
                     actual_detail_for_name[CanonicalField.PROPERTY_ID.value] == float(property_id)
@@ -1848,7 +1983,7 @@ def property_view(property_id: str, run_id: str = None):
                         property_name = str(name_value).strip()
 
             if not property_name:
-                expected_detail_for_name = cached_load_expected_detail(run_id)
+                expected_detail_for_name = cached_load_expected_detail(run_id, cache_token)
                 if not expected_detail_for_name.empty and CanonicalField.PROPERTY_NAME.value in expected_detail_for_name.columns:
                     property_matches = expected_detail_for_name[
                         expected_detail_for_name[CanonicalField.PROPERTY_ID.value] == float(property_id)
@@ -1870,7 +2005,7 @@ def property_view(property_id: str, run_id: str = None):
         try:
             lease_ids_normalized = {int(float(lease_id)) for lease_id in all_lease_ids}
 
-            actual_detail = cached_load_actual_detail(run_id)
+            actual_detail = cached_load_actual_detail(run_id, cache_token)
             if not actual_detail.empty and CanonicalField.LEASE_INTERVAL_ID.value in actual_detail.columns:
                 for _, record in actual_detail.iterrows():
                     lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
@@ -1886,7 +2021,7 @@ def property_view(property_id: str, run_id: str = None):
                         lease_customer_names[lease_key] = str(customer_value).strip()
 
             if len(lease_customer_names) < len(lease_ids_normalized):
-                expected_detail = cached_load_expected_detail(run_id)
+                expected_detail = cached_load_expected_detail(run_id, cache_token)
                 if not expected_detail.empty and CanonicalField.LEASE_INTERVAL_ID.value in expected_detail.columns:
                     for _, record in expected_detail.iterrows():
                         lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
@@ -1910,7 +2045,11 @@ def property_view(property_id: str, run_id: str = None):
         
         # 🚀 BULK FETCH: Load all exception months for this property in ONE call
         logger.info(f"[PROPERTY_VIEW] Bulk fetching exception months for property {property_id}")
-        bulk_exception_data = cached_load_property_exception_months(run_id, int(float(property_id)))
+        bulk_exception_data = cached_load_property_exception_months(
+            run_id,
+            int(float(property_id)),
+            cache_token
+        )
         
         # Build resolved_keys from bulk data
         resolved_keys = set()
@@ -2020,7 +2159,7 @@ def property_view(property_id: str, run_id: str = None):
         
         property_kpis = calculate_kpis(
             kpis_input,  # Use filtered dataset (matched + unresolved exceptions only)
-            cached_load_findings(run_id, property_id=int(float(property_id))),
+            cached_load_findings(run_id, property_id=int(float(property_id)), session_cache_key=cache_token),
             property_id=None  # Already filtered, don't filter again
         )
 
@@ -2034,7 +2173,7 @@ def property_view(property_id: str, run_id: str = None):
                 property_snapshot.get('overcharge', property_kpis.get('total_overcharge', 0)) or 0
             )
         
-        return render_template(
+        response = render_template(
             'property.html',
             run_id=run_id,
             property_id=property_id,
@@ -2053,6 +2192,12 @@ def property_view(property_id: str, run_id: str = None):
             ],
             current_run_id=run_id
         )
+        _log_and_clear_pending_upload_timing(
+            run_id=run_id,
+            destination='property',
+            destination_route_seconds=(perf_counter() - route_started)
+        )
+        return response
     except Exception as e:
         import traceback
         print(f"[ERROR] Property view error: {str(e)}")
@@ -2140,15 +2285,17 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
     """Lease view - detailed exceptions for a specific lease."""
     try:
         storage = get_storage_service()
+        cache_token = _session_cache_token()
         bucket_results = cached_load_bucket_results(
             run_id,
             property_id=int(float(property_id)),
-            lease_interval_id=int(float(lease_interval_id))
+            lease_interval_id=int(float(lease_interval_id)),
+            session_cache_key=cache_token
         )
-        expected_detail = cached_load_expected_detail(run_id)
-        actual_detail = cached_load_actual_detail(run_id)
+        expected_detail = cached_load_expected_detail(run_id, cache_token)
+        actual_detail = cached_load_actual_detail(run_id, cache_token)
         try:
-            run_metadata = cached_load_metadata(run_id)
+            run_metadata = cached_load_metadata(run_id, cache_token)
         except Exception:
             run_metadata = {'timestamp': 'Unknown'}
 
@@ -2156,7 +2303,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
             run_id=run_id,
             scope_type='lease',
             property_id=int(float(property_id)),
-            lease_interval_id=int(float(lease_interval_id))
+            lease_interval_id=int(float(lease_interval_id)),
+            session_cache_key=cache_token
         )
         if lease_snapshot:
             logger.info(
@@ -2959,7 +3107,7 @@ def bucket_drilldown(run_id: str, property_id: str, lease_interval_id: str,
     """Bucket drilldown - expected vs actual detail and findings."""
     try:
         storage = get_storage_service()
-        run_data = cached_load_run(run_id)
+        run_data = cached_load_run(run_id, _session_cache_token())
         
         # Convert audit_month to datetime
         audit_month_dt = pd.to_datetime(audit_month)

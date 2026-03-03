@@ -14,4 +14,6 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     # Use debug mode for local development to enable auto-reload
     debug = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
-    app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=True)
+    use_reloader = os.environ.get('FLASK_USE_RELOADER', 'False').lower() == 'true'
+    print(f"[STARTUP] port={port} debug={debug} use_reloader={use_reloader}")
+    app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=use_reloader)

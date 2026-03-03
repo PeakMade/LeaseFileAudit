@@ -1300,6 +1300,10 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-03**: Fixed Flask-Caching startup-path instability by using a shared cache extension instance in `extensions.py` and importing it from both `app.py` and `web/views.py`, preventing `AttributeError: 'Cache' object has no attribute 'app'` when launching with different entrypoints
+- **2026-03-03**: Optimized portfolio first-load path in `web/views.py` by removing full run-list fetch as a prerequisite for `GET /portfolio/<run_id>`, adding lightweight `get_latest_run()` lookup when `run_id` is omitted, and restricting run-list cache invalidation to new-run creation
+- **2026-03-03**: Added lazy run selector loading to `templates/portfolio.html` via asynchronous `/api/runs` fetch after first paint so portfolio data can render immediately without blocking on run-history retrieval
+- **2026-03-03**: Added upload timing budget instrumentation in `web/views.py` with stage-level metrics (`file_save`, `execute`, `save_run`, etc.) and end-to-end post-redirect timing (`[AUDIT TIMER][E2E]`) to include first destination page render after upload
 - **2026-03-02**: Fixed optional lease date serialization in `storage/service.py` for `LeaseTerms` writes by sending `StartDate`/`EndDate` as null when missing (instead of empty strings), preventing Graph `400 badArgument` for DateTime fields on rows like `PARKING:PARK:::PARKING`
 - **2026-03-02**: Hardened parking fee extraction in `audit_engine/entrata_lease_terms.py` to exclude NSF/returned-check rows from coordinate candidates and prioritize explicit monthly parking phrasing (e.g., "monthly per vehicle") so monthly parking amounts are selected over penalties/one-time fees
 - **2026-03-02**: Updated lease packet selection to prefer docs whose `leaseIntervalStartDate` falls inside the active audit period window, with deterministic tie-breakers by recency and declared file size; wired lease view to pass derived period bounds into lease-term refresh

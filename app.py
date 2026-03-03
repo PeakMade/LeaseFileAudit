@@ -2,12 +2,12 @@
 Flask application factory for Lease File Audit.
 """
 from flask import Flask, g, session, request
-from flask_caching import Cache
 from pathlib import Path
 import logging
 import os
 from datetime import datetime, timedelta
 import uuid
+from extensions import cache
 
 try:
     from dotenv import load_dotenv
@@ -25,10 +25,6 @@ logging.basicConfig(
 logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
 logging.getLogger("azure.monitor.opentelemetry.exporter").setLevel(logging.WARNING)
 logging.getLogger("azure").setLevel(logging.WARNING)
-
-# Initialize cache (will be configured in create_app)
-cache = Cache()
-
 
 def create_app(config_name='default'):
     """
