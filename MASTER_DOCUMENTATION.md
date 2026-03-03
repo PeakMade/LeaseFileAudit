@@ -387,8 +387,9 @@ StorageService:
 1. Build lease key (`PROPERTY_ID:LEASE_INTERVAL_ID`)
 2. Check `LeaseTermSet` for last check timestamp and fingerprint
 3. Skip full parse if within recheck TTL
-4. Re-fetch doc metadata and compute deterministic selected-doc fingerprint
-5. Re-parse only when fingerprint changes (or forced)
+4. Re-fetch full doc metadata and compute deterministic `DocListFingerprint`
+5. If `DocListFingerprint` is unchanged and cached `LeaseTerms` exist, reuse cached terms (no download)
+6. Otherwise compute selected-doc fingerprint and re-parse only when selected parse inputs changed (or forced)
 6. Fail open: if refresh errors and cached terms exist, return stale cached terms
 
 **Lease View Integration (`web/views.py`)**:
@@ -663,6 +664,7 @@ storage.upsert_exception_month_to_sharepoint_list({
 - `LeaseId` (number)
 - `TermSetVersion` (number)
 - `FingerprintHash` (text)
+- `DocListFingerprint` (text)
 - `SelectedDocIds` (text)
 - `LastCheckedAt` (datetime)
 - `LastRefreshedAt` (datetime)
@@ -1300,6 +1302,9 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-03**: Updated lease-term refresh gating in `audit_engine/entrata_lease_terms.py` to use `DocListFingerprint` as the primary no-download reuse check (after doc-list fetch), so unchanged resident document lists return cached `LeaseTerms` from SharePoint without re-downloading packets/addenda; selected-doc `FingerprintHash` remains as secondary parse-input guard
+- **2026-03-03**: Added full-document-list fingerprint persistence for `LeaseTermSet` by writing/reading `DocListFingerprint` in `storage/service.py` and computing/storing it during lease-term refresh in `audit_engine/entrata_lease_terms.py`, so lease term checks now retain full doc-list change state alongside selected-doc fingerprints
+- **2026-03-03**: Optimized SharePoint write path in `storage/service.py` by batching `RunDisplaySnapshots` inserts via Graph `$batch`, removing redundant delete-before-insert loops for run-unique writes, and dispatching heavy `AuditRuns` detail row persistence (`bucket_result`/`finding`) to background execution after core snapshot persistence so upload redirects faster while detailed rows continue syncing
 - **2026-03-03**: Fixed Flask-Caching startup-path instability by using a shared cache extension instance in `extensions.py` and importing it from both `app.py` and `web/views.py`, preventing `AttributeError: 'Cache' object has no attribute 'app'` when launching with different entrypoints
 - **2026-03-03**: Optimized portfolio first-load path in `web/views.py` by removing full run-list fetch as a prerequisite for `GET /portfolio/<run_id>`, adding lightweight `get_latest_run()` lookup when `run_id` is omitted, and restricting run-list cache invalidation to new-run creation
 - **2026-03-03**: Added lazy run selector loading to `templates/portfolio.html` via asynchronous `/api/runs` fetch after first paint so portfolio data can render immediately without blocking on run-history retrieval

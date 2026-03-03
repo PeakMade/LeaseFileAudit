@@ -8,6 +8,7 @@ import io
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -751,29 +752,6 @@ class StorageService:
             }
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
 
-            # Remove existing snapshots for run to prevent duplicates.
-            existing_params = {
-                '$select': 'id',
-                '$expand': 'fields',
-                '$filter': f"fields/RunId eq '{run_id}'",
-                '$top': 5000
-            }
-            existing_response = requests.get(items_url, headers=headers, params=existing_params, timeout=60)
-            if existing_response.status_code == 200:
-                for item in existing_response.json().get('value', []):
-                    delete_url = f"{items_url}/{item['id']}"
-                    delete_response = requests.delete(delete_url, headers=headers, timeout=30)
-                    if delete_response.status_code not in [200, 202, 204]:
-                        logger.warning(
-                            f"[STORAGE] Failed deleting existing snapshot item {item['id']}: "
-                            f"{delete_response.status_code} - {delete_response.text}"
-                        )
-            else:
-                logger.warning(
-                    f"[STORAGE] Could not query existing snapshots for {run_id}: "
-                    f"{existing_response.status_code} - {existing_response.text}"
-                )
-
             filtered_bucket_results = self._filter_bucket_results_for_unresolved_snapshot(run_id, bucket_results)
             exception_count_field_name = self._resolve_snapshot_exception_count_field_name(site_id, list_id)
             optional_field_names = self._resolve_snapshot_optional_field_names(site_id, list_id)
@@ -786,22 +764,140 @@ class StorageService:
                 expected_detail=expected_detail,
                 property_name_map=property_name_map,
             )
-            created = 0
-            for row in snapshot_rows:
-                create_response = requests.post(items_url, headers=headers, json={'fields': row}, timeout=60)
-                if create_response.status_code in [200, 201]:
-                    created += 1
-                else:
-                    logger.warning(
-                        f"[STORAGE] Failed creating snapshot row {row.get('SnapshotKey')}: "
-                        f"{create_response.status_code} - {create_response.text}"
-                    )
+            payload_rows = [{'fields': row} for row in snapshot_rows]
+            created = self._post_list_rows_in_batches(
+                site_id=site_id,
+                list_id=list_id,
+                row_payloads=payload_rows,
+                context_label=f"RunDisplaySnapshots run={run_id}",
+            )
 
             logger.info(f"[STORAGE] ✅ Wrote RunDisplaySnapshots rows for {run_id}: rows={created}")
             return True
         except Exception as e:
             logger.error(f"[STORAGE] Error writing RunDisplaySnapshots list rows: {e}", exc_info=True)
             return False
+
+    def _post_list_rows_in_batches(
+        self,
+        site_id: str,
+        list_id: str,
+        row_payloads: List[Dict[str, Any]],
+        context_label: str,
+        batch_size: int = 20,
+    ) -> int:
+        """Create SharePoint list items using Graph $batch with single-post fallback."""
+        if not row_payloads:
+            return 0
+
+        batch_url = "https://graph.microsoft.com/v1.0/$batch"
+        batch_headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/json',
+        }
+        items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+        item_headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/json',
+            'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly',
+        }
+
+        def _post_single(payload: Dict[str, Any], row_idx: int) -> bool:
+            create_response = requests.post(items_url, headers=item_headers, json=payload, timeout=60)
+            if create_response.status_code in [200, 201]:
+                return True
+            logger.warning(
+                f"[STORAGE] Failed creating {context_label} row {row_idx}: "
+                f"{create_response.status_code} - {create_response.text}"
+            )
+            return False
+
+        created = 0
+        for start in range(0, len(row_payloads), batch_size):
+            chunk = row_payloads[start:start + batch_size]
+            batch_requests = []
+            row_ids = []
+
+            for offset, payload in enumerate(chunk):
+                row_idx = start + offset
+                row_ids.append(row_idx)
+                batch_requests.append({
+                    'id': str(row_idx),
+                    'method': 'POST',
+                    'url': f"/sites/{site_id}/lists/{list_id}/items",
+                    'headers': {'Content-Type': 'application/json'},
+                    'body': payload,
+                })
+
+            try:
+                batch_response = requests.post(
+                    batch_url,
+                    headers=batch_headers,
+                    json={'requests': batch_requests},
+                    timeout=120,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[STORAGE] Batch create request failed for {context_label}; "
+                    f"falling back to single posts: {e}"
+                )
+                for offset, payload in enumerate(chunk):
+                    if _post_single(payload, start + offset):
+                        created += 1
+                continue
+
+            if batch_response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Batch create failed for {context_label} (HTTP {batch_response.status_code}); "
+                    "falling back to single posts"
+                )
+                for offset, payload in enumerate(chunk):
+                    if _post_single(payload, start + offset):
+                        created += 1
+                continue
+
+            response_items = batch_response.json().get('responses', [])
+            response_map = {item.get('id'): item for item in response_items}
+
+            for offset, payload in enumerate(chunk):
+                row_idx = start + offset
+                response_item = response_map.get(str(row_idx))
+                if not response_item:
+                    logger.warning(
+                        f"[STORAGE] Missing batch response for {context_label} row {row_idx}; "
+                        "falling back to single post"
+                    )
+                    if _post_single(payload, row_idx):
+                        created += 1
+                    continue
+
+                status_code = response_item.get('status')
+                if status_code in [200, 201]:
+                    created += 1
+                    continue
+
+                logger.warning(
+                    f"[STORAGE] Batch create failed for {context_label} row {row_idx}: "
+                    f"{status_code} - {response_item.get('body')}"
+                )
+                if _post_single(payload, row_idx):
+                    created += 1
+
+        return created
+
+    def _write_results_to_sharepoint_list_async(
+        self,
+        run_id: str,
+        bucket_results: pd.DataFrame,
+        findings: pd.DataFrame,
+    ) -> None:
+        """Background wrapper for detailed AuditRuns list persistence."""
+        try:
+            logger.info(f"[STORAGE] 🚀 Background AuditRuns write started for {run_id}")
+            self._write_results_to_sharepoint_list(run_id, bucket_results, findings)
+            logger.info(f"[STORAGE] ✅ Background AuditRuns write finished for {run_id}")
+        except Exception as e:
+            logger.error(f"[STORAGE] Background AuditRuns write failed for {run_id}: {e}", exc_info=True)
 
     def load_run_display_snapshot_from_sharepoint_list(
         self,
@@ -1269,131 +1365,12 @@ class StorageService:
 
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
 
-            # Remove existing rows for this run to prevent duplicates during re-save.
-            existing_params = {
-                '$select': 'id',
-                '$expand': 'fields',
-                '$filter': f"fields/RunId eq '{run_id}'",
-                '$top': 5000
-            }
-            existing_response = requests.get(items_url, headers=headers, params=existing_params, timeout=60)
-            if existing_response.status_code == 200:
-                existing_items = existing_response.json().get('value', [])
-                for item in existing_items:
-                    delete_url = f"{items_url}/{item['id']}"
-                    delete_response = requests.delete(delete_url, headers=headers, timeout=30)
-                    if delete_response.status_code not in [200, 202, 204]:
-                        logger.warning(
-                            f"[STORAGE] Failed deleting existing result item {item['id']}: "
-                            f"{delete_response.status_code} - {delete_response.text}"
-                        )
-            else:
-                logger.warning(
-                    f"[STORAGE] Could not query existing audit result rows for {run_id}: "
-                    f"{existing_response.status_code} - {existing_response.text}"
-                )
-
             def _write_dataframe_rows(df: pd.DataFrame, result_type: str) -> int:
                 rows_written = 0
                 if df is None or len(df) == 0:
                     return rows_written
 
-                row_requests: List[Dict[str, Any]] = []
-
-                def _post_single(request_payload: Dict[str, Any], row_idx: int) -> bool:
-                    create_response = requests.post(
-                        items_url,
-                        headers=headers,
-                        json=request_payload,
-                        timeout=60,
-                    )
-                    if create_response.status_code in [200, 201]:
-                        return True
-                    logger.warning(
-                        f"[STORAGE] Failed writing {result_type} row {row_idx} for run {run_id}: "
-                        f"{create_response.status_code} - {create_response.text}"
-                    )
-                    return False
-
-                def _post_batch(batch_items: List[Dict[str, Any]]) -> int:
-                    """Post up to 20 create requests through Microsoft Graph $batch."""
-                    if not batch_items:
-                        return 0
-
-                    batch_url = "https://graph.microsoft.com/v1.0/$batch"
-                    batch_headers = {
-                        'Authorization': f'Bearer {self.access_token}',
-                        'Content-Type': 'application/json',
-                    }
-
-                    requests_payload = []
-                    for request_item in batch_items:
-                        requests_payload.append({
-                            'id': str(request_item['row_idx']),
-                            'method': 'POST',
-                            'url': f"/sites/{site_id}/lists/{list_id}/items",
-                            'headers': {'Content-Type': 'application/json'},
-                            'body': request_item['payload'],
-                        })
-
-                    try:
-                        batch_response = requests.post(
-                            batch_url,
-                            headers=batch_headers,
-                            json={'requests': requests_payload},
-                            timeout=120,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"[STORAGE] Batch write request failed for {result_type}; "
-                            f"falling back to single posts: {e}"
-                        )
-                        success_count = 0
-                        for request_item in batch_items:
-                            if _post_single(request_item['payload'], request_item['row_idx']):
-                                success_count += 1
-                        return success_count
-
-                    if batch_response.status_code != 200:
-                        logger.warning(
-                            f"[STORAGE] Batch write failed for {result_type} (HTTP {batch_response.status_code}); "
-                            f"falling back to single posts"
-                        )
-                        success_count = 0
-                        for request_item in batch_items:
-                            if _post_single(request_item['payload'], request_item['row_idx']):
-                                success_count += 1
-                        return success_count
-
-                    response_items = batch_response.json().get('responses', [])
-                    response_map = {item.get('id'): item for item in response_items}
-
-                    success_count = 0
-                    for request_item in batch_items:
-                        row_idx = request_item['row_idx']
-                        response_item = response_map.get(str(row_idx))
-                        if not response_item:
-                            logger.warning(
-                                f"[STORAGE] Missing batch response for {result_type} row {row_idx}; "
-                                f"falling back to single post"
-                            )
-                            if _post_single(request_item['payload'], row_idx):
-                                success_count += 1
-                            continue
-
-                        status_code = response_item.get('status')
-                        if status_code in [200, 201]:
-                            success_count += 1
-                            continue
-
-                        logger.warning(
-                            f"[STORAGE] Batch write failed for {result_type} row {row_idx}: "
-                            f"{status_code} - {response_item.get('body')}"
-                        )
-                        if _post_single(request_item['payload'], row_idx):
-                            success_count += 1
-
-                    return success_count
+                row_payloads: List[Dict[str, Any]] = []
 
                 for idx, (_, row) in enumerate(df.iterrows()):
                     row_dict = {col: self._normalize_for_json(value) for col, value in row.to_dict().items()}
@@ -1440,16 +1417,14 @@ class StorageService:
                         'CreatedAt': datetime.utcnow().isoformat(),
                     }
 
-                    row_requests.append({
-                        'row_idx': idx,
-                        'payload': {'fields': fields_payload},
-                    })
+                    row_payloads.append({'fields': fields_payload})
 
-                # Microsoft Graph supports up to 20 requests per batch.
-                batch_size = 20
-                for start in range(0, len(row_requests), batch_size):
-                    chunk = row_requests[start:start + batch_size]
-                    rows_written += _post_batch(chunk)
+                rows_written += self._post_list_rows_in_batches(
+                    site_id=site_id,
+                    list_id=list_id,
+                    row_payloads=row_payloads,
+                    context_label=f"AuditRuns {result_type} run={run_id}",
+                )
 
                 return rows_written
 
@@ -1880,6 +1855,7 @@ class StorageService:
                 'LeaseId': str(payload.get('lease_id') or ''),
                 'TermSetVersion': int(payload.get('term_set_version') or 1),
                 'FingerprintHash': str(payload.get('fingerprint_hash') or ''),
+                'DocListFingerprint': str(payload.get('doc_list_fingerprint') or ''),
                 'SelectedDocIds': str(payload.get('selected_doc_ids') or ''),
                 'LastCheckedAt': str(payload.get('last_checked_at') or datetime.utcnow().isoformat()),
                 'LastRefreshedAt': str(payload.get('last_refreshed_at') or datetime.utcnow().isoformat()),
@@ -2124,6 +2100,7 @@ class StorageService:
                 'lease_id': fields.get('LeaseId'),
                 'term_set_version': fields.get('TermSetVersion'),
                 'fingerprint_hash': fields.get('FingerprintHash'),
+                'doc_list_fingerprint': fields.get('DocListFingerprint'),
                 'selected_doc_ids': fields.get('SelectedDocIds'),
                 'last_checked_at': fields.get('LastCheckedAt'),
                 'last_refreshed_at': fields.get('LastRefreshedAt'),
@@ -2959,6 +2936,8 @@ class StorageService:
         """Save complete audit run to storage."""
         logger.info(f"[STORAGE] 💾 Starting save for run: {run_id}")
         self.create_run_dir(run_id)
+
+        write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'true').lower() == 'true'
         
         files_saved = []
         files_failed = []
@@ -3000,13 +2979,6 @@ class StorageService:
         except Exception as e:
             logger.warning(f"[STORAGE] Failed to write metrics to SharePoint list: {e}")
 
-        # Write detailed results to SharePoint list (list-backed results DB).
-        # Keep CSVs as fallback for compatibility.
-        try:
-            self._write_results_to_sharepoint_list(run_id, bucket_results, findings)
-        except Exception as e:
-            logger.warning(f"[STORAGE] Failed to write detailed results to SharePoint list: {e}")
-
         # Write static display snapshots (portfolio/property/lease) for fast UI loads.
         try:
             snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
@@ -3031,6 +3003,29 @@ class StorageService:
                     )
         except Exception as e:
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
+
+        # Write detailed results to SharePoint list (list-backed results DB).
+        # Keep CSVs as fallback for compatibility. Run asynchronously by default to reduce upload latency.
+        try:
+            can_write_sharepoint_lists = self._can_use_sharepoint_lists()
+            if write_details_async and can_write_sharepoint_lists:
+                bucket_results_for_async = bucket_results.copy(deep=True)
+                findings_for_async = findings.copy(deep=True)
+                writer_thread = threading.Thread(
+                    target=self._write_results_to_sharepoint_list_async,
+                    args=(run_id, bucket_results_for_async, findings_for_async),
+                    daemon=True,
+                    name=f"auditruns-write-{run_id}",
+                )
+                writer_thread.start()
+                logger.info(
+                    f"[STORAGE] 🚀 Dispatched background AuditRuns write for {run_id}: "
+                    f"bucket_rows={len(bucket_results_for_async)}, finding_rows={len(findings_for_async)}"
+                )
+            else:
+                self._write_results_to_sharepoint_list(run_id, bucket_results, findings)
+        except Exception as e:
+            logger.warning(f"[STORAGE] Failed to write detailed results to SharePoint list: {e}")
         
         logger.info(f"[STORAGE] ✅ Successfully saved run {run_id} - {len(files_saved)} files")
         if self.use_sharepoint:

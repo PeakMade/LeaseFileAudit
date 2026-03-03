@@ -1584,6 +1584,29 @@ def build_selected_docs_fingerprint(primary_doc: Mapping[str, Any], addenda: Seq
     return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
 
 
+def build_doc_list_fingerprint(docs: Sequence[Mapping[str, Any]] | None) -> str:
+    """Build deterministic fingerprint hash for the full lease document list metadata."""
+    serialized = []
+    for doc in docs or []:
+        if not isinstance(doc, Mapping):
+            continue
+        doc_dict = dict(doc)
+        serialized.append({
+            "doc_id": get_doc_id(doc_dict),
+            "title": get_doc_title(doc_dict),
+            "status": str(doc_dict.get("Status") or doc_dict.get("status") or ""),
+            "type": str(doc_dict.get("Type") or doc_dict.get("type") or ""),
+            "file_type": str(doc_dict.get("FileType") or doc_dict.get("fileType") or doc_dict.get("fileTypeId") or ""),
+            "added_on": str(doc_dict.get("AddedOn") or doc_dict.get("addedOn") or ""),
+            "modified_on": str(doc_dict.get("ModifiedOn") or doc_dict.get("modifiedOn") or ""),
+            "recency": str(get_doc_recency_key(doc_dict)),
+        })
+
+    serialized = sorted(serialized, key=lambda item: (item.get("doc_id") or "", item.get("title") or ""))
+    digest_input = json.dumps(serialized, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+
+
 def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fallback term extractor from raw PDF text when custom extractor isn't supplied."""
     pages = list(text_pack.get("pages", []))
@@ -2609,10 +2632,11 @@ def refresh_lease_terms_for_lease_interval(
 
     if not force_refresh and cached_term_set:
         last_checked_raw = cached_term_set.get("last_checked_at")
+        existing_doc_list_fingerprint = str(cached_term_set.get("doc_list_fingerprint") or "").strip()
         last_checked = pd.to_datetime(last_checked_raw, errors="coerce")
         if not pd.isna(last_checked):
             age = now - last_checked.to_pydatetime()
-            if age <= timedelta(hours=max(1, int(min_recheck_hours))):
+            if age <= timedelta(hours=max(1, int(min_recheck_hours))) and existing_doc_list_fingerprint:
                 return {
                     "lease_key": lease_key,
                     "status": "cached_recent",
@@ -2623,6 +2647,37 @@ def refresh_lease_terms_for_lease_interval(
 
     try:
         docs = fetch_lease_documents_list(property_id=property_id, lease_id=lease_identifier)
+        doc_list_fingerprint = build_doc_list_fingerprint(docs)
+        existing_doc_list_fingerprint = str(cached_term_set.get("doc_list_fingerprint") or "")
+        term_set_version = int(cached_term_set.get("term_set_version") or 0)
+
+        if (
+            existing_doc_list_fingerprint
+            and existing_doc_list_fingerprint == doc_list_fingerprint
+            and not cached_terms_df.empty
+        ):
+            storage_service.upsert_lease_term_set_to_sharepoint_list({
+                "lease_key": lease_key,
+                "property_id": property_id,
+                "lease_interval_id": lease_interval_id,
+                "lease_id": lease_id,
+                "term_set_version": max(1, term_set_version),
+                "fingerprint_hash": cached_term_set.get("fingerprint_hash") or "",
+                "doc_list_fingerprint": doc_list_fingerprint,
+                "selected_doc_ids": cached_term_set.get("selected_doc_ids") or "",
+                "last_checked_at": now.isoformat(),
+                "last_refreshed_at": cached_term_set.get("last_refreshed_at") or now.isoformat(),
+                "status": "active",
+            })
+
+            return {
+                "lease_key": lease_key,
+                "status": "doc_list_unchanged",
+                "refreshed": False,
+                "terms_df": cached_terms_df,
+                "term_set": cached_term_set,
+            }
+
         primary_doc, addenda_docs, selection_reason = select_lease_packet_and_addenda(
             docs,
             audit_period_start=audit_period_start,
@@ -2631,7 +2686,6 @@ def refresh_lease_terms_for_lease_interval(
         fingerprint_hash = build_selected_docs_fingerprint(primary_doc, addenda_docs)
 
         existing_fingerprint = str(cached_term_set.get("fingerprint_hash") or "")
-        term_set_version = int(cached_term_set.get("term_set_version") or 0)
 
         if existing_fingerprint and existing_fingerprint == fingerprint_hash and not cached_terms_df.empty:
             storage_service.upsert_lease_term_set_to_sharepoint_list({
@@ -2641,6 +2695,7 @@ def refresh_lease_terms_for_lease_interval(
                 "lease_id": lease_id,
                 "term_set_version": max(1, term_set_version),
                 "fingerprint_hash": fingerprint_hash,
+                "doc_list_fingerprint": doc_list_fingerprint,
                 "selected_doc_ids": ",".join(
                     [get_doc_id(primary_doc)] + [str(item.get("doc_id") or "") for item in addenda_docs]
                 ),
@@ -2724,6 +2779,7 @@ def refresh_lease_terms_for_lease_interval(
             "lease_id": lease_id,
             "term_set_version": new_version,
             "fingerprint_hash": fingerprint_hash,
+            "doc_list_fingerprint": doc_list_fingerprint,
             "selected_doc_ids": ",".join([get_doc_id(primary_doc)] + [str(item.get("doc_id") or "") for item in addenda_docs]),
             "last_checked_at": now.isoformat(),
             "last_refreshed_at": now.isoformat(),
@@ -2750,6 +2806,7 @@ def refresh_lease_terms_for_lease_interval(
                 "lease_id": lease_id,
                 "term_set_version": int(cached_term_set.get("term_set_version") or 1),
                 "fingerprint_hash": cached_term_set.get("fingerprint_hash") or "",
+                "doc_list_fingerprint": cached_term_set.get("doc_list_fingerprint") or "",
                 "selected_doc_ids": cached_term_set.get("selected_doc_ids") or "",
                 "last_checked_at": now.isoformat(),
                 "last_refreshed_at": cached_term_set.get("last_refreshed_at") or "",
