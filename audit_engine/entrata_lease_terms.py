@@ -1908,8 +1908,23 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
 
                     line_excerpt = _extract_line_excerpt(words, float(token["cy"]))
                     line_excerpt_lower = line_excerpt.lower()
-                    if "total" in line_excerpt_lower and "installment" not in line_excerpt_lower:
-                        score_boost -= 120.0
+                    has_monthly_signal = bool(re.search(
+                        r"monthly|per\s+month|installments?|each\s+installment|rent\s+installment",
+                        line_excerpt_lower,
+                        re.IGNORECASE,
+                    ))
+                    has_total_signal = bool(re.search(
+                        r"total\s+rent|total\s+amount|lease\s+term|for\s+the\s+term|term\s+rent|annual",
+                        line_excerpt_lower,
+                        re.IGNORECASE,
+                    ))
+
+                    if has_monthly_signal:
+                        score_boost += 950.0
+                    if has_total_signal and not has_monthly_signal:
+                        score_boost -= 1400.0
+                    elif "total" in line_excerpt_lower and "installment" not in line_excerpt_lower:
+                        score_boost -= 350.0
 
                     score = score_boost + proximity_score
                     candidate = {
@@ -2081,8 +2096,27 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
                             if anchor.get("label") == "rent_and_charges":
                                 score_boost += 120.0
 
+                            line_excerpt = _extract_line_excerpt(words, float(token["cy"]))
+                            line_excerpt_lower = line_excerpt.lower()
+                            has_monthly_signal = bool(re.search(
+                                r"monthly|per\s+month|installments?|each\s+installment|rent\s+installment",
+                                line_excerpt_lower,
+                                re.IGNORECASE,
+                            ))
+                            has_total_signal = bool(re.search(
+                                r"total\s+rent|total\s+amount|lease\s+term|for\s+the\s+term|term\s+rent|annual",
+                                line_excerpt_lower,
+                                re.IGNORECASE,
+                            ))
+                            if has_monthly_signal:
+                                score_boost += 950.0
+                            if has_total_signal and not has_monthly_signal:
+                                score_boost -= 1400.0
+                            elif "total" in line_excerpt_lower and "installment" not in line_excerpt_lower:
+                                score_boost -= 350.0
+
                             score = score_boost - ((abs(dx) * 1.2) + (dy * 14.0))
-                            evidence = _extract_line_excerpt(words, float(token["cy"]))
+                            evidence = line_excerpt
 
                             candidate = {
                                 "amount": float(token["amount"]),
@@ -2116,17 +2150,52 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         )
         return float(best_candidate["amount"]), str(evidence), method_detail, debug_tokens
 
+    lease_window_months = _lease_window_months(lease_start, lease_end)
+
     fitz_rent_amount, fitz_rent_evidence, fitz_method_detail, fitz_debug_tokens = _fitz_anchor_monthly_rent()
+    inferred_rent_amount, inferred_rent_evidence, inferred_method_detail = _multiple_inference_monthly_rent()
+
     if fitz_rent_amount is not None:
-        base_rent_amount = fitz_rent_amount
-        base_rent_evidence = fitz_rent_evidence
-        logger.info(
-            "[LEASE TERMS] BASE_RENT extracted method=%s value=%.2f",
-            fitz_method_detail,
-            float(base_rent_amount),
-        )
+        use_inferred_instead = False
+        fitz_evidence_lower = str(fitz_rent_evidence or "").lower()
+        if inferred_rent_amount is not None and inferred_rent_amount > 0:
+            ratio = float(fitz_rent_amount) / float(inferred_rent_amount)
+            ratio_n = int(round(ratio))
+            ratio_close = 6 <= ratio_n <= 24 and abs(float(fitz_rent_amount) - (float(inferred_rent_amount) * ratio_n)) <= 0.05
+
+            has_total_without_installment = (
+                ("total" in fitz_evidence_lower or "term" in fitz_evidence_lower)
+                and "installment" not in fitz_evidence_lower
+                and "monthly" not in fitz_evidence_lower
+            )
+
+            lease_window_matches = False
+            if lease_window_months is not None:
+                lease_month_n = int(round(float(lease_window_months)))
+                if 6 <= lease_month_n <= 24:
+                    lease_window_matches = abs(float(fitz_rent_amount) - (float(inferred_rent_amount) * lease_month_n)) <= 0.05
+
+            if (has_total_without_installment and float(inferred_rent_amount) < float(fitz_rent_amount)) or ratio_close or lease_window_matches:
+                use_inferred_instead = True
+
+        if use_inferred_instead and inferred_rent_amount is not None:
+            base_rent_amount = inferred_rent_amount
+            base_rent_evidence = inferred_rent_evidence
+            logger.info(
+                "[LEASE TERMS] BASE_RENT extracted method=%s value=%.2f (override fitz-total-like candidate %.2f)",
+                inferred_method_detail,
+                float(base_rent_amount),
+                float(fitz_rent_amount),
+            )
+        else:
+            base_rent_amount = fitz_rent_amount
+            base_rent_evidence = fitz_rent_evidence
+            logger.info(
+                "[LEASE TERMS] BASE_RENT extracted method=%s value=%.2f",
+                fitz_method_detail,
+                float(base_rent_amount),
+            )
     else:
-        inferred_rent_amount, inferred_rent_evidence, inferred_method_detail = _multiple_inference_monthly_rent()
         if inferred_rent_amount is not None:
             base_rent_amount = inferred_rent_amount
             base_rent_evidence = inferred_rent_evidence
@@ -2727,7 +2796,14 @@ def refresh_lease_terms_for_lease_interval(
 
         normalized_term_rows = []
         for idx, term in enumerate(extracted_terms):
-            term_key = str(term.get("term_key") or f"{lease_key}:{idx}:{term.get('term_type') or 'TERM'}")
+            source_term_key = str(term.get("term_key") or "").strip()
+            if source_term_key:
+                if source_term_key.startswith(f"{lease_key}:"):
+                    term_key = source_term_key
+                else:
+                    term_key = f"{lease_key}:{source_term_key}"
+            else:
+                term_key = f"{lease_key}:{idx}:{term.get('term_type') or 'TERM'}"
             normalized_term_rows.append({
                 "term_key": term_key,
                 "lease_key": lease_key,
