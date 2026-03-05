@@ -255,13 +255,19 @@ def _match_primary(
         logger.info("No AR transactions with SCHEDULED_CHARGE_ID_LINK - skipping primary matching")
         return ar_result, scheduled_result
     
-    # Match to scheduled charges using normalized ID keys (handles float/string formatting drift)
-    scheduled_ids = scheduled_df[CanonicalField.SCHEDULED_CHARGES_ID.value].tolist()
+    # Match to scheduled charges using normalized ID keys (handles float/string formatting drift).
+    # Prefer raw Entrata scheduled charge ID; fall back to synthetic SCHEDULED_CHARGES_ID.
+    scheduled_id_column = CanonicalField.SCHEDULED_CHARGE_ID.value
+    if scheduled_id_column not in scheduled_df.columns:
+        scheduled_id_column = CanonicalField.SCHEDULED_CHARGES_ID.value
+
+    scheduled_ids = scheduled_df[scheduled_id_column].tolist()
     scheduled_id_lookup = {}
-    for scheduled_id in scheduled_ids:
+    scheduled_row_ids = scheduled_df[CanonicalField.SCHEDULED_CHARGES_ID.value].tolist()
+    for scheduled_id, scheduled_row_id in zip(scheduled_ids, scheduled_row_ids):
         normalized = _normalize_match_id(scheduled_id)
         if normalized is not None and normalized not in scheduled_id_lookup:
-            scheduled_id_lookup[normalized] = scheduled_id
+            scheduled_id_lookup[normalized] = scheduled_row_id
 
     linked_ar_normalized = linked_ar[CanonicalField.SCHEDULED_CHARGE_ID_LINK.value].apply(_normalize_match_id)
     matched_ar_mask = linked_ar_normalized.isin(set(scheduled_id_lookup.keys()))
@@ -288,7 +294,8 @@ def _match_primary(
     matched_count = int(matched_ar_mask.sum())
     logger.info(
         f"Primary matching: {matched_count} AR transactions matched to scheduled charges "
-        f"(linked_ar={len(linked_ar)}, scheduled_ids={len(scheduled_id_lookup)})"
+        f"(linked_ar={len(linked_ar)}, scheduled_ids={len(scheduled_id_lookup)}, "
+        f"scheduled_id_column={scheduled_id_column})"
     )
     if matched_count == 0 and len(linked_ar) > 0:
         sample_ar_links = [

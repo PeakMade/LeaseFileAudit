@@ -72,6 +72,7 @@ def _log_and_clear_pending_upload_timing(run_id: str, destination: str, destinat
         f"destination={destination} "
         f"upload_request_seconds={float(pending.get('upload_request_seconds') or 0):.2f} "
         f"file_save_seconds={float(pending.get('file_save_seconds') or 0):.2f} "
+        f"api_fetch_seconds={float(pending.get('api_fetch_seconds') or 0):.2f} "
         f"execute_seconds={float(pending.get('execute_seconds') or 0):.2f} "
         f"overlay_seconds={float(pending.get('overlay_seconds') or 0):.2f} "
         f"save_run_seconds={float(pending.get('save_run_seconds') or 0):.2f} "
@@ -1066,6 +1067,69 @@ def filter_to_current_academic_year(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _resolve_audit_window_bounds(audit_year: int = None, audit_month: int = None) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Resolve inclusive date bounds for audit window filtering."""
+    if audit_year is None:
+        current_month = pd.Timestamp.now().to_period('M').to_timestamp()
+        academic_start_year = current_month.year if current_month.month >= 8 else current_month.year - 1
+        start = pd.Timestamp(year=academic_start_year, month=8, day=1)
+        end = current_month + pd.offsets.MonthEnd(0)
+        return start, end
+
+    if audit_month is not None:
+        month_start = pd.Timestamp(year=int(audit_year), month=int(audit_month), day=1)
+        month_end = month_start + pd.offsets.MonthEnd(0)
+        return month_start, month_end
+
+    year_start = pd.Timestamp(year=int(audit_year), month=1, day=1)
+    year_end = pd.Timestamp(year=int(audit_year), month=12, day=31)
+    return year_start, year_end
+
+
+def _normalize_raw_date_series(series: pd.Series) -> pd.Series:
+    """
+    Normalize mixed raw date values with deterministic numeric handling.
+
+    Numeric rules:
+    - 20000101..20991231 => YYYYMMDD
+    - >1e12 => epoch milliseconds
+    - >1e9 => epoch seconds
+    - otherwise => invalid (NaT)
+    """
+    normalized = pd.Series(pd.NaT, index=series.index, dtype='datetime64[ns]')
+    non_null = series[series.notna()]
+    if non_null.empty:
+        return normalized
+
+    numeric_values = pd.to_numeric(non_null, errors='coerce')
+
+    yyyymmdd_mask = numeric_values.between(20000101, 20991231)
+    if yyyymmdd_mask.any():
+        yyyymmdd_series = numeric_values[yyyymmdd_mask].astype('Int64').astype(str)
+        normalized.loc[yyyymmdd_series.index] = pd.to_datetime(yyyymmdd_series, format='%Y%m%d', errors='coerce')
+
+    epoch_ms_mask = numeric_values > 1_000_000_000_000
+    if epoch_ms_mask.any():
+        epoch_ms_series = numeric_values[epoch_ms_mask]
+        normalized.loc[epoch_ms_series.index] = pd.to_datetime(epoch_ms_series, unit='ms', errors='coerce')
+
+    epoch_s_mask = (numeric_values > 1_000_000_000) & ~epoch_ms_mask
+    if epoch_s_mask.any():
+        epoch_s_series = numeric_values[epoch_s_mask]
+        normalized.loc[epoch_s_series.index] = pd.to_datetime(epoch_s_series, unit='s', errors='coerce')
+
+    # Parse non-numeric strings/datetimes only (never let pandas infer numeric values)
+    unresolved_index = normalized.loc[non_null.index][normalized.loc[non_null.index].isna()].index
+    if len(unresolved_index) > 0:
+        unresolved_values = non_null.loc[unresolved_index]
+        unresolved_numeric = pd.to_numeric(unresolved_values, errors='coerce')
+        non_numeric_values = unresolved_values[unresolved_numeric.isna()]
+        if len(non_numeric_values) > 0:
+            normalized.loc[non_numeric_values.index] = pd.to_datetime(non_numeric_values, errors='coerce')
+
+    return normalized
+
+
 def execute_audit_run(
     file_path: Path = None,
     run_id: str = "",
@@ -1088,7 +1152,13 @@ def execute_audit_run(
         Dict with all results and metadata
     """
     # Load RAW data sources from Excel, or use provided in-memory sources.
-    from audit_engine.mappings import apply_source_mapping, AR_TRANSACTIONS_MAPPING, SCHEDULED_CHARGES_MAPPING
+    from audit_engine.mappings import (
+        apply_source_mapping,
+        AR_TRANSACTIONS_MAPPING,
+        SCHEDULED_CHARGES_MAPPING,
+        ARSourceColumns,
+        ScheduledSourceColumns,
+    )
 
     if preloaded_sources is not None:
         sources = preloaded_sources
@@ -1103,6 +1173,64 @@ def execute_audit_run(
             "Missing required source tabs for execution: "
             f"{config.ar_source.name} and/or {config.scheduled_source.name}"
         )
+
+    early_prefilter_enabled = os.getenv('EARLY_AUDIT_WINDOW_PREFILTER', 'false').lower() == 'true'
+    if early_prefilter_enabled:
+        window_start, window_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
+        print(
+            f"[EARLY WINDOW FILTER] Enabled with canonical bounds: "
+            f"{window_start.strftime('%Y-%m-%d')} through {window_end.strftime('%Y-%m-%d')}"
+        )
+
+        sources = dict(sources)
+
+        raw_ar_df = sources.get(config.ar_source.name)
+        if isinstance(raw_ar_df, pd.DataFrame) and not raw_ar_df.empty:
+            ar_date_column = None
+            for candidate in [ARSourceColumns.POST_DATE, ARSourceColumns.POST_MONTH_DATE]:
+                if candidate in raw_ar_df.columns:
+                    ar_date_column = candidate
+                    break
+
+            if ar_date_column:
+                ar_dates = _normalize_raw_date_series(raw_ar_df[ar_date_column])
+                invalid_ar_dates = int(ar_dates.isna().sum())
+
+                # Conservative safety rule: keep rows with invalid dates; only drop proven out-of-window rows.
+                in_window_mask = ar_dates.isna() | ((ar_dates >= window_start) & (ar_dates <= window_end))
+                before_count = len(raw_ar_df)
+                after_df = raw_ar_df[in_window_mask].copy()
+                sources[config.ar_source.name] = after_df
+                print(
+                    f"[EARLY WINDOW FILTER] AR source: {before_count} -> {len(after_df)} rows "
+                    f"(invalid_dates_kept={invalid_ar_dates}, date_col={ar_date_column})"
+                )
+
+        raw_sched_df = sources.get(config.scheduled_source.name)
+        if isinstance(raw_sched_df, pd.DataFrame) and not raw_sched_df.empty:
+            start_col = ScheduledSourceColumns.CHARGE_START_DATE
+            end_col = ScheduledSourceColumns.CHARGE_END_DATE
+            if start_col in raw_sched_df.columns:
+                sched_start = _normalize_raw_date_series(raw_sched_df[start_col])
+                sched_end = _normalize_raw_date_series(raw_sched_df[end_col]) if end_col in raw_sched_df.columns else pd.Series(pd.NaT, index=raw_sched_df.index, dtype='datetime64[ns]')
+                sched_end = sched_end.where(sched_end.notna(), sched_start)
+
+                invalid_sched_dates = int(sched_start.isna().sum())
+                overlap_mask = (
+                    sched_start.isna()
+                    | sched_end.isna()
+                    | (
+                        (sched_start <= window_end)
+                        & (sched_end >= window_start)
+                    )
+                )
+                before_count = len(raw_sched_df)
+                after_df = raw_sched_df[overlap_mask].copy()
+                sources[config.scheduled_source.name] = after_df
+                print(
+                    f"[EARLY WINDOW FILTER] Scheduled source: {before_count} -> {len(after_df)} rows "
+                    f"(invalid_start_dates_kept={invalid_sched_dates})"
+                )
 
     print(f"\n[EXECUTE_AUDIT_RUN] Loaded raw sources:")
     print(f"  AR Transactions: {sources[config.ar_source.name].shape}")
@@ -1158,6 +1286,20 @@ def execute_audit_run(
     
     # Expand scheduled to months
     expected_detail = expand_scheduled_to_months(scheduled_normalized)
+
+    if early_prefilter_enabled:
+        window_start, window_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
+        pre_late_ar_count = len(actual_detail)
+        pre_late_expected_count = len(expected_detail)
+
+        ar_month = actual_detail.get(CanonicalField.AUDIT_MONTH.value)
+        expected_month = expected_detail.get(CanonicalField.AUDIT_MONTH.value)
+        ar_outside_window = int(((ar_month < window_start) | (ar_month > window_end)).sum()) if ar_month is not None else 0
+        expected_outside_window = int(((expected_month < window_start) | (expected_month > window_end)).sum()) if expected_month is not None else 0
+        print(
+            f"[EARLY WINDOW FILTER] Parity pre-check: actual_rows={pre_late_ar_count}, expected_rows={pre_late_expected_count}, "
+            f"actual_outside_window={ar_outside_window}, expected_outside_window={expected_outside_window}"
+        )
     
     # Apply period filter.
     # Default behavior when no explicit year is selected: current academic year (Aug -> current month).
@@ -1732,11 +1874,13 @@ def upload_api_property():
         storage = get_storage_service()
         run_id = storage.generate_run_id()
 
+        api_fetch_started = perf_counter()
         api_sources = fetch_property_api_sources(
             property_id=property_id,
             transaction_from_date=transaction_from_date,
             transaction_to_date=transaction_to_date,
         )
+        api_fetch_seconds = perf_counter() - api_fetch_started
 
         ar_raw = api_sources.get('ar_raw', pd.DataFrame())
         scheduled_raw = api_sources.get('scheduled_raw', pd.DataFrame())
@@ -1760,6 +1904,7 @@ def upload_api_property():
         execute_seconds = perf_counter() - execute_started
 
         base_run_id = None
+        overlay_seconds = 0.0
         try:
             prior_runs = storage.list_runs(limit=50)
             for run in prior_runs:
@@ -1769,6 +1914,7 @@ def upload_api_property():
                     break
 
             if base_run_id:
+                overlay_started = perf_counter()
                 logger.info(
                     f"[PROPERTY API SCOPE] Overlaying API-scoped results for property {property_id} "
                     f"onto baseline run {base_run_id}"
@@ -1779,6 +1925,7 @@ def upload_api_property():
                     baseline_run_data,
                     {str(property_id)}
                 )
+                overlay_seconds = perf_counter() - overlay_started
         except Exception as overlay_error:
             logger.warning(f"[PROPERTY API SCOPE] Baseline overlay skipped due to error: {overlay_error}")
 
@@ -1851,7 +1998,9 @@ def upload_api_property():
         logger.info(
             f"[AUDIT TIMER] SUCCESS run_id={run_id} source=api_property property_id={property_id} "
             f"elapsed_seconds={elapsed_seconds:.2f} "
+            f"api_fetch_seconds={api_fetch_seconds:.2f} "
             f"execute_seconds={execute_seconds:.2f} "
+            f"overlay_seconds={overlay_seconds:.2f} "
             f"save_run_seconds={save_run_seconds:.2f} "
             f"cache_clear_seconds={cache_clear_seconds:.2f} "
             f"cleanup_seconds={cleanup_seconds:.2f} "
@@ -1863,8 +2012,9 @@ def upload_api_property():
             'request_started_at_utc': request_started_at_utc.isoformat(),
             'upload_request_seconds': float(elapsed_seconds),
             'file_save_seconds': 0.0,
+            'api_fetch_seconds': float(api_fetch_seconds),
             'execute_seconds': float(execute_seconds),
-            'overlay_seconds': 0.0,
+            'overlay_seconds': float(overlay_seconds),
             'save_run_seconds': float(save_run_seconds),
             'cache_clear_seconds': float(cache_clear_seconds),
             'cleanup_seconds': float(cleanup_seconds),

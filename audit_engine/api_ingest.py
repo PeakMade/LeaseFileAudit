@@ -279,12 +279,19 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
                 else:
                     charge_end = lease_end
 
+                raw_scheduled_charge_id = _to_str(
+                    charge.get("scheduledChargeId")
+                    or charge.get("id")
+                    or charge.get("scheduledChargeID")
+                )
+
                 row_id = (
                     f"api-sc-{property_id}-{lease_id}-{lease_interval_id or interval_index}-"
                     f"{_to_str(charge.get('arCodeId') or '')}-{charge_index}"
                 )
                 output_rows.append({
                     ScheduledSourceColumns.ID: row_id,
+                    ScheduledSourceColumns.SCHEDULED_CHARGE_ID: raw_scheduled_charge_id,
                     ScheduledSourceColumns.PROPERTY_ID: int(property_id),
                     ScheduledSourceColumns.LEASE_ID: lease_id,
                     ScheduledSourceColumns.LEASE_INTERVAL_ID: lease_interval_id,
@@ -303,6 +310,7 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
 
     required_columns = [
         ScheduledSourceColumns.ID,
+        ScheduledSourceColumns.SCHEDULED_CHARGE_ID,
         ScheduledSourceColumns.PROPERTY_ID,
         ScheduledSourceColumns.LEASE_ID,
         ScheduledSourceColumns.LEASE_INTERVAL_ID,

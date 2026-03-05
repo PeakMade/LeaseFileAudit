@@ -117,6 +117,9 @@ class CanonicalField(str, Enum):
     
     SCHEDULED_CHARGES_ID = "SCHEDULED_CHARGES_ID"
     """Identifier from scheduled charges source"""
+
+    SCHEDULED_CHARGE_ID = "SCHEDULED_CHARGE_ID"
+    """Raw Entrata scheduled charge ID used for direct AR link matching"""
     
     AR_TRANSACTION_ID = "AR_TRANSACTION_ID"
     """Identifier from AR transactions source (maps to ID in raw data)"""
@@ -167,7 +170,7 @@ class CanonicalField(str, Enum):
     
     # ==================== Reconciliation Linking Fields ====================
     SCHEDULED_CHARGE_ID_LINK = "SCHEDULED_CHARGE_ID_LINK"
-    """Link from AR transaction to scheduled charge (foreign key to SCHEDULED_CHARGES_ID)"""
+    """Link from AR transaction to scheduled charge (foreign key to SCHEDULED_CHARGE_ID)"""
     
     POSTED_THROUGH_DATE = "POSTED_THROUGH_DATE"
     """Last date through which scheduled charge has been posted"""

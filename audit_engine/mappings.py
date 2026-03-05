@@ -45,6 +45,7 @@ class ARSourceColumns:
 class ScheduledSourceColumns:
     """Raw column names from Scheduled Charges source."""
     ID = "ID"
+    SCHEDULED_CHARGE_ID = "SCHEDULED_CHARGE_ID"
     PROPERTY_ID = "PROPERTY_ID"
     LEASE_ID = "LEASE_ID"
     LEASE_INTERVAL_ID = "LEASE_INTERVAL_ID"
@@ -478,6 +479,8 @@ SCHEDULED_CHARGES_MAPPING = SourceMapping(
     column_transforms=[
         ColumnTransform(ScheduledSourceColumns.ID, 
                        CanonicalField.SCHEDULED_CHARGES_ID),
+        ColumnTransform(ScheduledSourceColumns.SCHEDULED_CHARGE_ID,
+                       CanonicalField.SCHEDULED_CHARGE_ID),
         ColumnTransform(ScheduledSourceColumns.PROPERTY_ID, 
                        CanonicalField.PROPERTY_ID),
         ColumnTransform(ScheduledSourceColumns.LEASE_ID, 

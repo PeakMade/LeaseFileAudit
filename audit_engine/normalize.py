@@ -115,6 +115,10 @@ def normalize_scheduled_charges(df: pd.DataFrame) -> pd.DataFrame:
         CanonicalField.CUSTOMER_ID.value,
         CanonicalField.GUARANTOR_NAME.value
     ]
+
+    optional_cols = [
+        CanonicalField.SCHEDULED_CHARGE_ID.value,
+    ]
     
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
@@ -123,5 +127,7 @@ def normalize_scheduled_charges(df: pd.DataFrame) -> pd.DataFrame:
             f"Available columns: {df.columns.tolist()}"
         )
     
+    output_cols = required_cols + [col for col in optional_cols if col in df.columns]
+
     # Return DataFrame with canonical columns
-    return df[required_cols].copy()
+    return df[output_cols].copy()

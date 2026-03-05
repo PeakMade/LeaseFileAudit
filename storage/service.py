@@ -15,6 +15,7 @@ from datetime import datetime
 import math
 import pandas as pd
 import requests
+from time import perf_counter
 from urllib.parse import unquote
 from activity_logging.sharepoint import _get_app_only_token
 
@@ -41,6 +42,8 @@ class StorageService:
     _GLOBAL_SITE_ID_CACHE: Dict[str, str] = {}
     _GLOBAL_DRIVE_ID_CACHE: Dict[str, str] = {}
     _GLOBAL_LIST_ID_CACHE: Dict[str, str] = {}
+    _GLOBAL_SNAPSHOT_COLUMNS_CACHE: Dict[str, Dict[str, Any]] = {}
+    _GLOBAL_SNAPSHOT_COLUMNS_CACHE_LOCK = threading.Lock()
     
     def __init__(self, base_dir: Path, use_sharepoint: bool = False, sharepoint_site_url: str = None, 
                  library_name: str = None, access_token: str = None):
@@ -65,6 +68,13 @@ class StorageService:
         else:
             self.base_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"[STORAGE] Using local filesystem: {self.base_dir}")
+
+    def _snapshot_columns_cache_ttl_seconds(self) -> int:
+        """TTL for snapshot column-name cache (worker-memory), default 10 minutes."""
+        try:
+            return max(30, int(os.getenv('SNAPSHOT_COLUMNS_CACHE_TTL_SECONDS', '600')))
+        except Exception:
+            return 600
 
     def _can_use_sharepoint_lists(self) -> bool:
         if self.access_token and self.sharepoint_site_url:
@@ -512,10 +522,16 @@ class StorageService:
             'match_rate': match_rate,
         }
 
-    def _resolve_snapshot_exception_count_field_name(self, site_id: str, list_id: str) -> str:
-        """Resolve internal SharePoint field name for snapshot exception count."""
-        default_name = 'ExceptionCountStatic'
-        legacy_name = 'ExceptionCountStatistic'
+    def _get_snapshot_column_names(self, site_id: str, list_id: str) -> Optional[set]:
+        """Resolve RunDisplaySnapshots column internal names with per-worker in-memory cache."""
+        cache_key = f"{site_id}|{list_id}"
+        now_ts = datetime.utcnow().timestamp()
+        ttl_seconds = self._snapshot_columns_cache_ttl_seconds()
+
+        with self._GLOBAL_SNAPSHOT_COLUMNS_CACHE_LOCK:
+            cached_entry = self._GLOBAL_SNAPSHOT_COLUMNS_CACHE.get(cache_key)
+            if cached_entry and float(cached_entry.get('expires_at', 0)) > now_ts:
+                return set(cached_entry.get('column_names', []))
 
         try:
             headers = {
@@ -530,12 +546,34 @@ class StorageService:
             response = requests.get(columns_url, headers=headers, params=params, timeout=60)
             if response.status_code != 200:
                 logger.warning(
-                    f"[STORAGE] Could not read RunDisplaySnapshots columns; defaulting to {default_name}: "
+                    f"[STORAGE] Could not read RunDisplaySnapshots columns: "
                     f"{response.status_code} - {response.text}"
                 )
-                return default_name
+                return None
 
             column_names = {column.get('name') for column in response.json().get('value', []) if column.get('name')}
+
+            with self._GLOBAL_SNAPSHOT_COLUMNS_CACHE_LOCK:
+                self._GLOBAL_SNAPSHOT_COLUMNS_CACHE[cache_key] = {
+                    'column_names': sorted(column_names),
+                    'expires_at': now_ts + ttl_seconds,
+                }
+
+            return column_names
+        except Exception as e:
+            logger.warning(f"[STORAGE] Failed loading RunDisplaySnapshots columns: {e}")
+            return None
+
+    def _resolve_snapshot_exception_count_field_name(self, site_id: str, list_id: str) -> str:
+        """Resolve internal SharePoint field name for snapshot exception count."""
+        default_name = 'ExceptionCountStatic'
+        legacy_name = 'ExceptionCountStatistic'
+
+        try:
+            column_names = self._get_snapshot_column_names(site_id, list_id)
+            if not column_names:
+                return default_name
+
             if default_name in column_names:
                 return default_name
             if legacy_name in column_names:
@@ -567,24 +605,10 @@ class StorageService:
         }
 
         try:
-            headers = {
-                'Authorization': f'Bearer {self.access_token}',
-                'Content-Type': 'application/json',
-            }
-            columns_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/columns"
-            params = {
-                '$select': 'name',
-                '$top': 200
-            }
-            response = requests.get(columns_url, headers=headers, params=params, timeout=60)
-            if response.status_code != 200:
-                logger.warning(
-                    f"[STORAGE] Could not read optional RunDisplaySnapshots columns: "
-                    f"{response.status_code} - {response.text}"
-                )
+            column_names = self._get_snapshot_column_names(site_id, list_id)
+            if not column_names:
                 return resolved
 
-            column_names = {column.get('name') for column in response.json().get('value', []) if column.get('name')}
             for logical_name, candidates in field_candidates.items():
                 for candidate_name in candidates:
                     if candidate_name in column_names:
@@ -729,6 +753,7 @@ class StorageService:
         actual_detail: Optional[pd.DataFrame] = None,
         expected_detail: Optional[pd.DataFrame] = None,
         property_name_map: Optional[Dict[int, str]] = None,
+        stage_timers: Optional[Dict[str, float]] = None,
     ) -> bool:
         """Persist static portfolio/property/lease display snapshots to RunDisplaySnapshots list."""
         if not self._can_use_sharepoint_lists():
@@ -752,7 +777,11 @@ class StorageService:
             }
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
 
+            snapshot_filter_started = perf_counter()
             filtered_bucket_results = self._filter_bucket_results_for_unresolved_snapshot(run_id, bucket_results)
+            if stage_timers is not None:
+                stage_timers['snapshot_filter_seconds'] = float(perf_counter() - snapshot_filter_started)
+
             exception_count_field_name = self._resolve_snapshot_exception_count_field_name(site_id, list_id)
             optional_field_names = self._resolve_snapshot_optional_field_names(site_id, list_id)
             snapshot_rows = self._build_run_display_snapshot_rows(
@@ -765,12 +794,16 @@ class StorageService:
                 property_name_map=property_name_map,
             )
             payload_rows = [{'fields': row} for row in snapshot_rows]
+
+            snapshot_write_started = perf_counter()
             created = self._post_list_rows_in_batches(
                 site_id=site_id,
                 list_id=list_id,
                 row_payloads=payload_rows,
                 context_label=f"RunDisplaySnapshots run={run_id}",
             )
+            if stage_timers is not None:
+                stage_timers['snapshot_write_seconds'] = float(perf_counter() - snapshot_write_started)
 
             logger.info(f"[STORAGE] ✅ Wrote RunDisplaySnapshots rows for {run_id}: rows={created}")
             return True
@@ -898,6 +931,44 @@ class StorageService:
             logger.info(f"[STORAGE] ✅ Background AuditRuns write finished for {run_id}")
         except Exception as e:
             logger.error(f"[STORAGE] Background AuditRuns write failed for {run_id}: {e}", exc_info=True)
+    
+    def _write_metrics_to_sharepoint_list_async(
+        self,
+        run_id: str,
+        bucket_results: pd.DataFrame,
+        findings: pd.DataFrame,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Background wrapper for metrics list persistence."""
+        try:
+            logger.info(f"[STORAGE] 🚀 Background metrics write started for {run_id}")
+            self._write_metrics_to_sharepoint_list(run_id, bucket_results, findings, metadata)
+            logger.info(f"[STORAGE] ✅ Background metrics write finished for {run_id}")
+        except Exception as e:
+            logger.error(f"[STORAGE] Background metrics write failed for {run_id}: {e}", exc_info=True)
+
+    def _validate_run_display_snapshots_async(
+        self,
+        run_id: str,
+        bucket_results: pd.DataFrame,
+    ) -> None:
+        """Background wrapper for snapshot validation."""
+        try:
+            logger.info(f"[STORAGE] 🚀 Background snapshot validation started for {run_id}")
+            validation = self.validate_run_display_snapshots(run_id, bucket_results)
+            if validation.get('ok'):
+                logger.info(
+                    f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
+                    f"portfolio={validation['actual']['portfolio']}, "
+                    f"property={validation['actual']['property']}, "
+                    f"lease={validation['actual']['lease']}"
+                )
+            else:
+                logger.warning(
+                    f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
+                )
+        except Exception as e:
+            logger.error(f"[STORAGE] Background snapshot validation failed for {run_id}: {e}", exc_info=True)
 
     def load_run_display_snapshot_from_sharepoint_list(
         self,
@@ -2951,9 +3022,17 @@ class StorageService:
         self.create_run_dir(run_id)
 
         write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'true').lower() == 'true'
+        write_metrics_async = os.getenv('ASYNC_METRICS_WRITE', 'true').lower() == 'true'
+        snapshot_validation_async = os.getenv('ASYNC_SNAPSHOT_VALIDATION', 'true').lower() == 'true'
         
         files_saved = []
         files_failed = []
+        stage_timers: Dict[str, float] = {
+            'metrics_write_seconds': 0.0,
+            'snapshot_filter_seconds': 0.0,
+            'snapshot_write_seconds': 0.0,
+            'snapshot_validate_seconds': 0.0,
+        }
         
         # Save original uploaded file if provided
         if original_file_path and original_file_path.exists():
@@ -2988,7 +3067,21 @@ class StorageService:
         
         # Write metrics to SharePoint list (don't fail save if this fails)
         try:
-            self._write_metrics_to_sharepoint_list(run_id, bucket_results, findings, metadata)
+            can_write_sharepoint_lists = self._can_use_sharepoint_lists()
+            if write_metrics_async and can_write_sharepoint_lists:
+                metrics_started = perf_counter()
+                metrics_thread = threading.Thread(
+                    target=self._write_metrics_to_sharepoint_list_async,
+                    args=(run_id, bucket_results, findings, dict(metadata)),
+                    daemon=True,
+                    name=f"metrics-write-{run_id}",
+                )
+                metrics_thread.start()
+                stage_timers['metrics_write_seconds'] = float(perf_counter() - metrics_started)
+            else:
+                metrics_started = perf_counter()
+                self._write_metrics_to_sharepoint_list(run_id, bucket_results, findings, metadata)
+                stage_timers['metrics_write_seconds'] = float(perf_counter() - metrics_started)
         except Exception as e:
             logger.warning(f"[STORAGE] Failed to write metrics to SharePoint list: {e}")
 
@@ -3000,20 +3093,34 @@ class StorageService:
                 actual_detail=actual_detail,
                 expected_detail=expected_detail,
                 property_name_map=property_name_map,
+                stage_timers=stage_timers,
             )
             if snapshot_write_ok:
-                validation = self.validate_run_display_snapshots(run_id, bucket_results)
-                if validation.get('ok'):
-                    logger.info(
-                        f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
-                        f"portfolio={validation['actual']['portfolio']}, "
-                        f"property={validation['actual']['property']}, "
-                        f"lease={validation['actual']['lease']}"
+                if snapshot_validation_async and self._can_use_sharepoint_lists():
+                    validate_started = perf_counter()
+                    validate_thread = threading.Thread(
+                        target=self._validate_run_display_snapshots_async,
+                        args=(run_id, bucket_results),
+                        daemon=True,
+                        name=f"snapshot-validate-{run_id}",
                     )
+                    validate_thread.start()
+                    stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
                 else:
-                    logger.warning(
-                        f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
-                    )
+                    validate_started = perf_counter()
+                    validation = self.validate_run_display_snapshots(run_id, bucket_results)
+                    stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
+                    if validation.get('ok'):
+                        logger.info(
+                            f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
+                            f"portfolio={validation['actual']['portfolio']}, "
+                            f"property={validation['actual']['property']}, "
+                            f"lease={validation['actual']['lease']}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
+                        )
         except Exception as e:
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
 
@@ -3022,23 +3129,31 @@ class StorageService:
         try:
             can_write_sharepoint_lists = self._can_use_sharepoint_lists()
             if write_details_async and can_write_sharepoint_lists:
-                bucket_results_for_async = bucket_results.copy(deep=True)
-                findings_for_async = findings.copy(deep=True)
                 writer_thread = threading.Thread(
                     target=self._write_results_to_sharepoint_list_async,
-                    args=(run_id, bucket_results_for_async, findings_for_async),
+                    args=(run_id, bucket_results, findings),
                     daemon=True,
                     name=f"auditruns-write-{run_id}",
                 )
                 writer_thread.start()
                 logger.info(
                     f"[STORAGE] 🚀 Dispatched background AuditRuns write for {run_id}: "
-                    f"bucket_rows={len(bucket_results_for_async)}, finding_rows={len(findings_for_async)}"
+                    f"bucket_rows={len(bucket_results)}, finding_rows={len(findings)}"
                 )
             else:
                 self._write_results_to_sharepoint_list(run_id, bucket_results, findings)
         except Exception as e:
             logger.warning(f"[STORAGE] Failed to write detailed results to SharePoint list: {e}")
+
+        logger.info(
+            f"[STORAGE TIMER] run_id={run_id} "
+            f"metrics_write_seconds={stage_timers.get('metrics_write_seconds', 0.0):.2f} "
+            f"snapshot_filter_seconds={stage_timers.get('snapshot_filter_seconds', 0.0):.2f} "
+            f"snapshot_write_seconds={stage_timers.get('snapshot_write_seconds', 0.0):.2f} "
+            f"snapshot_validate_seconds={stage_timers.get('snapshot_validate_seconds', 0.0):.2f} "
+            f"metrics_mode={'async' if write_metrics_async else 'sync'} "
+            f"snapshot_validation_mode={'async' if snapshot_validation_async else 'sync'}"
+        )
         
         logger.info(f"[STORAGE] ✅ Successfully saved run {run_id} - {len(files_saved)} files")
         if self.use_sharepoint:
