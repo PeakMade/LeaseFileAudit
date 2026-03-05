@@ -164,9 +164,9 @@ def get_ar_code_display_name(ar_code: Any) -> str | None:
 
 
 def format_ar_code_display(ar_code: Any) -> str:
-    """Format AR code as '<code> - <name>' when name is known."""
+    """Format AR code as '<name> (<code>)' when name is known."""
     token = str(ar_code or "").strip()
     if not token:
         return ""
     name = get_ar_code_display_name(token)
-    return f"{token} - {name}" if name else token
+    return f"{name} ({token})" if name else token

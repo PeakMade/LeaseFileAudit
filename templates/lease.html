@@ -56,7 +56,7 @@
     <div class="row mb-3">
         <div class="col-12">
             <div class="alert alert-warning border" role="alert">
-                <strong>Lease-only Expectations (no SC/AR):</strong>
+                <strong>Expected in Lease, no scheduled charges or transactions matched:</strong>
                 <ul class="mb-0 mt-2">
                     {% for item in lease_only_expectations %}
                     <li>{{ item.message if item.message else (item.term_label or 'Unmapped lease term') }}</li>

@@ -2533,17 +2533,78 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         admin_fee_candidates = _prioritize_admin_fee_candidates(clause_admin_candidates)
     else:
         admin_fee_candidates = _prioritize_admin_fee_candidates(admin_fee_candidates)
-    amenity_patterns = [r"amenity\s+premium", r"premium\s+feature", r"premium\s+amount", r"floorplan\s+rate\s+addendum"]
-    amenity_candidates = _extract_fee_candidates(
+    def _extract_focus_windows(
+        text_value: str,
+        focus_patterns: Sequence[str],
+        radius_before: int = 500,
+        radius_after: int = 900,
+    ) -> str:
+        if not text_value.strip():
+            return ""
+
+        windows: list[str] = []
+        for pattern in focus_patterns:
+            for match in re.finditer(pattern, text_value, re.IGNORECASE):
+                start = max(0, match.start() - radius_before)
+                end = min(len(text_value), match.end() + radius_after)
+                snippet = text_value[start:end]
+                snippet = re.sub(r"\s+", " ", snippet).strip()
+                if snippet:
+                    windows.append(snippet)
+
+        if not windows:
+            return ""
+        return "\n".join(windows)
+
+    amenity_patterns = [
+        r"amenity\s+premium",
+        r"premium\s+feature",
+        r"premium\s+amount",
+        r"exclusive\s+bedspace",
+        r"bedspace\s+premium",
+    ]
+    amenity_exclude_patterns = [
+        r"income",
+        r"salary",
+        r"wage",
+        r"floor\s*plan\s*rate\s*addendum",
+        r"floorplan\s*rate\s*addendum",
+        r"floor\s*plan\s*rate",
+    ]
+    exclusive_bedspace_focus_patterns = [
+        r"exclusive\s+bedspace\s+addendum",
+        r"bedspace\s+addendum",
+        r"exclusive\s+bedspace",
+    ]
+
+    amenity_candidates: list[dict[str, Any]] = []
+
+    # First priority: extract from Exclusive Bedspace Addendum context.
+    bedspace_focus_text = _extract_focus_windows(
         addenda_text if addenda_text.strip() else all_text,
-        include_patterns=amenity_patterns,
-        exclude_patterns=[r"income", r"salary", r"wage"],
+        exclusive_bedspace_focus_patterns,
     )
+    if bedspace_focus_text:
+        amenity_candidates = _extract_fee_candidates(
+            bedspace_focus_text,
+            include_patterns=amenity_patterns,
+            exclude_patterns=amenity_exclude_patterns,
+        )
+
+    # Fallback: any addenda text (still excluding Floor Plan Rate Addendum context).
     if not amenity_candidates and addenda_text.strip():
+        amenity_candidates = _extract_fee_candidates(
+            addenda_text,
+            include_patterns=amenity_patterns,
+            exclude_patterns=amenity_exclude_patterns,
+        )
+
+    # Final fallback: full packet text.
+    if not amenity_candidates:
         amenity_candidates = _extract_fee_candidates(
             all_text,
             include_patterns=amenity_patterns,
-            exclude_patterns=[r"income", r"salary", r"wage"],
+            exclude_patterns=amenity_exclude_patterns,
         )
 
     amenity_premium = amenity_candidates[0]["amount"] if amenity_candidates else None
@@ -3272,13 +3333,18 @@ def build_lease_expectation_overlay(
         unmapped_count += 1
         if candidate_codes:
             candidate_labels = [format_ar_code_display(code) for code in candidate_codes]
+            amount_text = f"${amount:,.2f}" if amount is not None else "(no amount)"
+            frequency_token = str(frequency or "").strip().lower()
+            if frequency_token in {"one_time", "onetime", "one-time"}:
+                detail_text = "one time"
+            elif frequency_token in {"monthly", "per_month", "per month"}:
+                detail_text = "monthly"
+            else:
+                detail_text = frequency_token.replace("_", " ") if frequency_token else "unspecified"
             lease_only_expectations.append({
                 **term_payload,
                 "message": (
-                    f"Lease expects {', '.join(candidate_labels)} "
-                    f"{f'${amount:,.2f}' if amount is not None else ''}"
-                    f"{f' {frequency}' if frequency else ''}"
-                    f"{f' starting {start_date}' if start_date else ''}; no SC and no AR."
+                    f"{', '.join(candidate_labels)} {amount_text} / {detail_text}"
                 ).strip(),
             })
         else:
