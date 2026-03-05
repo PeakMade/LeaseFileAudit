@@ -178,7 +178,8 @@
                                     <th class="sortable" data-sort="customer_name" style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">
                                         Resident Name <span id="customerSortIcon" style="font-size: 1em; color: #000;">↓</span>
                                     </th>
-                                    <th style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease Interval ID</th>
+                                    <th style="width: 170px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease ID</th>
+                                    <th style="width: 190px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease Interval ID</th>
                                     <th class="text-center" style="width: 120px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Matched</th>
                                     <th class="text-center sortable" data-sort="exceptions" style="width: 120px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">Exceptions <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span></th>
                                     <th class="text-end" style="width: 150px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Variance</th>
@@ -191,6 +192,13 @@
                                     onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href='{{ url_for('main.lease_view', run_id=run_id, property_id=property_id, lease_interval_id=lease.lease_interval_id) }}'">
                                     <td style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
                                         {{ lease.customer_name if lease.customer_name else '' }}
+                                    </td>
+                                    <td style="padding: 10px 12px; font-family: 'Courier New', monospace; border-right: 1px solid #dee2e6;">
+                                        {% if lease.lease_id %}
+                                            {{ lease.lease_id|int }}
+                                        {% else %}
+                                            <span class="text-muted">—</span>
+                                        {% endif %}
                                     </td>
                                     <td style="padding: 10px 12px; font-family: 'Courier New', monospace; border-right: 1px solid #dee2e6;">
                                         <i class="fas fa-file-contract me-2" style="color: #6c757d;"></i>{{ lease.lease_interval_id|int }}
@@ -298,8 +306,8 @@
             }
             
             rows.sort((a, b) => {
-                const countA = parseInt(a.cells[3].textContent.trim()) || 0;
-                const countB = parseInt(b.cells[3].textContent.trim()) || 0;
+                const countA = parseInt(a.cells[4].textContent.trim()) || 0;
+                const countB = parseInt(b.cells[4].textContent.trim()) || 0;
                 
                 if (currentSort.order === 'asc') {
                     return countA - countB;

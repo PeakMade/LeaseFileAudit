@@ -129,10 +129,21 @@ class SourceMapping:
 # AR codes posted through API or timed/external charges - exclude from audit to prevent false exceptions
 # These codes should NOT appear in scheduled charges; if they do, they're flagged as "TIMED_OR_EXTERNAL_CHARGE"
 API_POSTED_AR_CODES = [
-    155023, 154776, 155217, 154777, 155018, 156669, 
+    155023, 154776, 155217, 154777, 155018, 
     155099, 155022, 154785, 155049, 155040, 155015, 
-    155017, 155176, 155203, 155053, 154787, 155073, 155083, 155028, 155202, 154774, 155030, 155037
+    155017, 155176, 155203, 155053, 154787, 155073, 155083, 155028, 155202, 154774, 155030, 155037, 154776, 156669
 ]
+
+API_POSTED_AR_CODES_SET = {int(code) for code in API_POSTED_AR_CODES}
+API_POSTED_AR_CODES_TEXT_SET = {str(code) for code in API_POSTED_AR_CODES_SET}
+
+
+def _build_api_posted_code_mask(series: pd.Series) -> pd.Series:
+    """Return True where AR code is one of the API-posted codes, robust to str/float/int input."""
+    numeric_values = pd.to_numeric(series, errors='coerce')
+    numeric_mask = numeric_values.isin(API_POSTED_AR_CODES_SET)
+    text_mask = series.astype(str).str.strip().isin(API_POSTED_AR_CODES_TEXT_SET)
+    return numeric_mask | text_mask
 
 def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -170,10 +181,11 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     
     # Exclude API-posted AR codes - these are automatically posted and shouldn't be audited
     if ARSourceColumns.AR_CODE_ID in df.columns:
-        filtered_api_codes = df[ARSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES).sum()
+        api_posted_mask = _build_api_posted_code_mask(df[ARSourceColumns.AR_CODE_ID])
+        filtered_api_codes = int(api_posted_mask.sum())
         if filtered_api_codes > 0:
             print(f"[FILTER] Excluding {filtered_api_codes} AR transactions with API-posted AR codes: {API_POSTED_AR_CODES}")
-        mask = mask & ~df[ARSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES)
+        mask = mask & ~api_posted_mask
     
     # Inactive lease interval filter temporarily disabled.
     if ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL in df.columns:
@@ -295,10 +307,11 @@ def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     
     # Exclude API-posted AR codes - these are automatically posted and shouldn't be in scheduled charges
     if ScheduledSourceColumns.AR_CODE_ID in df.columns:
-        filtered_api_codes = df[ScheduledSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES).sum()
+        api_posted_mask = _build_api_posted_code_mask(df[ScheduledSourceColumns.AR_CODE_ID])
+        filtered_api_codes = int(api_posted_mask.sum())
         if filtered_api_codes > 0:
             print(f"[FILTER] Excluding {filtered_api_codes} scheduled charges with API-posted AR codes: {API_POSTED_AR_CODES}")
-        mask = mask & ~df[ScheduledSourceColumns.AR_CODE_ID].isin(API_POSTED_AR_CODES)
+        mask = mask & ~api_posted_mask
     
     # CRITICAL: Exclude unselected quotes (IS_UNSELECTED_QUOTE = 1)
     # These are from quotes the tenant didn't select, so they should never appear in AR
@@ -317,6 +330,16 @@ def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
         filtered_deleted = (~is_blank_or_null).sum()
         if filtered_deleted > 0:
             print(f"[FILTER] Excluded {filtered_deleted} deleted scheduled charge records")
+
+    # Exclude scheduled charges that were never posted.
+    # Example source value: "Deleted - Never Posted".
+    if ScheduledSourceColumns.POSTED_THROUGH_DATE in df.columns:
+        posted_through = df[ScheduledSourceColumns.POSTED_THROUGH_DATE].fillna('').astype(str).str.strip().str.lower()
+        deleted_never_posted_mask = posted_through.str.contains('deleted', na=False) & posted_through.str.contains('never posted', na=False)
+        mask = mask & ~deleted_never_posted_mask
+        filtered_never_posted = deleted_never_posted_mask.sum()
+        if filtered_never_posted > 0:
+            print(f"[FILTER] Excluded {filtered_never_posted} scheduled charges marked as deleted/never-posted")
     
     # Only include charges cached to lease (IS_CACHED_TO_LEASE = 1)
     if ScheduledSourceColumns.IS_CACHED_TO_LEASE in df.columns:

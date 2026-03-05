@@ -48,6 +48,11 @@ def _parse_money(value: Any) -> float | None:
     text = str(value).strip().replace("$", "").replace(",", "")
     if text == "":
         return None
+
+    # Support accounting-style negatives, e.g. "($70.00)" -> -70.00
+    if text.startswith("(") and text.endswith(")"):
+        text = f"-{text[1:-1].strip()}"
+
     try:
         return float(text)
     except Exception:
@@ -79,9 +84,18 @@ def _post_method(
     }
     if api_key:
         headers[api_key_header] = api_key
+        headers.setdefault("X-Api-Key", api_key)
 
     response = requests.post(endpoint_url, headers=headers, json=request_body, timeout=timeout_seconds)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        response_snippet = (response.text or "")[:500]
+        raise ValueError(
+            f"{method_name} HTTP {response.status_code} calling {endpoint_url}. "
+            f"Response: {response_snippet}"
+        ) from exc
+
     payload = response.json()
     if isinstance(payload, dict):
         top_code = payload.get("code")
@@ -99,18 +113,76 @@ def _extract_lease_nodes(details_payload: dict[str, Any]) -> list[dict[str, Any]
 
 
 def _extract_customer_name(lease_node: dict[str, Any]) -> str:
-    lease_name = _to_str(lease_node.get("name"))
-    if lease_name:
-        return lease_name
+    customer_name, _, _ = _extract_customer_fields(lease_node)
+    return customer_name
 
+
+def _extract_customer_nodes(lease_node: dict[str, Any]) -> list[dict[str, Any]]:
     customers_node = (((lease_node.get("customers") or {}).get("customer")))
-    customers = [item for item in _as_list(customers_node) if isinstance(item, dict)]
-    if not customers:
-        return ""
+    return [item for item in _as_list(customers_node) if isinstance(item, dict)]
 
-    first = _to_str(customers[0].get("firstName"))
-    last = _to_str(customers[0].get("lastName"))
-    return " ".join(part for part in [first, last] if part)
+
+def _customer_full_name(customer: dict[str, Any]) -> str:
+    first = _to_str(customer.get("firstName"))
+    last = _to_str(customer.get("lastName"))
+    full = " ".join(part for part in [first, last] if part).strip()
+    if full:
+        return full
+    return _to_str(customer.get("name"))
+
+
+def _is_guarantor_customer(customer: dict[str, Any]) -> bool:
+    marker_values = [
+        _to_str(customer.get("type")).lower(),
+        _to_str(customer.get("customerType")).lower(),
+        _to_str(customer.get("customerTypeName")).lower(),
+        _to_str(customer.get("relationship")).lower(),
+        _to_str(customer.get("relationshipType")).lower(),
+        _to_str(customer.get("relationshipTypeName")).lower(),
+        _to_str(customer.get("occupancyType")).lower(),
+        _to_str(customer.get("occupancyStatus")).lower(),
+    ]
+    marker_text = " ".join(value for value in marker_values if value)
+    if "guarant" in marker_text:
+        return True
+
+    explicit_flags = [
+        customer.get("isGuarantor"),
+        customer.get("guarantor"),
+        customer.get("isGuarantorSigner"),
+    ]
+    for flag in explicit_flags:
+        if str(flag).strip().lower() in {"1", "true", "yes", "y"}:
+            return True
+    return False
+
+
+def _extract_customer_fields(lease_node: dict[str, Any]) -> tuple[str, str, str]:
+    """Return (tenant_name, tenant_id, guarantor_name) from lease payload."""
+    lease_name = _to_str(lease_node.get("name"))
+    customers = _extract_customer_nodes(lease_node)
+
+    if not customers:
+        return lease_name, "", ""
+
+    guarantor_customers = [customer for customer in customers if _is_guarantor_customer(customer)]
+    tenant_candidates = [customer for customer in customers if not _is_guarantor_customer(customer)]
+
+    tenant_customer = tenant_candidates[0] if tenant_candidates else None
+    guarantor_customer = guarantor_customers[0] if guarantor_customers else None
+
+    tenant_name = _customer_full_name(tenant_customer) if tenant_customer else ""
+    tenant_id = _to_str((tenant_customer or {}).get("id"))
+    guarantor_name = _customer_full_name(guarantor_customer) if guarantor_customer else ""
+
+    if not tenant_name:
+        tenant_name = lease_name
+    if not tenant_name and customers:
+        tenant_name = _customer_full_name(customers[0])
+    if not tenant_id and customers:
+        tenant_id = _to_str(customers[0].get("id"))
+
+    return tenant_name, tenant_id, guarantor_name
 
 
 def _extract_charges_from_interval(interval_node: dict[str, Any]) -> list[dict[str, Any]]:
@@ -143,6 +215,18 @@ def _extract_charges_from_interval(interval_node: dict[str, Any]) -> list[dict[s
     return rows
 
 
+def _is_deleted_never_posted(value: Any) -> bool:
+    text = _to_str(value).lower()
+    return bool(text) and ("deleted" in text and "never posted" in text)
+
+
+def _is_one_time_charge(charge: dict[str, Any]) -> bool:
+    timing = _to_str(charge.get("chargeTiming")).lower()
+    # Treat as recurring only when timing explicitly indicates monthly.
+    # Examples like "Application Completed" or "Renewal Start" should behave as one-time.
+    return "monthly" not in timing
+
+
 def _build_scheduled_df(property_id: int, property_name: str, details_payload: dict[str, Any]) -> tuple[pd.DataFrame, list[str]]:
     output_rows: list[dict[str, Any]] = []
     lease_ids: list[str] = []
@@ -152,14 +236,7 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
         if lease_id and lease_id not in lease_ids:
             lease_ids.append(lease_id)
 
-        customer_name = _extract_customer_name(lease_node)
-        customer_id = ""
-        customer_nodes = [
-            item for item in _as_list((((lease_node.get("customers") or {}).get("customer"))))
-            if isinstance(item, dict)
-        ]
-        if customer_nodes:
-            customer_id = _to_str(customer_nodes[0].get("id"))
+        customer_name, customer_id, guarantor_name = _extract_customer_fields(lease_node)
 
         scheduled_node = lease_node.get("scheduledCharges") or {}
         interval_nodes = []
@@ -167,12 +244,25 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
         interval_nodes.extend([item for item in _as_list(scheduled_node.get("oneTimeCharge")) if isinstance(item, dict)])
 
         for interval_index, interval_node in enumerate(interval_nodes, start=1):
+            lease_interval_status = _to_str(interval_node.get("leaseIntervalStatus")).lower()
+            if lease_interval_status == "cancelled":
+                continue
+
             lease_interval_id = _to_str(interval_node.get("leaseIntervalId"))
             lease_start = _to_mmddyyyy(interval_node.get("leaseStartDate"))
             lease_end = _to_mmddyyyy(interval_node.get("leaseEndDate"))
 
             charges = _extract_charges_from_interval(interval_node)
             for charge_index, charge in enumerate(charges, start=1):
+                posted_through_value = (
+                    charge.get("postedThrough")
+                    or charge.get("posted_through")
+                    or charge.get("postedThroughDate")
+                    or interval_node.get("postedThrough")
+                )
+                if _is_deleted_never_posted(posted_through_value):
+                    continue
+
                 amount = _parse_money(charge.get("amount"))
                 if amount is None:
                     continue
@@ -180,9 +270,14 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
                 charge_start = _to_mmddyyyy(
                     charge.get("chargeStartDate") or charge.get("installmentStartDate") or lease_start
                 )
-                charge_end = _to_mmddyyyy(
-                    charge.get("chargeEndDate") or charge.get("installmentEndDate") or lease_end
-                )
+
+                explicit_charge_end = charge.get("chargeEndDate") or charge.get("installmentEndDate")
+                if explicit_charge_end:
+                    charge_end = _to_mmddyyyy(explicit_charge_end)
+                elif _is_one_time_charge(charge):
+                    charge_end = ""
+                else:
+                    charge_end = lease_end
 
                 row_id = (
                     f"api-sc-{property_id}-{lease_id}-{lease_interval_id or interval_index}-"
@@ -198,10 +293,11 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
                     ScheduledSourceColumns.CHARGE_AMOUNT: float(amount),
                     ScheduledSourceColumns.CHARGE_START_DATE: charge_start,
                     ScheduledSourceColumns.CHARGE_END_DATE: charge_end,
-                    ScheduledSourceColumns.GUARANTOR_NAME: "",
+                    ScheduledSourceColumns.GUARANTOR_NAME: guarantor_name,
                     ScheduledSourceColumns.CUSTOMER_NAME: customer_name,
                     ScheduledSourceColumns.CUSTOMER_ID: customer_id,
                     ScheduledSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL: 1,
+                    ScheduledSourceColumns.POSTED_THROUGH_DATE: _to_str(posted_through_value),
                     "PROPERTY_NAME": property_name,
                 })
 
@@ -218,6 +314,7 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
         ScheduledSourceColumns.GUARANTOR_NAME,
         ScheduledSourceColumns.CUSTOMER_NAME,
         ScheduledSourceColumns.CUSTOMER_ID,
+        ScheduledSourceColumns.POSTED_THROUGH_DATE,
     ]
 
     df = pd.DataFrame(output_rows)
@@ -251,14 +348,7 @@ def _build_ar_df(property_id: int, property_name: str, ar_payload: dict[str, Any
             except Exception:
                 pass
 
-        customer_name = _extract_customer_name(lease_node)
-        customer_id = ""
-        customer_nodes = [
-            item for item in _as_list((((lease_node.get("customers") or {}).get("customer"))))
-            if isinstance(item, dict)
-        ]
-        if customer_nodes:
-            customer_id = _to_str(customer_nodes[0].get("id"))
+        customer_name, customer_id, guarantor_name = _extract_customer_fields(lease_node)
 
         ledger_nodes = [
             item for item in _as_list((((lease_node.get("ledgers") or {}).get("ledger"))))
@@ -310,7 +400,7 @@ def _build_ar_df(property_id: int, property_name: str, ar_payload: dict[str, Any
                     ARSourceColumns.ID: tx_id,
                     ARSourceColumns.CUSTOMER_NAME: customer_name,
                     ARSourceColumns.CUSTOMER_ID: customer_id,
-                    ARSourceColumns.GUARANTOR_NAME: "",
+                    ARSourceColumns.GUARANTOR_NAME: guarantor_name,
                     ARSourceColumns.SCHEDULED_CHARGE_ID: _to_str(tx.get("scheduledChargeId")),
                     ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL: 1,
                 })

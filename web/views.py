@@ -1067,11 +1067,12 @@ def filter_to_current_academic_year(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def execute_audit_run(
-    file_path: Path,
-    run_id: str,
+    file_path: Path = None,
+    run_id: str = "",
     audit_year: int = None,
     audit_month: int = None,
-    scoped_property_ids=None
+    scoped_property_ids=None,
+    preloaded_sources: dict = None,
 ) -> dict:
     """
     Execute complete audit run.
@@ -1081,15 +1082,28 @@ def execute_audit_run(
         run_id: Unique run identifier
         audit_year: Optional year to filter audit (e.g., 2024)
         audit_month: Optional month to filter audit (1-12)
+        preloaded_sources: Optional pre-loaded RAW source dict keyed by configured source names
     
     Returns:
         Dict with all results and metadata
     """
-    # Load RAW data sources from Excel
-    from audit_engine.io import load_excel_sources
+    # Load RAW data sources from Excel, or use provided in-memory sources.
     from audit_engine.mappings import apply_source_mapping, AR_TRANSACTIONS_MAPPING, SCHEDULED_CHARGES_MAPPING
-    
-    sources = load_excel_sources(file_path, config.ar_source, config.scheduled_source)
+
+    if preloaded_sources is not None:
+        sources = preloaded_sources
+    else:
+        if file_path is None:
+            raise ValueError("file_path is required when preloaded_sources is not provided")
+        from audit_engine.io import load_excel_sources
+        sources = load_excel_sources(file_path, config.ar_source, config.scheduled_source)
+
+    if config.ar_source.name not in sources or config.scheduled_source.name not in sources:
+        raise ValueError(
+            "Missing required source tabs for execution: "
+            f"{config.ar_source.name} and/or {config.scheduled_source.name}"
+        )
+
     print(f"\n[EXECUTE_AUDIT_RUN] Loaded raw sources:")
     print(f"  AR Transactions: {sources[config.ar_source.name].shape}")
     print(f"  Scheduled Charges: {sources[config.scheduled_source.name].shape}")
@@ -1183,12 +1197,17 @@ def execute_audit_run(
         
         # Check which API codes are present
         ar_code_col = actual_detail[CanonicalField.AR_CODE_ID.value]
-        api_codes_present = actual_detail[ar_code_col.isin(API_POSTED_AR_CODES)]
+        api_code_set = {int(code) for code in API_POSTED_AR_CODES}
+        api_code_text_set = {str(code) for code in api_code_set}
+        ar_code_numeric = pd.to_numeric(ar_code_col, errors='coerce')
+        api_code_mask = ar_code_numeric.isin(api_code_set) | ar_code_col.astype(str).str.strip().isin(api_code_text_set)
+
+        api_codes_present = actual_detail[api_code_mask]
         
         if not api_codes_present.empty:
             print(f"[API CODE FILTER] Found {len(api_codes_present)} API code transactions to filter:")
             for code in API_POSTED_AR_CODES:
-                count = (ar_code_col == code).sum()
+                count = int((ar_code_numeric == int(code)).sum())
                 if count > 0:
                     print(f"[API CODE FILTER]   - Code {code}: {count} transactions")
         else:
@@ -1202,7 +1221,7 @@ def execute_audit_run(
                 pass
         
         # Apply filter
-        actual_detail = actual_detail[~ar_code_col.isin(API_POSTED_AR_CODES)].copy()
+        actual_detail = actual_detail[~api_code_mask].copy()
         
         filtered_count = original_count - len(actual_detail)
         print(f"[API CODE FILTER] Filtered out: {filtered_count} transactions")
@@ -1726,19 +1745,19 @@ def upload_api_property():
             flash('API returned no scheduled charges or AR transactions for that property.', 'warning')
             return redirect(url_for('main.index'))
 
-        temp_dir = Path(tempfile.mkdtemp())
-        file_path = temp_dir / f"api_property_{property_id}.xlsx"
-        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-            ar_raw.to_excel(writer, index=False, sheet_name='AR_TRANS_API')
-            scheduled_raw.to_excel(writer, index=False, sheet_name='SC_TRANS_API')
-
+        execute_started = perf_counter()
         results = execute_audit_run(
-            file_path=file_path,
+            file_path=None,
             run_id=run_id,
             audit_year=audit_year,
             audit_month=audit_month,
             scoped_property_ids=[str(property_id)],
+            preloaded_sources={
+                config.ar_source.name: ar_raw,
+                config.scheduled_source.name: scheduled_raw,
+            },
         )
+        execute_seconds = perf_counter() - execute_started
 
         base_run_id = None
         try:
@@ -1763,7 +1782,14 @@ def upload_api_property():
         except Exception as overlay_error:
             logger.warning(f"[PROPERTY API SCOPE] Baseline overlay skipped due to error: {overlay_error}")
 
-        metadata = storage.create_metadata(run_id, file_path)
+        metadata = {
+            'run_id': run_id,
+            'timestamp': datetime.now().isoformat(),
+            'config_version': 'v1',
+            'file_name': f'api_property_{property_id}.json',
+            'file_hash': '',
+            'file_size': 0,
+        }
         metadata['run_scope'] = {
             'type': 'property',
             'source': 'api_property',
@@ -1781,6 +1807,7 @@ def upload_api_property():
                 'month': audit_month,
             }
 
+        save_run_started = perf_counter()
         storage.save_run(
             run_id,
             results["expected_detail"],
@@ -1789,21 +1816,21 @@ def upload_api_property():
             results["findings"],
             metadata,
             results.get("variance_detail"),
-            file_path,
+            None,
             property_name_map=results.get("property_name_map"),
         )
+        save_run_seconds = perf_counter() - save_run_started
 
+        cache_clear_started = perf_counter()
         invalidate_runs_cache()
         clear_run_cache(run_id)
+        cache_clear_seconds = perf_counter() - cache_clear_started
+        cleanup_seconds = 0.0
 
-        try:
-            import shutil
-            shutil.rmtree(temp_dir)
-        except Exception as cleanup_error:
-            logger.warning(f"[PROPERTY API] Failed to cleanup temp dir: {cleanup_error}")
-
+        activity_log_seconds = 0.0
         user = get_current_user()
         if user and config.auth.can_log_to_sharepoint():
+            activity_started = perf_counter()
             log_user_activity(
                 user_info=user,
                 activity_type='Successful Audit',
@@ -1818,11 +1845,17 @@ def upload_api_property():
                     'user_role': 'user',
                 }
             )
+            activity_log_seconds = perf_counter() - activity_started
 
         elapsed_seconds = perf_counter() - audit_started_at
         logger.info(
             f"[AUDIT TIMER] SUCCESS run_id={run_id} source=api_property property_id={property_id} "
-            f"elapsed_seconds={elapsed_seconds:.2f}"
+            f"elapsed_seconds={elapsed_seconds:.2f} "
+            f"execute_seconds={execute_seconds:.2f} "
+            f"save_run_seconds={save_run_seconds:.2f} "
+            f"cache_clear_seconds={cache_clear_seconds:.2f} "
+            f"cleanup_seconds={cleanup_seconds:.2f} "
+            f"activity_log_seconds={activity_log_seconds:.2f}"
         )
 
         session['pending_upload_timing'] = {
@@ -1830,12 +1863,12 @@ def upload_api_property():
             'request_started_at_utc': request_started_at_utc.isoformat(),
             'upload_request_seconds': float(elapsed_seconds),
             'file_save_seconds': 0.0,
-            'execute_seconds': float(elapsed_seconds),
+            'execute_seconds': float(execute_seconds),
             'overlay_seconds': 0.0,
-            'save_run_seconds': 0.0,
-            'cache_clear_seconds': 0.0,
-            'cleanup_seconds': 0.0,
-            'activity_log_seconds': 0.0,
+            'save_run_seconds': float(save_run_seconds),
+            'cache_clear_seconds': float(cache_clear_seconds),
+            'cleanup_seconds': float(cleanup_seconds),
+            'activity_log_seconds': float(activity_log_seconds),
         }
 
         return redirect(url_for('main.property_view', property_id=str(property_id), run_id=run_id))
@@ -2164,39 +2197,101 @@ def property_view(property_id: str, run_id: str = None):
         all_lease_ids = sorted(all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value].unique())
 
         lease_customer_names = {}
+        lease_parent_ids = {}
         try:
             lease_ids_normalized = {int(float(lease_id)) for lease_id in all_lease_ids}
 
-            actual_detail = cached_load_actual_detail(run_id, cache_token)
-            if not actual_detail.empty and CanonicalField.LEASE_INTERVAL_ID.value in actual_detail.columns:
-                for _, record in actual_detail.iterrows():
+            def _normalize_person_name(value):
+                if value is None:
+                    return ""
+                text = str(value).strip()
+                if not text or text.lower() == 'nan':
+                    return ""
+                return text
+
+            def _row_is_guarantor_like(row):
+                customer_value = _normalize_person_name(row.get(CanonicalField.CUSTOMER_NAME.value))
+                guarantor_value = _normalize_person_name(row.get(CanonicalField.GUARANTOR_NAME.value))
+                if not customer_value or not guarantor_value:
+                    return False
+                return customer_value.casefold() == guarantor_value.casefold()
+
+            def _build_name_map_for_source(source_df: pd.DataFrame) -> dict:
+                name_map = {}
+                if source_df is None or source_df.empty or CanonicalField.LEASE_INTERVAL_ID.value not in source_df.columns:
+                    return name_map
+
+                non_guarantor_candidates = {lease_key: [] for lease_key in lease_ids_normalized}
+                fallback_candidates = {lease_key: [] for lease_key in lease_ids_normalized}
+
+                for _, record in source_df.iterrows():
                     lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
                     if pd.isna(lease_value):
                         continue
                     lease_key = int(float(lease_value))
                     if lease_key not in lease_ids_normalized:
                         continue
-                    if lease_key in lease_customer_names and lease_customer_names[lease_key]:
-                        continue
-                    customer_value = record.get(CanonicalField.CUSTOMER_NAME.value)
-                    if pd.notna(customer_value) and str(customer_value).strip():
-                        lease_customer_names[lease_key] = str(customer_value).strip()
 
-            if len(lease_customer_names) < len(lease_ids_normalized):
-                expected_detail = cached_load_expected_detail(run_id, cache_token)
-                if not expected_detail.empty and CanonicalField.LEASE_INTERVAL_ID.value in expected_detail.columns:
-                    for _, record in expected_detail.iterrows():
-                        lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
-                        if pd.isna(lease_value):
-                            continue
-                        lease_key = int(float(lease_value))
-                        if lease_key not in lease_ids_normalized:
-                            continue
-                        if lease_key in lease_customer_names and lease_customer_names[lease_key]:
-                            continue
-                        customer_value = record.get(CanonicalField.CUSTOMER_NAME.value)
-                        if pd.notna(customer_value) and str(customer_value).strip():
-                            lease_customer_names[lease_key] = str(customer_value).strip()
+                    customer_value = _normalize_person_name(record.get(CanonicalField.CUSTOMER_NAME.value))
+                    if not customer_value:
+                        continue
+
+                    fallback_candidates[lease_key].append(customer_value)
+                    if not _row_is_guarantor_like(record):
+                        non_guarantor_candidates[lease_key].append(customer_value)
+
+                for lease_key in lease_ids_normalized:
+                    preferred = non_guarantor_candidates[lease_key] if non_guarantor_candidates[lease_key] else fallback_candidates[lease_key]
+                    if not preferred:
+                        continue
+
+                    counts = {}
+                    first_seen = {}
+                    for index, name in enumerate(preferred):
+                        key = name.casefold()
+                        counts[key] = counts.get(key, 0) + 1
+                        if key not in first_seen:
+                            first_seen[key] = index
+
+                    winner_key = max(counts.keys(), key=lambda key: (counts[key], -first_seen[key]))
+                    for name in preferred:
+                        if name.casefold() == winner_key:
+                            name_map[lease_key] = name
+                            break
+
+                return name_map
+
+            expected_detail = cached_load_expected_detail(run_id, cache_token)
+            actual_detail = cached_load_actual_detail(run_id, cache_token)
+
+            # Prefer names from lease-details (expected) first, then fill from AR (actual).
+            for source_df in [expected_detail, actual_detail]:
+                source_name_map = _build_name_map_for_source(source_df)
+                for lease_key, resolved_name in source_name_map.items():
+                    if lease_key not in lease_customer_names or not lease_customer_names.get(lease_key):
+                        lease_customer_names[lease_key] = resolved_name
+
+            # Prefer LEASE_ID from expected first, then fallback to actual.
+            for source_df in [expected_detail, actual_detail]:
+                if source_df is None or source_df.empty or CanonicalField.LEASE_INTERVAL_ID.value not in source_df.columns:
+                    continue
+                if CanonicalField.LEASE_ID.value not in source_df.columns:
+                    continue
+
+                for _, record in source_df.iterrows():
+                    lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
+                    if pd.isna(lease_value):
+                        continue
+                    lease_key = int(float(lease_value))
+                    if lease_key not in lease_ids_normalized or lease_key in lease_parent_ids:
+                        continue
+
+                    lease_parent_value = record.get(CanonicalField.LEASE_ID.value)
+                    if pd.notna(lease_parent_value):
+                        try:
+                            lease_parent_ids[lease_key] = int(float(lease_parent_value))
+                        except Exception:
+                            pass
         except Exception as name_error:
             logger.warning(f"[PROPERTY_VIEW] Failed to load resident names for lease rows: {name_error}")
         
@@ -2267,6 +2362,16 @@ def property_view(property_id: str, run_id: str = None):
             # Get guarantor name and customer name for this lease
             guarantor_name = None
             customer_name = lease_customer_names.get(int(float(lease_id)))
+            lease_key = int(float(lease_id))
+            lease_snapshot = lease_snapshot_map.get(lease_key)
+            resolved_lease_id = lease_parent_ids.get(lease_key)
+            if not resolved_lease_id and lease_snapshot:
+                snapshot_lease_id = lease_snapshot.get('lease_id')
+                if snapshot_lease_id is not None:
+                    try:
+                        resolved_lease_id = int(float(snapshot_lease_id))
+                    except Exception:
+                        pass
             
             # Get all buckets for this lease
             lease_all_buckets = all_property_buckets[
@@ -2280,10 +2385,10 @@ def property_view(property_id: str, run_id: str = None):
                 # Lease has exceptions
                 exceptions = lease_groups[lease_id]
                 total_variance = sum(e['variance'] for e in exceptions)
-                lease_snapshot = lease_snapshot_map.get(int(float(lease_id)))
                 static_exception_count = int(lease_snapshot.get('exception_count', len(exceptions))) if lease_snapshot else len(exceptions)
                 lease_summary.append({
                     'lease_interval_id': lease_id,
+                    'lease_id': resolved_lease_id,
                     'customer_name': customer_name,
                     'guarantor_name': guarantor_name,
                     'has_exceptions': static_exception_count > 0,
@@ -2295,10 +2400,10 @@ def property_view(property_id: str, run_id: str = None):
                 })
             else:
                 # Clean lease - no exceptions
-                lease_snapshot = lease_snapshot_map.get(int(float(lease_id)))
                 static_exception_count = int(lease_snapshot.get('exception_count', 0)) if lease_snapshot else 0
                 lease_summary.append({
                     'lease_interval_id': lease_id,
+                    'lease_id': resolved_lease_id,
                     'customer_name': customer_name,
                     'guarantor_name': guarantor_name,
                     'has_exceptions': static_exception_count > 0,
@@ -2309,8 +2414,15 @@ def property_view(property_id: str, run_id: str = None):
                     'exceptions': []
                 })
 
-        # Sort: exceptions first (by variance), then clean leases
-        lease_summary = sorted(lease_summary, key=lambda x: (not x['has_exceptions'], -x['total_variance']))
+        # Sort: highest exception count first, then unresolved count, then variance.
+        lease_summary = sorted(
+            lease_summary,
+            key=lambda x: (
+                -int(x.get('exception_count') or 0),
+                -int(x.get('unresolved_exception_count') or 0),
+                -abs(float(x.get('total_variance') or 0)),
+            )
+        )
         
         # Calculate property KPIs
         # Combine matched buckets with unresolved exceptions only (exclude resolved exceptions)
@@ -2714,17 +2826,69 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         if not property_name:
             property_name = f"Property {int(float(property_id))}"
         
-        # Get customer name and IDs from actual records
+        # Get customer name and IDs from lease records
         customer_name = None
         customer_id = None
         lease_id = None
+
+        def _normalize_person_name(value):
+            if value is None:
+                return ""
+            text = str(value).strip()
+            if not text or text.lower() == 'nan':
+                return ""
+            return text
+
+        def _row_is_guarantor(row):
+            customer_value = _normalize_person_name(row.get(CanonicalField.CUSTOMER_NAME.value))
+            guarantor_value = _normalize_person_name(row.get(CanonicalField.GUARANTOR_NAME.value))
+            if not customer_value or not guarantor_value:
+                return False
+            return customer_value.casefold() == guarantor_value.casefold()
+
+        def _resolve_primary_customer_name(*frames):
+            # Resolve within each source independently, honoring source priority order.
+            for frame in frames:
+                if frame is None or frame.empty:
+                    continue
+                if CanonicalField.CUSTOMER_NAME.value not in frame.columns:
+                    continue
+
+                ranked_names = []
+                fallback_names = []
+                for _, row in frame.iterrows():
+                    name_value = _normalize_person_name(row.get(CanonicalField.CUSTOMER_NAME.value))
+                    if not name_value:
+                        continue
+                    fallback_names.append(name_value)
+                    if not _row_is_guarantor(row):
+                        ranked_names.append(name_value)
+
+                candidate_names = ranked_names if ranked_names else fallback_names
+                if not candidate_names:
+                    continue
+
+                # Mode by occurrence, stable on first appearance for ties.
+                counts = {}
+                first_seen_index = {}
+                for index, name_value in enumerate(candidate_names):
+                    key = name_value.casefold()
+                    counts[key] = counts.get(key, 0) + 1
+                    if key not in first_seen_index:
+                        first_seen_index[key] = index
+
+                winner_key = max(counts.keys(), key=lambda key: (counts[key], -first_seen_index[key]))
+                for name_value in candidate_names:
+                    if name_value.casefold() == winner_key:
+                        return name_value
+                return candidate_names[0]
+
+            return None
+
+        # Prefer lease-details (scheduled/expected) tenant name over AR-transactions tenant name.
+        customer_name = _resolve_primary_customer_name(lease_expected, lease_actual)
         
         if len(lease_actual) > 0:
-            if CanonicalField.CUSTOMER_NAME.value in lease_actual.columns:
-                customer_value = lease_actual[CanonicalField.CUSTOMER_NAME.value].iloc[0]
-                if pd.notna(customer_value):
-                    customer_name = customer_value
-            
             if CanonicalField.CUSTOMER_ID.value in lease_actual.columns:
                 customer_id_value = lease_actual[CanonicalField.CUSTOMER_ID.value].iloc[0]
                 if pd.notna(customer_id_value):
@@ -2734,13 +2898,6 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                 lease_id_value = lease_actual[CanonicalField.LEASE_ID.value].iloc[0]
                 if pd.notna(lease_id_value):
                     lease_id = int(lease_id_value)
-        
-        # If not found in actual, check expected records (scheduled charges)
-        if not customer_name and len(lease_expected) > 0:
-            if CanonicalField.CUSTOMER_NAME.value in lease_expected.columns:
-                customer_value = lease_expected[CanonicalField.CUSTOMER_NAME.value].iloc[0]
-                if pd.notna(customer_value):
-                    customer_name = customer_value
         
         if not customer_id and len(lease_expected) > 0:
             if CanonicalField.CUSTOMER_ID.value in lease_expected.columns:

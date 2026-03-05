@@ -1303,6 +1303,7 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-05**: Updated API ingestion and view resolution paths to improve tenant identity accuracy and scheduled-charge filtering: `audit_engine/api_ingest.py` now prefers tenant over guarantor while persisting guarantor separately, excludes `leaseIntervalStatus=Cancelled` and `postedThrough="Deleted - Never Posted"` scheduled rows, supports accounting-style negative amounts (e.g., `($70.00)`), and treats non-monthly no-end-date charges as one-time; `audit_engine/mappings.py` now applies robust API-posted AR code exclusion across mixed numeric/string dtypes; `web/views.py` now prefers lease-details/expected tenant names over AR names in both lease and property views for consistent resident display
 - **2026-03-05**: Added separate property-level API audit upload workflow in `web/views.py` + `templates/upload.html` using new API adapter `audit_engine/api_ingest.py`; flow fetches `getLeaseDetails`/`getLeaseArTransactions` from Entrata endpoints, stages equivalent AR/scheduled raw datasets, and executes the existing reconciliation pipeline without altering the Excel upload path
 - **2026-03-05**: Hardened lease-term fee extraction in `audit_engine/entrata_lease_terms.py` to prevent false positives by excluding parking violation/fine/warning context from monthly parking detection and by tightening admin-fee candidate selection to ignore utility billing-cap language (e.g., `for billing`, `not to exceed`)
 - **2026-03-03**: Fixed lease-view overlay skip caused by mixed offset-naive/offset-aware datetime subtraction in `audit_engine/entrata_lease_terms.py` by normalizing TTL age comparison timestamps to UTC-aware values before subtraction
@@ -1376,6 +1377,6 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 
 ---
 
-**Last Updated**: February 26, 2026  
+**Last Updated**: March 5, 2026  
 **Version**: 1.0  
 **Maintained By**: PeakMade Development Team
