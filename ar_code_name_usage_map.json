@@ -1,0 +1,1337 @@
+﻿{
+    "property_id":  1150907,
+    "total_codes":  266,
+    "eligible_codes":  266,
+    "mapping":  {
+                    "157135":  {
+                                   "code":  3,
+                                   "name":  "TheGuarantors Waiver Program Accrual",
+                                   "usage":  "Base"
+                               },
+                    "157001":  {
+                                   "code":  3,
+                                   "name":  "Guarantor Waiver Program - TheGuarantors",
+                                   "usage":  "Base"
+                               },
+                    "156669":  {
+                                   "code":  9,
+                                   "name":  "Damage Liability Waiver - POPIC",
+                                   "usage":  "Base"
+                               },
+                    "155143":  {
+                                   "code":  9,
+                                   "name":  "Peak Protection Ins - 3.0",
+                                   "usage":  "Add Ons"
+                               },
+                    "154790":  {
+                                   "code":  9,
+                                   "name":  "Peak Protection Ins - Monthly",
+                                   "usage":  "Add Ons"
+                               },
+                    "155118":  {
+                                   "code":  9,
+                                   "name":  "Peak Protection Ins Credit",
+                                   "usage":  "Base"
+                               },
+                    "155203":  {
+                                   "code":  9,
+                                   "name":  "Damage Liability Waiver",
+                                   "usage":  "Base"
+                               },
+                    "155114":  {
+                                   "code":  9,
+                                   "name":  "Forced Place Insurance Option",
+                                   "usage":  "Add Ons"
+                               },
+                    "155104":  {
+                                   "code":  9,
+                                   "name":  "Security Deposit Interest",
+                                   "usage":  "Base"
+                               },
+                    "155103":  {
+                                   "code":  9,
+                                   "name":  "City/County Sales Tax",
+                                   "usage":  "Base"
+                               },
+                    "155102":  {
+                                   "code":  3,
+                                   "name":  "Property Protection Fee",
+                                   "usage":  "Add Ons"
+                               },
+                    "155148":  {
+                                   "code":  3,
+                                   "name":  "Foxen Liability - HSRE",
+                                   "usage":  "Base"
+                               },
+                    "156434":  {
+                                   "code":  3,
+                                   "name":  "Protection Fee",
+                                   "usage":  "Base"
+                               },
+                    "155217":  {
+                                   "code":  9,
+                                   "name":  "RentPlus",
+                                   "usage":  "Base"
+                               },
+                    "155202":  {
+                                   "code":  3,
+                                   "name":  "Rentistry",
+                                   "usage":  "Base"
+                               },
+                    "156368":  {
+                                   "code":  3,
+                                   "name":  "Resident Credit Reporting",
+                                   "usage":  "Base"
+                               },
+                    "155122":  {
+                                   "code":  3,
+                                   "name":  "Resident Assistant Fees",
+                                   "usage":  "Base"
+                               },
+                    "155095":  {
+                                   "code":  3,
+                                   "name":  "Application Fee (Move In)",
+                                   "usage":  "Base"
+                               },
+                    "154788":  {
+                                   "code":  3,
+                                   "name":  "Application Fee",
+                                   "usage":  "Base"
+                               },
+                    "155131":  {
+                                   "code":  3,
+                                   "name":  "Screening Fee",
+                                   "usage":  "Base"
+                               },
+                    "155011":  {
+                                   "code":  3,
+                                   "name":  "Final Application Fee",
+                                   "usage":  "Base"
+                               },
+                    "155012":  {
+                                   "code":  3,
+                                   "name":  "Admin Fees",
+                                   "usage":  "Base"
+                               },
+                    "155125":  {
+                                   "code":  3,
+                                   "name":  "Admin Fees (Move In)",
+                                   "usage":  "Base"
+                               },
+                    "155126":  {
+                                   "code":  3,
+                                   "name":  "Admin Fee (Lease Approval)",
+                                   "usage":  "Base"
+                               },
+                    "155171":  {
+                                   "code":  3,
+                                   "name":  "Lease Guarantee Svc",
+                                   "usage":  "Base"
+                               },
+                    "155180":  {
+                                   "code":  3,
+                                   "name":  "Guarantor Waiver Fee",
+                                   "usage":  "Base"
+                               },
+                    "155123":  {
+                                   "code":  3,
+                                   "name":  "MEAL PLAN",
+                                   "usage":  "Base"
+                               },
+                    "155124":  {
+                                   "code":  3,
+                                   "name":  "MEAL PLAN ADMIN",
+                                   "usage":  "Base"
+                               },
+                    "155121":  {
+                                   "code":  3,
+                                   "name":  "MEAL PLAN-TAXABLE",
+                                   "usage":  "Base"
+                               },
+                    "157536":  {
+                                   "code":  3,
+                                   "name":  "Transfer Concession",
+                                   "usage":  "Special"
+                               },
+                    "155129":  {
+                                   "code":  3,
+                                   "name":  "Food Commission",
+                                   "usage":  "Base"
+                               },
+                    "154786":  {
+                                   "code":  3,
+                                   "name":  "Month To Month Charges",
+                                   "usage":  "Base"
+                               },
+                    "155157":  {
+                                   "code":  3,
+                                   "name":  "MTM - Retail",
+                                   "usage":  "Base"
+                               },
+                    "155013":  {
+                                   "code":  3,
+                                   "name":  "Reservation Fee",
+                                   "usage":  "Base"
+                               },
+                    "155101":  {
+                                   "code":  3,
+                                   "name":  "Activity Fee",
+                                   "usage":  "Base"
+                               },
+                    "155014":  {
+                                   "code":  3,
+                                   "name":  "Final Administrative Fee",
+                                   "usage":  "Base"
+                               },
+                    "155015":  {
+                                   "code":  3,
+                                   "name":  "Early Move in Fee",
+                                   "usage":  "Base"
+                               },
+                    "155081":  {
+                                   "code":  3,
+                                   "name":  "HOA Dues",
+                                   "usage":  "Base"
+                               },
+                    "154777":  {
+                                   "code":  3,
+                                   "name":  "Late Charges",
+                                   "usage":  "Base"
+                               },
+                    "155156":  {
+                                   "code":  3,
+                                   "name":  "Retail Late Fee",
+                                   "usage":  "Base"
+                               },
+                    "155164":  {
+                                   "code":  3,
+                                   "name":  "Retail Delinquency Interest",
+                                   "usage":  "Base"
+                               },
+                    "154785":  {
+                                   "code":  3,
+                                   "name":  "NSF Check Fee",
+                                   "usage":  "Base"
+                               },
+                    "155032":  {
+                                   "code":  3,
+                                   "name":  "NSF for Transactions in Previous Period",
+                                   "usage":  "Base"
+                               },
+                    "155054":  {
+                                   "code":  3,
+                                   "name":  "Furniture Income",
+                                   "usage":  "Add Ons"
+                               },
+                    "157201":  {
+                                   "code":  3,
+                                   "name":  "Furniture Package",
+                                   "usage":  "Amenity"
+                               },
+                    "155160":  {
+                                   "code":  3,
+                                   "name":  "TV Rental",
+                                   "usage":  "Base"
+                               },
+                    "155161":  {
+                                   "code":  3,
+                                   "name":  "TV Rental Concession",
+                                   "usage":  "Special"
+                               },
+                    "155034":  {
+                                   "code":  3,
+                                   "name":  "Pet",
+                                   "usage":  "Pet"
+                               },
+                    "155022":  {
+                                   "code":  3,
+                                   "name":  "Electric Charge",
+                                   "usage":  "Base"
+                               },
+                    "155023":  {
+                                   "code":  3,
+                                   "name":  "Electricity",
+                                   "usage":  "Base"
+                               },
+                    "155024":  {
+                                   "code":  3,
+                                   "name":  "Prior Year Electric",
+                                   "usage":  "Base"
+                               },
+                    "155025":  {
+                                   "code":  3,
+                                   "name":  "Final Electricity",
+                                   "usage":  "Base"
+                               },
+                    "155084":  {
+                                   "code":  3,
+                                   "name":  "Retail Electric Revenue",
+                                   "usage":  "Base"
+                               },
+                    "155091":  {
+                                   "code":  3,
+                                   "name":  "Utility Package",
+                                   "usage":  "Base"
+                               },
+                    "157603":  {
+                                   "code":  3,
+                                   "name":  "Utility Package Concession",
+                                   "usage":  "Base"
+                               },
+                    "155026":  {
+                                   "code":  3,
+                                   "name":  "Utility Fee",
+                                   "usage":  "Base"
+                               },
+                    "155027":  {
+                                   "code":  3,
+                                   "name":  "Billing Fee",
+                                   "usage":  "Base"
+                               },
+                    "155028":  {
+                                   "code":  3,
+                                   "name":  "Gas Charge",
+                                   "usage":  "Base"
+                               },
+                    "155029":  {
+                                   "code":  3,
+                                   "name":  "Gas Reimbursement",
+                                   "usage":  "Base"
+                               },
+                    "155030":  {
+                                   "code":  3,
+                                   "name":  "Water, Sewer Charge",
+                                   "usage":  "Base"
+                               },
+                    "155031":  {
+                                   "code":  3,
+                                   "name":  "Water Reimbursement",
+                                   "usage":  "Base"
+                               },
+                    "155086":  {
+                                   "code":  3,
+                                   "name":  "Retail Water Revenue",
+                                   "usage":  "Base"
+                               },
+                    "155119":  {
+                                   "code":  3,
+                                   "name":  "Trash Service Income",
+                                   "usage":  "Base"
+                               },
+                    "155319":  {
+                                   "code":  3,
+                                   "name":  "Trash Service",
+                                   "usage":  "Base"
+                               },
+                    "155206":  {
+                                   "code":  3,
+                                   "name":  "Alarm Fee",
+                                   "usage":  "Base"
+                               },
+                    "155078":  {
+                                   "code":  3,
+                                   "name":  "Internet",
+                                   "usage":  "Base"
+                               },
+                    "155046":  {
+                                   "code":  3,
+                                   "name":  "Cable Television",
+                                   "usage":  "Base"
+                               },
+                    "155060":  {
+                                   "code":  3,
+                                   "name":  "Retail Trash Income",
+                                   "usage":  "Base"
+                               },
+                    "155062":  {
+                                   "code":  3,
+                                   "name":  "Retail Gas Revenue",
+                                   "usage":  "Base"
+                               },
+                    "154789":  {
+                                   "code":  3,
+                                   "name":  "Resident Fines",
+                                   "usage":  "Lease Violation"
+                               },
+                    "155173":  {
+                                   "code":  3,
+                                   "name":  "Resident Fines-Inspections",
+                                   "usage":  "Maintenance"
+                               },
+                    "155041":  {
+                                   "code":  3,
+                                   "name":  "Turn Trash",
+                                   "usage":  "Maintenance"
+                               },
+                    "155040":  {
+                                   "code":  3,
+                                   "name":  "Turn Key/Fine Charge",
+                                   "usage":  "Maintenance"
+                               },
+                    "155083":  {
+                                   "code":  3,
+                                   "name":  "Misc Fines",
+                                   "usage":  "Base"
+                               },
+                    "155144":  {
+                                   "code":  3,
+                                   "name":  "Inspection Fees",
+                                   "usage":  "Base"
+                               },
+                    "155201":  {
+                                   "code":  3,
+                                   "name":  "Code Enforcement Program",
+                                   "usage":  "Base"
+                               },
+                    "155200":  {
+                                   "code":  3,
+                                   "name":  "Biennial Rental Certification Fee",
+                                   "usage":  "Base"
+                               },
+                    "155108":  {
+                                   "code":  3,
+                                   "name":  "Pest Control Fee",
+                                   "usage":  "Base"
+                               },
+                    "155047":  {
+                                   "code":  3,
+                                   "name":  "Other Income",
+                                   "usage":  "Base"
+                               },
+                    "155036":  {
+                                   "code":  3,
+                                   "name":  "Trash Fines",
+                                   "usage":  "Base"
+                               },
+                    "155037":  {
+                                   "code":  3,
+                                   "name":  "Key Fine/Charge",
+                                   "usage":  "Base"
+                               },
+                    "156968":  {
+                                   "code":  3,
+                                   "name":  "Keys/Access Device",
+                                   "usage":  "Add Ons"
+                               },
+                    "155832":  {
+                                   "code":  3,
+                                   "name":  "Cleaning Service",
+                                   "usage":  "Base"
+                               },
+                    "155090":  {
+                                   "code":  3,
+                                   "name":  "Tanning",
+                                   "usage":  "Base"
+                               },
+                    "155038":  {
+                                   "code":  3,
+                                   "name":  "Final Keys/Locks",
+                                   "usage":  "Base"
+                               },
+                    "155039":  {
+                                   "code":  3,
+                                   "name":  "Final Trash",
+                                   "usage":  "Base"
+                               },
+                    "155053":  {
+                                   "code":  3,
+                                   "name":  "Resident Life Programs",
+                                   "usage":  "Base"
+                               },
+                    "155174":  {
+                                   "code":  3,
+                                   "name":  "Resident Life Rec Credit",
+                                   "usage":  "Base"
+                               },
+                    "156168":  {
+                                   "code":  3,
+                                   "name":  "Amenity Fee",
+                                   "usage":  "Base"
+                               },
+                    "156169":  {
+                                   "code":  3,
+                                   "name":  "Amenity Fee - Coliving",
+                                   "usage":  "Base"
+                               },
+                    "156335":  {
+                                   "code":  3,
+                                   "name":  "Amenity Reservation",
+                                   "usage":  "Add Ons"
+                               },
+                    "157300":  {
+                                   "code":  3,
+                                   "name":  "Community Fee",
+                                   "usage":  "Base"
+                               },
+                    "155149":  {
+                                   "code":  3,
+                                   "name":  "Green Fee",
+                                   "usage":  "Base"
+                               },
+                    "156534":  {
+                                   "code":  3,
+                                   "name":  "Composting Fee",
+                                   "usage":  "Base"
+                               },
+                    "155146":  {
+                                   "code":  3,
+                                   "name":  "Facilities Fee",
+                                   "usage":  "Base"
+                               },
+                    "155071":  {
+                                   "code":  4,
+                                   "name":  "Cleaning Fee",
+                                   "usage":  "Base"
+                               },
+                    "155065":  {
+                                   "code":  3,
+                                   "name":  "Shuttle Fees",
+                                   "usage":  "Base"
+                               },
+                    "155076":  {
+                                   "code":  4,
+                                   "name":  "Turn Damage Fee",
+                                   "usage":  "Maintenance"
+                               },
+                    "155073":  {
+                                   "code":  4,
+                                   "name":  "Turn Cleaning Fee",
+                                   "usage":  "Maintenance"
+                               },
+                    "156269":  {
+                                   "code":  4,
+                                   "name":  "Turn Paint Fee",
+                                   "usage":  "Maintenance"
+                               },
+                    "155072":  {
+                                   "code":  4,
+                                   "name":  "Final Cleaning",
+                                   "usage":  "Base"
+                               },
+                    "155070":  {
+                                   "code":  4,
+                                   "name":  "Non Turn Damage Billback",
+                                   "usage":  "Maintenance"
+                               },
+                    "155169":  {
+                                   "code":  4,
+                                   "name":  "Non Turn Damage Billback - Work Order",
+                                   "usage":  "Maintenance"
+                               },
+                    "155074":  {
+                                   "code":  4,
+                                   "name":  "Damage Fee",
+                                   "usage":  "Base"
+                               },
+                    "155075":  {
+                                   "code":  4,
+                                   "name":  "Final Damage",
+                                   "usage":  "Base"
+                               },
+                    "155035":  {
+                                   "code":  3,
+                                   "name":  "Final Pet Damage",
+                                   "usage":  "Pet"
+                               },
+                    "155135":  {
+                                   "code":  4,
+                                   "name":  "Retail Tenant Specific Billback",
+                                   "usage":  "Base"
+                               },
+                    "155052":  {
+                                   "code":  3,
+                                   "name":  "Parking",
+                                   "usage":  "Add Ons"
+                               },
+                    "156000":  {
+                                   "code":  3,
+                                   "name":  "Parking - Other",
+                                   "usage":  "Base"
+                               },
+                    "155385":  {
+                                   "code":  3,
+                                   "name":  "Reserved Parking",
+                                   "usage":  "Add Ons"
+                               },
+                    "155204":  {
+                                   "code":  3,
+                                   "name":  "Scooter/Bike Parking",
+                                   "usage":  "Add Ons"
+                               },
+                    "155116":  {
+                                   "code":  3,
+                                   "name":  "Garage Rental",
+                                   "usage":  "Add Ons"
+                               },
+                    "155085":  {
+                                   "code":  3,
+                                   "name":  "Retail Parking Revenue",
+                                   "usage":  "Base"
+                               },
+                    "155087":  {
+                                   "code":  3,
+                                   "name":  "Retail Parking",
+                                   "usage":  "Base"
+                               },
+                    "155033":  {
+                                   "code":  3,
+                                   "name":  "Storage Fee",
+                                   "usage":  "Base"
+                               },
+                    "155117":  {
+                                   "code":  3,
+                                   "name":  "Storage-Add On",
+                                   "usage":  "Add Ons"
+                               },
+                    "155021":  {
+                                   "code":  3,
+                                   "name":  "Telecom",
+                                   "usage":  "Base"
+                               },
+                    "155178":  {
+                                   "code":  3,
+                                   "name":  "Account Set-Up Fee",
+                                   "usage":  "Base"
+                               },
+                    "155155":  {
+                                   "code":  3,
+                                   "name":  "Percentage Rent",
+                                   "usage":  "Base"
+                               },
+                    "155058":  {
+                                   "code":  3,
+                                   "name":  "Retail CAM",
+                                   "usage":  "Base"
+                               },
+                    "155061":  {
+                                   "code":  3,
+                                   "name":  "Prior Year CAM Adjustment",
+                                   "usage":  "Base"
+                               },
+                    "155165":  {
+                                   "code":  3,
+                                   "name":  "CAM Pool",
+                                   "usage":  "Reimbursable Expense"
+                               },
+                    "155059":  {
+                                   "code":  3,
+                                   "name":  "Retail Real Estate Tax",
+                                   "usage":  "Base"
+                               },
+                    "155096":  {
+                                   "code":  3,
+                                   "name":  "Prior Year RET Adjustment - Retail",
+                                   "usage":  "Base"
+                               },
+                    "155166":  {
+                                   "code":  3,
+                                   "name":  "RET Pool",
+                                   "usage":  "Reimbursable Expense"
+                               },
+                    "155107":  {
+                                   "code":  3,
+                                   "name":  "Retail INS Income",
+                                   "usage":  "Base"
+                               },
+                    "155168":  {
+                                   "code":  3,
+                                   "name":  "Prior Year INS Adjustment-Retail",
+                                   "usage":  "Base"
+                               },
+                    "155167":  {
+                                   "code":  3,
+                                   "name":  "INS Pool",
+                                   "usage":  "Reimbursable Expense"
+                               },
+                    "155056":  {
+                                   "code":  2,
+                                   "name":  "Retail Rent",
+                                   "usage":  "Base"
+                               },
+                    "155205":  {
+                                   "code":  3,
+                                   "name":  "Rooftop Tenant Rent",
+                                   "usage":  "Base"
+                               },
+                    "155120":  {
+                                   "code":  9,
+                                   "name":  "Prepaid - Other",
+                                   "usage":  "Base"
+                               },
+                    "154783":  {
+                                   "code":  3,
+                                   "name":  "Termination Fee",
+                                   "usage":  "Base"
+                               },
+                    "155833":  {
+                                   "code":  3,
+                                   "name":  "Retail Termination Fee",
+                                   "usage":  "Base"
+                               },
+                    "154784":  {
+                                   "code":  3,
+                                   "name":  "Cancellation Charge",
+                                   "usage":  "Base"
+                               },
+                    "156401":  {
+                                   "code":  3,
+                                   "name":  "Rent Accrual",
+                                   "usage":  "Base"
+                               },
+                    "154787":  {
+                                   "code":  3,
+                                   "name":  "Transfer Fee",
+                                   "usage":  "Base"
+                               },
+                    "155147":  {
+                                   "code":  3,
+                                   "name":  "Transfer Fee (monthly)",
+                                   "usage":  "Base"
+                               },
+                    "155005":  {
+                                   "code":  3,
+                                   "name":  "Hold Over Fee",
+                                   "usage":  "Base"
+                               },
+                    "155082":  {
+                                   "code":  3,
+                                   "name":  "Lock Off Premium",
+                                   "usage":  "Base"
+                               },
+                    "155966":  {
+                                   "code":  3,
+                                   "name":  "Full Unit Premium",
+                                   "usage":  "Base"
+                               },
+                    "155007":  {
+                                   "code":  3,
+                                   "name":  "Amenity Premium",
+                                   "usage":  "Amenity"
+                               },
+                    "157470":  {
+                                   "code":  2,
+                                   "name":  "Amenity Premium - RevMgmt",
+                                   "usage":  "Amenity"
+                               },
+                    "155115":  {
+                                   "code":  3,
+                                   "name":  "Amenity Premium-Add On",
+                                   "usage":  "Add Ons"
+                               },
+                    "155151":  {
+                                   "code":  3,
+                                   "name":  "Amenity Premium - Monthly",
+                                   "usage":  "Base"
+                               },
+                    "155008":  {
+                                   "code":  3,
+                                   "name":  "Double Up Premium",
+                                   "usage":  "Base"
+                               },
+                    "155016":  {
+                                   "code":  3,
+                                   "name":  "Re-Let Fee",
+                                   "usage":  "Base"
+                               },
+                    "157602":  {
+                                   "code":  3,
+                                   "name":  "Re-Let Fee Concession",
+                                   "usage":  "Base"
+                               },
+                    "155017":  {
+                                   "code":  3,
+                                   "name":  "Re-Assignment Fee",
+                                   "usage":  "Base"
+                               },
+                    "155049":  {
+                                   "code":  3,
+                                   "name":  "Court/Collection Fees",
+                                   "usage":  "Base"
+                               },
+                    "155089":  {
+                                   "code":  3,
+                                   "name":  "Short Term Premium",
+                                   "usage":  "Base"
+                               },
+                    "155006":  {
+                                   "code":  3,
+                                   "name":  "3 Month Premium",
+                                   "usage":  "Base"
+                               },
+                    "155002":  {
+                                   "code":  3,
+                                   "name":  "5 Month Premium",
+                                   "usage":  "Base"
+                               },
+                    "155003":  {
+                                   "code":  3,
+                                   "name":  "6 Month Premium",
+                                   "usage":  "Base"
+                               },
+                    "155284":  {
+                                   "code":  3,
+                                   "name":  "7 Month Premium",
+                                   "usage":  "Base"
+                               },
+                    "155285":  {
+                                   "code":  3,
+                                   "name":  "8 Month Premium",
+                                   "usage":  "Base"
+                               },
+                    "155004":  {
+                                   "code":  3,
+                                   "name":  "9 Month Premium",
+                                   "usage":  "Base"
+                               },
+                    "154778":  {
+                                   "code":  3,
+                                   "name":  "10 Month Premium",
+                                   "usage":  "Base"
+                               },
+                    "155286":  {
+                                   "code":  3,
+                                   "name":  "11 Month Premium",
+                                   "usage":  "Base"
+                               },
+                    "155112":  {
+                                   "code":  3,
+                                   "name":  "Summer Housing Income",
+                                   "usage":  "Base"
+                               },
+                    "156901":  {
+                                   "code":  3,
+                                   "name":  "Group - Summer Housing Income",
+                                   "usage":  "Base"
+                               },
+                    "155111":  {
+                                   "code":  3,
+                                   "name":  "Short Term Housing Income",
+                                   "usage":  "Base"
+                               },
+                    "156935":  {
+                                   "code":  3,
+                                   "name":  "Group - Short Term Housing Income",
+                                   "usage":  "Base"
+                               },
+                    "156934":  {
+                                   "code":  3,
+                                   "name":  "Group - Conference Housing",
+                                   "usage":  "Base"
+                               },
+                    "155044":  {
+                                   "code":  3,
+                                   "name":  "Clubhouse Fee Or Reservation",
+                                   "usage":  "Base"
+                               },
+                    "155045":  {
+                                   "code":  3,
+                                   "name":  "Vending Income",
+                                   "usage":  "Base"
+                               },
+                    "155050":  {
+                                   "code":  3,
+                                   "name":  "Laundry Income",
+                                   "usage":  "Base"
+                               },
+                    "155214":  {
+                                   "code":  3,
+                                   "name":  "Washer/Dryer Fee",
+                                   "usage":  "Amenity"
+                               },
+                    "155067":  {
+                                   "code":  4,
+                                   "name":  "Bad Debt Recovery",
+                                   "usage":  "Base"
+                               },
+                    "155068":  {
+                                   "code":  4,
+                                   "name":  "In House Bad Debt Recovery",
+                                   "usage":  "Base"
+                               },
+                    "155099":  {
+                                   "code":  4,
+                                   "name":  "Lost to Uncollectible",
+                                   "usage":  "Base"
+                               },
+                    "156868":  {
+                                   "code":  4,
+                                   "name":  "Collection Fee",
+                                   "usage":  "Base"
+                               },
+                    "155048":  {
+                                   "code":  3,
+                                   "name":  "Guest Suites",
+                                   "usage":  "Base"
+                               },
+                    "157267":  {
+                                   "code":  3,
+                                   "name":  "Guest Suite Reservation",
+                                   "usage":  "Amenity"
+                               },
+                    "154992":  {
+                                   "code":  7,
+                                   "name":  "Other Deposit Received",
+                                   "usage":  "Base"
+                               },
+                    "154776":  {
+                                   "code":  1,
+                                   "name":  "Payment",
+                                   "usage":  "Base"
+                               },
+                    "156167":  {
+                                   "code":  3,
+                                   "name":  "DNU - Migration Import",
+                                   "usage":  "Add Ons"
+                               },
+                    "156236":  {
+                                   "code":  9,
+                                   "name":  "DNU - Deposit Migration Import",
+                                   "usage":  "Base"
+                               },
+                    "154779":  {
+                                   "code":  3,
+                                   "name":  "Beginning Balance",
+                                   "usage":  "Base"
+                               },
+                    "154780":  {
+                                   "code":  3,
+                                   "name":  "Beginning Deposit Adjustment",
+                                   "usage":  "Base"
+                               },
+                    "154781":  {
+                                   "code":  7,
+                                   "name":  "Beginning Deposit Held",
+                                   "usage":  "Base"
+                               },
+                    "154774":  {
+                                   "code":  7,
+                                   "name":  "Deposit",
+                                   "usage":  "Base"
+                               },
+                    "155132":  {
+                                   "code":  7,
+                                   "name":  "Deposit - Lease Complete",
+                                   "usage":  "Base"
+                               },
+                    "155162":  {
+                                   "code":  7,
+                                   "name":  "Deposit - Lease Approved",
+                                   "usage":  "Base"
+                               },
+                    "155092":  {
+                                   "code":  7,
+                                   "name":  "Pet Deposit",
+                                   "usage":  "Pet"
+                               },
+                    "155172":  {
+                                   "code":  7,
+                                   "name":  "Last Month Rent",
+                                   "usage":  "Base"
+                               },
+                    "156134":  {
+                                   "code":  7,
+                                   "name":  "First Month Rent",
+                                   "usage":  "Base"
+                               },
+                    "155110":  {
+                                   "code":  7,
+                                   "name":  "Holding Deposit",
+                                   "usage":  "Base"
+                               },
+                    "155866":  {
+                                   "code":  9,
+                                   "name":  "LMR",
+                                   "usage":  "Base"
+                               },
+                    "154782":  {
+                                   "code":  8,
+                                   "name":  "Refund Payable",
+                                   "usage":  "Base"
+                               },
+                    "154795":  {
+                                   "code":  6,
+                                   "name":  "Equity Draw Request",
+                                   "usage":  "Base"
+                               },
+                    "154797":  {
+                                   "code":  9,
+                                   "name":  "Investor Loan Request",
+                                   "usage":  "Base"
+                               },
+                    "154775":  {
+                                   "code":  2,
+                                   "name":  "Utility Allowance",
+                                   "usage":  "Base"
+                               },
+                    "154794":  {
+                                   "code":  3,
+                                   "name":  "Repayment Agreement",
+                                   "usage":  "Base"
+                               },
+                    "154796":  {
+                                   "code":  3,
+                                   "name":  "HUDWRITEOFF",
+                                   "usage":  "Base"
+                               },
+                    "154993":  {
+                                   "code":  3,
+                                   "name":  "Corporate Lease Rental",
+                                   "usage":  "Base"
+                               },
+                    "154994":  {
+                                   "code":  2,
+                                   "name":  "Utility Pkg Incl with Rent",
+                                   "usage":  "Base"
+                               },
+                    "154995":  {
+                                   "code":  3,
+                                   "name":  "Community Advisor",
+                                   "usage":  "Base"
+                               },
+                    "154996":  {
+                                   "code":  3,
+                                   "name":  "Resident Asst Credit",
+                                   "usage":  "Base"
+                               },
+                    "155130":  {
+                                   "code":  4,
+                                   "name":  "Resident Life Coordinator Expense",
+                                   "usage":  "Base"
+                               },
+                    "154997":  {
+                                   "code":  3,
+                                   "name":  "Courtesy Officer Rent Allowance",
+                                   "usage":  "Base"
+                               },
+                    "154998":  {
+                                   "code":  3,
+                                   "name":  "Employee Unit Rent Credit",
+                                   "usage":  "Base"
+                               },
+                    "155093":  {
+                                   "code":  3,
+                                   "name":  "Model",
+                                   "usage":  "Base"
+                               },
+                    "155199":  {
+                                   "code":  3,
+                                   "name":  "Non-Revenue Units",
+                                   "usage":  "Base"
+                               },
+                    "155109":  {
+                                   "code":  3,
+                                   "name":  "Office Storage",
+                                   "usage":  "Base"
+                               },
+                    "154999":  {
+                                   "code":  3,
+                                   "name":  "Rent Concession",
+                                   "usage":  "Special"
+                               },
+                    "155133":  {
+                                   "code":  3,
+                                   "name":  "MO-Summer Concession",
+                                   "usage":  "Special"
+                               },
+                    "155098":  {
+                                   "code":  3,
+                                   "name":  "Payment Correction",
+                                   "usage":  "Base"
+                               },
+                    "155000":  {
+                                   "code":  3,
+                                   "name":  "Development Delays",
+                                   "usage":  "Base"
+                               },
+                    "156735":  {
+                                   "code":  4,
+                                   "name":  "Resident Experience Credit (Non-Recurring 6010-00)",
+                                   "usage":  "Base"
+                               },
+                    "155001":  {
+                                   "code":  3,
+                                   "name":  "Rent (Entire Lease) Concession",
+                                   "usage":  "Special"
+                               },
+                    "155136":  {
+                                   "code":  3,
+                                   "name":  "Rent Concession-Infectious Disease",
+                                   "usage":  "Special"
+                               },
+                    "155009":  {
+                                   "code":  3,
+                                   "name":  "Rent Discount",
+                                   "usage":  "Base"
+                               },
+                    "155010":  {
+                                   "code":  3,
+                                   "name":  "Lock Off Discount",
+                                   "usage":  "Base"
+                               },
+                    "155967":  {
+                                   "code":  3,
+                                   "name":  "Full Unit Discount",
+                                   "usage":  "Base"
+                               },
+                    "155100":  {
+                                   "code":  3,
+                                   "name":  "Office",
+                                   "usage":  "Base"
+                               },
+                    "155020":  {
+                                   "code":  3,
+                                   "name":  "Concession Chargeback",
+                                   "usage":  "Base"
+                               },
+                    "155352":  {
+                                   "code":  3,
+                                   "name":  "Abatement Reduction",
+                                   "usage":  "Base"
+                               },
+                    "155042":  {
+                                   "code":  3,
+                                   "name":  "Forfeiture Of Other Deposit",
+                                   "usage":  "Base"
+                               },
+                    "155043":  {
+                                   "code":  3,
+                                   "name":  "Forfeiture Of Deposit",
+                                   "usage":  "Base"
+                               },
+                    "155080":  {
+                                   "code":  3,
+                                   "name":  "Electricity Credit",
+                                   "usage":  "Base"
+                               },
+                    "155250":  {
+                                   "code":  3,
+                                   "name":  "Water Credit",
+                                   "usage":  "Base"
+                               },
+                    "155251":  {
+                                   "code":  3,
+                                   "name":  "Gas Credit",
+                                   "usage":  "Base"
+                               },
+                    "155106":  {
+                                   "code":  3,
+                                   "name":  "Monthly Utility Credit",
+                                   "usage":  "Base"
+                               },
+                    "155158":  {
+                                   "code":  3,
+                                   "name":  "Retail Rent Concessions",
+                                   "usage":  "Base"
+                               },
+                    "155051":  {
+                                   "code":  3,
+                                   "name":  "Parking Concession",
+                                   "usage":  "Special"
+                               },
+                    "155182":  {
+                                   "code":  3,
+                                   "name":  "Telecom Concession",
+                                   "usage":  "Base"
+                               },
+                    "155181":  {
+                                   "code":  3,
+                                   "name":  "Pet Concession",
+                                   "usage":  "Base"
+                               },
+                    "156467":  {
+                                   "code":  3,
+                                   "name":  "Tangible Concession",
+                                   "usage":  "Base"
+                               },
+                    "156468":  {
+                                   "code":  3,
+                                   "name":  "Tangible Concession Offset",
+                                   "usage":  "Base"
+                               },
+                    "156801":  {
+                                   "code":  3,
+                                   "name":  "Admin Fees Concession",
+                                   "usage":  "Special"
+                               },
+                    "156802":  {
+                                   "code":  3,
+                                   "name":  "Application Fee Concession",
+                                   "usage":  "Special"
+                               },
+                    "156835":  {
+                                   "code":  7,
+                                   "name":  "DNU - Security Deposit Concession",
+                                   "usage":  "Base"
+                               },
+                    "155079":  {
+                                   "code":  3,
+                                   "name":  "Prior Year CAM Credit",
+                                   "usage":  "Base"
+                               },
+                    "155127":  {
+                                   "code":  3,
+                                   "name":  "Retail CAM Concession",
+                                   "usage":  "Base"
+                               },
+                    "155097":  {
+                                   "code":  3,
+                                   "name":  "Prior Year RET Credit",
+                                   "usage":  "Base"
+                               },
+                    "155055":  {
+                                   "code":  3,
+                                   "name":  "Interest On Deposit Held",
+                                   "usage":  "Base"
+                               },
+                    "155063":  {
+                                   "code":  4,
+                                   "name":  "Credit Card Fee Expense",
+                                   "usage":  "Base"
+                               },
+                    "155176":  {
+                                   "code":  3,
+                                   "name":  "Utility Credit Card Storage Fee",
+                                   "usage":  "Base"
+                               },
+                    "155066":  {
+                                   "code":  4,
+                                   "name":  "Forgiveness of Debt",
+                                   "usage":  "Base"
+                               },
+                    "155069":  {
+                                   "code":  4,
+                                   "name":  "Leasing Referral Credit",
+                                   "usage":  "Base"
+                               },
+                    "156702":  {
+                                   "code":  4,
+                                   "name":  "Lease Buyout",
+                                   "usage":  "Base"
+                               },
+                    "154771":  {
+                                   "code":  2,
+                                   "name":  "Rent",
+                                   "usage":  "Base"
+                               },
+                    "157437":  {
+                                   "code":  2,
+                                   "name":  "Rent - RevMgmt",
+                                   "usage":  "Base"
+                               },
+                    "155207":  {
+                                   "code":  2,
+                                   "name":  "RENT - HUD",
+                                   "usage":  "Base"
+                               },
+                    "155213":  {
+                                   "code":  2,
+                                   "name":  "Section 8 Rent",
+                                   "usage":  "Base"
+                               },
+                    "155018":  {
+                                   "code":  3,
+                                   "name":  "Accelerated rent",
+                                   "usage":  "Base"
+                               },
+                    "155019":  {
+                                   "code":  3,
+                                   "name":  "Final Accelerated Rent",
+                                   "usage":  "Base"
+                               },
+                    "155105":  {
+                                   "code":  9,
+                                   "name":  "Beginning Balance Adjustment",
+                                   "usage":  "Base"
+                               },
+                    "155088":  {
+                                   "code":  9,
+                                   "name":  "Seller Balance Forward (SBF)",
+                                   "usage":  "Base"
+                               },
+                    "155183":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Consulting Project-Bulk Internet",
+                                   "usage":  "Base"
+                               },
+                    "155184":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Consulting Project-Bulk Cable",
+                                   "usage":  "Base"
+                               },
+                    "155185":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Consulting Project-Low Voltage Design",
+                                   "usage":  "Base"
+                               },
+                    "155186":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Consulting Project-Infrastructure",
+                                   "usage":  "Base"
+                               },
+                    "155187":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Consulting Project-Camera System",
+                                   "usage":  "Base"
+                               },
+                    "155188":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Telecommunications Products-Bandwidth",
+                                   "usage":  "Base"
+                               },
+                    "155189":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Telecommunications Products-WIFI",
+                                   "usage":  "Base"
+                               },
+                    "155190":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Desktop Support",
+                                   "usage":  "Base"
+                               },
+                    "155191":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Managed Hardware",
+                                   "usage":  "Base"
+                               },
+                    "155192":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Managed Software",
+                                   "usage":  "Base"
+                               },
+                    "155193":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Technology Transition Services",
+                                   "usage":  "Base"
+                               },
+                    "155194":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Technology Due Diligence Services",
+                                   "usage":  "Base"
+                               },
+                    "155195":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Office Phone Service",
+                                   "usage":  "Base"
+                               },
+                    "155196":  {
+                                   "code":  3,
+                                   "name":  "Redpoint Fire/Life Safety Lines",
+                                   "usage":  "Base"
+                               },
+                    "157399":  {
+                                   "code":  3,
+                                   "name":  "Homebody Master Policy",
+                                   "usage":  "Base"
+                               },
+                    "157400":  {
+                                   "code":  3,
+                                   "name":  "Homebody Deposit Alternative",
+                                   "usage":  "Base"
+                               },
+                    "157401":  {
+                                   "code":  3,
+                                   "name":  "Homebody Guaranty",
+                                   "usage":  "Base"
+                               }
+                }
+}

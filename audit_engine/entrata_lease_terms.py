@@ -26,7 +26,11 @@ import pandas as pd
 import requests
 
 from .canonical_fields import CanonicalField
-from .lease_term_rules import DEFAULT_TERM_TO_AR_CODE_RULES
+from .lease_term_rules import (
+    format_ar_code_display,
+    get_primary_ar_code_for_term,
+    get_term_to_ar_code_rules,
+)
 
 
 def _load_dotenv_if_available() -> None:
@@ -2579,7 +2583,14 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
             "confidence": confidence,
         })
 
-    _add_term_row("BASE_RENT", "RENT", base_rent_amount, base_rent_evidence, frequency="monthly", confidence=0.85)
+    _add_term_row(
+        "BASE_RENT",
+        get_primary_ar_code_for_term("BASE_RENT", fallback="RENT"),
+        base_rent_amount,
+        base_rent_evidence,
+        frequency="monthly",
+        confidence=0.85,
+    )
 
     def _extract_amount_by_anchors(
         source_pages: Sequence[Mapping[str, Any]],
@@ -2705,7 +2716,15 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     parking_candidate = extract_parking_fee(text_pack, identify_relevant_pages(text_pack))
     if parking_candidate:
         term_key_suffix = "PARKING"
-        _add_term_row("PARKING", "PARK", _as_float(parking_candidate.get("normalized") or parking_candidate.get("value")), parking_candidate.get("evidence"), frequency="monthly", confidence=0.75, key_suffix=term_key_suffix)
+        _add_term_row(
+            "PARKING",
+            get_primary_ar_code_for_term("PARKING", fallback="PARK"),
+            _as_float(parking_candidate.get("normalized") or parking_candidate.get("value")),
+            parking_candidate.get("evidence"),
+            frequency="monthly",
+            confidence=0.75,
+            key_suffix=term_key_suffix,
+        )
         if evidence_rows:
             evidence_rows[-1]["page_number"] = parking_candidate.get("page_number")
 
@@ -2717,14 +2736,22 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     )
     if pet_candidate:
         term_key_suffix = "PET"
-        _add_term_row("PET_RENT", "PETR", pet_candidate.get("amount"), pet_candidate.get("evidence"), frequency="monthly", confidence=0.7, key_suffix=term_key_suffix)
+        _add_term_row(
+            "PET_RENT",
+            get_primary_ar_code_for_term("PET_RENT", fallback="PETR"),
+            pet_candidate.get("amount"),
+            pet_candidate.get("evidence"),
+            frequency="monthly",
+            confidence=0.7,
+            key_suffix=term_key_suffix,
+        )
         if evidence_rows:
             evidence_rows[-1]["page_number"] = pet_candidate.get("page_number")
 
     for idx, candidate in enumerate(application_fee_candidates):
         _add_term_row(
             "APPLICATION_FEE",
-            "APPF",
+            get_primary_ar_code_for_term("APPLICATION_FEE", fallback="APPF"),
             candidate.get("amount"),
             candidate.get("evidence"),
             frequency="one_time",
@@ -2735,7 +2762,7 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     for idx, candidate in enumerate(admin_fee_candidates):
         _add_term_row(
             "ADMIN_FEE",
-            "ADMF",
+            get_primary_ar_code_for_term("ADMIN_FEE", fallback="ADMF"),
             candidate.get("amount"),
             candidate.get("evidence"),
             frequency="one_time",
@@ -2743,7 +2770,14 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
             key_suffix=f"{idx + 1}",
         )
 
-    _add_term_row("AMENITY_PREMIUM", "AMEN", amenity_premium, amenity_evidence, frequency="monthly", confidence=0.75)
+    _add_term_row(
+        "AMENITY_PREMIUM",
+        get_primary_ar_code_for_term("AMENITY_PREMIUM", fallback="AMEN"),
+        amenity_premium,
+        amenity_evidence,
+        frequency="monthly",
+        confidence=0.75,
+    )
 
     logger.info(
         "[LEASE TERMS] Extracted %s term rows for doc_id=%s title=%s",
@@ -3076,9 +3110,9 @@ def _ensure_records(records: Any) -> list[dict[str, Any]]:
 
 def build_term_ar_code_registry(custom_rules: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Build normalized mapping registry; pass custom rules to extend/override defaults."""
-    base_rules = list(DEFAULT_TERM_TO_AR_CODE_RULES)
-    if custom_rules:
-        base_rules.extend([dict(rule) for rule in custom_rules])
+    base_rules = get_term_to_ar_code_rules(
+        custom_rules=[dict(rule) for rule in custom_rules] if custom_rules else None
+    )
 
     normalized_rules: list[dict[str, Any]] = []
     for rule in base_rules:
@@ -3165,10 +3199,11 @@ def build_lease_expectation_overlay(
         if not ar_code:
             continue
         by_ar_code[ar_code] = group
+        ar_display = format_ar_code_display(ar_code)
         group.setdefault("lease_expectation", {
             "has_term": False,
             "status": "no_lease_term",
-            "message": f"AR has '{ar_code}' charges but no mapped lease term found.",
+            "message": f"AR has '{ar_display}' charges but no mapped lease term found.",
             "terms": [],
         })
 
@@ -3210,6 +3245,7 @@ def build_lease_expectation_overlay(
             "end_date": end_date,
             "evidence": evidence,
             "candidate_ar_codes": candidate_codes,
+            "candidate_ar_code_labels": [format_ar_code_display(code) for code in candidate_codes],
         }
 
         attached = False
@@ -3235,10 +3271,11 @@ def build_lease_expectation_overlay(
 
         unmapped_count += 1
         if candidate_codes:
+            candidate_labels = [format_ar_code_display(code) for code in candidate_codes]
             lease_only_expectations.append({
                 **term_payload,
                 "message": (
-                    f"Lease expects {', '.join(candidate_codes)} "
+                    f"Lease expects {', '.join(candidate_labels)} "
                     f"{f'${amount:,.2f}' if amount is not None else ''}"
                     f"{f' {frequency}' if frequency else ''}"
                     f"{f' starting {start_date}' if start_date else ''}; no SC and no AR."

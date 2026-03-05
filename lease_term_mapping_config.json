@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "description": "Editable lease-term to AR-code mapping rules used by lease-term overlay and extractor defaults.",
+  "term_to_ar_code_rules": [
+    {
+      "term_type": "BASE_RENT",
+      "label_patterns": ["base\\s*rent", "monthly\\s*rent", "rent"],
+      "accepted_ar_codes": ["154771"],
+      "expected_frequency": "monthly"
+    },
+    {
+      "term_type": "PET_RENT",
+      "label_patterns": ["pet\\s*rent", "pet\\s*fee"],
+      "accepted_ar_codes": ["155034"],
+      "expected_frequency": "monthly"
+    },
+    {
+      "term_type": "PARKING",
+      "label_patterns": ["parking", "garage", "carport", "reserved\\s*parking"],
+      "accepted_ar_codes": ["155052", "155385"],
+      "expected_frequency": "monthly"
+    },
+    {
+      "term_type": "UTILITY",
+      "label_patterns": ["utility", "water", "sewer", "electric", "trash"],
+      "accepted_ar_codes": ["155026", "155030", "155023"],
+      "expected_frequency": "monthly"
+    },
+    {
+      "term_type": "APPLICATION_FEE",
+      "label_patterns": ["application\\s*fee"],
+      "accepted_ar_codes": ["154788"],
+      "expected_frequency": "one_time"
+    },
+    {
+      "term_type": "ADMIN_FEE",
+      "label_patterns": ["admin\\s*fee", "administrative\\s*fee"],
+      "accepted_ar_codes": ["155012"],
+      "expected_frequency": "one_time"
+    },
+    {
+      "term_type": "AMENITY_PREMIUM",
+      "label_patterns": ["amenity\\s*premium", "premium\\s*feature", "premium\\s*amount"],
+      "accepted_ar_codes": ["155007"],
+      "expected_frequency": "monthly"
+    }
+  ]
+}

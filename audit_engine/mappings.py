@@ -11,6 +11,10 @@ Mappings define how to transform raw source data into canonical format:
 """
 from dataclasses import dataclass
 from typing import Dict, List, Callable, Optional, Any
+from functools import lru_cache
+from pathlib import Path
+import json
+import os
 import pandas as pd
 
 from .canonical_fields import CanonicalField
@@ -137,6 +141,122 @@ API_POSTED_AR_CODES = [
 
 API_POSTED_AR_CODES_SET = {int(code) for code in API_POSTED_AR_CODES}
 API_POSTED_AR_CODES_TEXT_SET = {str(code) for code in API_POSTED_AR_CODES_SET}
+
+
+def _normalize_ar_code_token(value: Any) -> str | None:
+    """Normalize AR code identifiers to comparable string tokens."""
+    if value is None or pd.isna(value):
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    numeric = pd.to_numeric(pd.Series([value]), errors='coerce').iloc[0]
+    if pd.notna(numeric):
+        try:
+            return str(int(float(numeric)))
+        except Exception:
+            pass
+
+    return text
+
+
+def _normalize_ar_code_series(series: pd.Series) -> pd.Series:
+    """Vectorized AR code normalization helper."""
+    normalized = series.astype(str).str.strip()
+    numeric_values = pd.to_numeric(series, errors='coerce')
+    numeric_mask = numeric_values.notna()
+
+    if numeric_mask.any():
+        normalized_numeric = numeric_values[numeric_mask].astype(float).astype(int).astype(str)
+        normalized.loc[numeric_mask] = normalized_numeric
+
+    normalized = normalized.replace({'': pd.NA, 'nan': pd.NA, 'None': pd.NA, '<NA>': pd.NA})
+    return normalized
+
+
+@lru_cache(maxsize=1)
+def _load_ar_code_reference_map() -> tuple[dict[str, str], set[str], str]:
+    """Load AR code -> display name reference map from project JSON."""
+    repo_root = Path(__file__).resolve().parent.parent
+    configured_path = os.getenv('AR_CODE_NAME_USAGE_MAP_PATH')
+    map_path = Path(configured_path) if configured_path else (repo_root / 'ar_code_name_usage_map.json')
+
+    if not map_path.exists():
+        print(f"[AR CODE MAP] Reference file not found at {map_path}; skipping AR name enrichment")
+        return {}, set(), str(map_path)
+
+    try:
+        payload = json.loads(map_path.read_text(encoding='utf-8-sig'))
+    except Exception as exc:
+        print(f"[AR CODE MAP] Failed to load {map_path}: {exc}")
+        return {}, set(), str(map_path)
+
+    mapping_section = payload.get('mapping') if isinstance(payload, dict) else None
+    if not isinstance(mapping_section, dict):
+        print(f"[AR CODE MAP] Invalid format in {map_path}; expected top-level 'mapping' object")
+        return {}, set(), str(map_path)
+
+    name_by_code: dict[str, str] = {}
+    allowed_codes: set[str] = set()
+
+    for raw_code, entry in mapping_section.items():
+        code_key = _normalize_ar_code_token(raw_code)
+        if not code_key:
+            continue
+
+        allowed_codes.add(code_key)
+
+        name_value = ''
+        if isinstance(entry, dict):
+            name_value = str(entry.get('name') or '').strip()
+        elif isinstance(entry, str):
+            name_value = entry.strip()
+
+        if name_value:
+            name_by_code[code_key] = name_value
+
+    print(
+        f"[AR CODE MAP] Loaded {len(allowed_codes)} allowed AR codes "
+        f"({len(name_by_code)} names) from {map_path}"
+    )
+    return name_by_code, allowed_codes, str(map_path)
+
+
+def _apply_ar_code_reference_map(result_df: pd.DataFrame, mapping_name: str) -> pd.DataFrame:
+    """Apply AR code name enrichment and unknown-code diagnostics to mapped canonical data."""
+    ar_code_col = CanonicalField.AR_CODE_ID.value
+    ar_name_col = CanonicalField.AR_CODE_NAME.value
+
+    if ar_code_col not in result_df.columns:
+        return result_df
+
+    name_by_code, allowed_codes, map_path = _load_ar_code_reference_map()
+    if not allowed_codes:
+        return result_df
+
+    normalized_codes = _normalize_ar_code_series(result_df[ar_code_col])
+
+    if ar_name_col not in result_df.columns:
+        result_df[ar_name_col] = pd.NA
+
+    mapped_names = normalized_codes.map(name_by_code)
+    mapped_mask = mapped_names.notna()
+    if mapped_mask.any():
+        result_df.loc[mapped_mask, ar_name_col] = mapped_names.loc[mapped_mask]
+        print(f"[AR CODE MAP] Applied {int(mapped_mask.sum())} AR code names for source '{mapping_name}'")
+
+    unknown_mask = normalized_codes.notna() & ~normalized_codes.isin(allowed_codes)
+    unknown_values = sorted(set(normalized_codes[unknown_mask].dropna().tolist()))
+    if unknown_values:
+        sample = unknown_values[:10]
+        print(
+            f"[AR CODE MAP][WARNING] Found {len(unknown_values)} unknown AR code(s) in source '{mapping_name}' "
+            f"not present in reference map ({map_path}). Sample: {sample}"
+        )
+
+    return result_df
 
 
 def _build_api_posted_code_mask(series: pd.Series) -> pd.Series:
@@ -608,6 +728,8 @@ def apply_source_mapping(df: pd.DataFrame, mapping: SourceMapping) -> pd.DataFra
                     f"Calculator function: {calc_func.__name__}\n"
                     f"Source columns available: {df.columns.tolist()}"
                 )
+
+    result_df = _apply_ar_code_reference_map(result_df, mapping.name)
     
     print(f"[MAPPING DEBUG] Final output: {result_df.shape}, columns: {result_df.columns.tolist()}")
     print(f"[MAPPING DEBUG] Sample first row: {result_df.head(1).to_dict('records')}\n")
