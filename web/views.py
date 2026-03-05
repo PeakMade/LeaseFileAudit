@@ -1676,7 +1676,7 @@ def upload():
         if scoped_property_ids:
             overlay_started = perf_counter()
             try:
-                prior_runs = storage.list_runs(limit=50)
+                prior_runs = storage.list_runs(limit=2)
                 for run in prior_runs:
                     candidate = run.get('run_id')
                     if candidate and candidate != run_id:
@@ -1906,7 +1906,7 @@ def upload_api_property():
         base_run_id = None
         overlay_seconds = 0.0
         try:
-            prior_runs = storage.list_runs(limit=50)
+            prior_runs = storage.list_runs(limit=2)
             for run in prior_runs:
                 candidate = run.get('run_id')
                 if candidate and candidate != run_id:

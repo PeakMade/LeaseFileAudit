@@ -73,6 +73,32 @@ def reconcile_buckets(
         CanonicalField.ACTUAL_AMOUNT.value
     ].sum().reset_index()
     actual_agg.rename(columns={CanonicalField.ACTUAL_AMOUNT.value: CanonicalField.ACTUAL_TOTAL.value}, inplace=True)
+
+    # Track reversal/deleted activity so bucket classification can suppress
+    # false "scheduled not billed" exceptions when charges were reversed.
+    flag_columns = []
+    if CanonicalField.IS_REVERSAL.value in actual_detail.columns:
+        flag_columns.append(CanonicalField.IS_REVERSAL.value)
+    if CanonicalField.IS_DELETED.value in actual_detail.columns:
+        flag_columns.append(CanonicalField.IS_DELETED.value)
+
+    if flag_columns:
+        actual_flags_source = actual_detail[BUCKET_KEY_COLUMNS + flag_columns].copy()
+        for flag_col in flag_columns:
+            actual_flags_source[flag_col] = pd.to_numeric(actual_flags_source[flag_col], errors='coerce').fillna(0)
+
+        flag_agg_map = {}
+        if CanonicalField.IS_REVERSAL.value in flag_columns:
+            flag_agg_map[CanonicalField.IS_REVERSAL.value] = 'max'
+        if CanonicalField.IS_DELETED.value in flag_columns:
+            flag_agg_map[CanonicalField.IS_DELETED.value] = 'max'
+
+        actual_flags = actual_flags_source.groupby(BUCKET_KEY_COLUMNS).agg(flag_agg_map).reset_index()
+        actual_flags = actual_flags.rename(columns={
+            CanonicalField.IS_REVERSAL.value: 'HAS_REVERSAL_ACTIVITY',
+            CanonicalField.IS_DELETED.value: 'HAS_DELETED_ACTIVITY',
+        })
+        actual_agg = actual_agg.merge(actual_flags, on=BUCKET_KEY_COLUMNS, how='left')
     
     # Full outer join to capture all buckets
     reconciled = pd.merge(
@@ -85,6 +111,10 @@ def reconcile_buckets(
     # Fill NaNs with 0 for calculation
     reconciled[CanonicalField.EXPECTED_TOTAL.value] = reconciled[CanonicalField.EXPECTED_TOTAL.value].fillna(0)
     reconciled[CanonicalField.ACTUAL_TOTAL.value] = reconciled[CanonicalField.ACTUAL_TOTAL.value].fillna(0)
+    if 'HAS_REVERSAL_ACTIVITY' in reconciled.columns:
+        reconciled['HAS_REVERSAL_ACTIVITY'] = reconciled['HAS_REVERSAL_ACTIVITY'].fillna(0)
+    if 'HAS_DELETED_ACTIVITY' in reconciled.columns:
+        reconciled['HAS_DELETED_ACTIVITY'] = reconciled['HAS_DELETED_ACTIVITY'].fillna(0)
     
     # Calculate variance
     reconciled[CanonicalField.VARIANCE.value] = (
@@ -123,6 +153,13 @@ def _classify_status(row: pd.Series, config: ReconciliationConfig) -> str:
     
     # Check for match within tolerance
     if abs(variance) <= config.amount_tolerance:
+        return config.status_matched
+
+    # If this bucket nets to zero but has reversal/deleted activity, treat as matched.
+    # This suppresses false "scheduled not billed" exceptions for reversed billing pairs.
+    has_reversal = bool(float(row.get('HAS_REVERSAL_ACTIVITY', 0) or 0) > 0)
+    has_deleted = bool(float(row.get('HAS_DELETED_ACTIVITY', 0) or 0) > 0)
+    if expected != 0 and abs(actual) <= config.amount_tolerance and (has_reversal or has_deleted):
         return config.status_matched
     
     # Check for scheduled not billed
@@ -179,31 +216,36 @@ def reconcile_detail(
     scheduled_to_ar_map = {sched_id: [] for sched_id in scheduled_df[CanonicalField.SCHEDULED_CHARGES_ID.value]}
     
     # STEP 3A: PRIMARY MATCHING - SCHEDULED_CHARGE_ID_LINK
-    primary_matched_ar, primary_matched_scheduled = _match_primary(ar_df, scheduled_df, recon_config, scheduled_to_ar_map)
-    
+    ar_df, scheduled_df = _match_primary(ar_df, scheduled_df, recon_config, scheduled_to_ar_map)
+    primary_matched_count = int((ar_df['MATCH_TYPE'] == 'PRIMARY').sum())
+
     # STEP 3B: SECONDARY MATCHING - Fuzzy match on remaining unmatched
-    secondary_matched_ar, secondary_matched_scheduled = _match_secondary(
-        ar_df[~ar_df['MATCHED']],
-        scheduled_df[~scheduled_df['MATCHED']],
+    unmatched_ar_after_primary = ar_df[~ar_df['MATCHED']]
+    unmatched_sched_after_primary = scheduled_df[~scheduled_df['MATCHED']]
+    secondary_unmatched_ar, secondary_unmatched_sched = _match_secondary(
+        unmatched_ar_after_primary,
+        unmatched_sched_after_primary,
         recon_config,
         scheduled_to_ar_map
     )
-    
+
+    ar_df.update(secondary_unmatched_ar)
+    scheduled_df.update(secondary_unmatched_sched)
+    secondary_matched_count = int((ar_df['MATCH_TYPE'] == 'SECONDARY').sum())
+
     # STEP 3C: TERTIARY MATCHING - Match by lease/AR code/amount even if dates don't align (DATE_MISMATCH)
-    tertiary_matched_ar, tertiary_matched_scheduled = _match_tertiary_date_mismatch(
-        ar_df[~ar_df['MATCHED']],
-        scheduled_df[~scheduled_df['MATCHED']],
+    unmatched_ar_after_secondary = ar_df[~ar_df['MATCHED']]
+    unmatched_sched_after_secondary = scheduled_df[~scheduled_df['MATCHED']]
+    tertiary_unmatched_ar, tertiary_unmatched_sched = _match_tertiary_date_mismatch(
+        unmatched_ar_after_secondary,
+        unmatched_sched_after_secondary,
         recon_config,
         scheduled_to_ar_map
     )
-    
-    # Combine results
-    ar_df.update(primary_matched_ar)
-    ar_df.update(secondary_matched_ar)
-    ar_df.update(tertiary_matched_ar)
-    scheduled_df.update(primary_matched_scheduled)
-    scheduled_df.update(secondary_matched_scheduled)
-    scheduled_df.update(tertiary_matched_scheduled)
+
+    ar_df.update(tertiary_unmatched_ar)
+    scheduled_df.update(tertiary_unmatched_sched)
+    tertiary_matched_count = int((ar_df['MATCH_TYPE'] == 'TERTIARY_DATE_MISMATCH').sum())
     
     # STEP 4: IDENTIFY VARIANCES - Classify unmatched and mismatched records
     variance_df = _identify_variances(scheduled_df, ar_df, recon_config, scheduled_to_ar_map)
@@ -212,9 +254,9 @@ def reconcile_detail(
     stats = {
         'total_scheduled': len(scheduled_df),
         'total_ar': len(ar_df),
-        'primary_matched_ar': len(primary_matched_ar[primary_matched_ar['MATCHED']]),
-        'secondary_matched_ar': len(secondary_matched_ar[secondary_matched_ar['MATCHED']]),
-        'tertiary_matched_ar': len(tertiary_matched_ar[tertiary_matched_ar['MATCHED']]),
+        'primary_matched_ar': primary_matched_count,
+        'secondary_matched_ar': secondary_matched_count,
+        'tertiary_matched_ar': tertiary_matched_count,
         'unmatched_ar': len(ar_df[~ar_df['MATCHED']]),
         'unmatched_scheduled': len(scheduled_df[~scheduled_df['MATCHED']]),
         'variances': len(variance_df)

@@ -823,6 +823,32 @@ class StorageService:
         if not row_payloads:
             return 0
 
+        # Microsoft Graph $batch supports max 20 sub-requests per batch.
+        # Allow lowering batch size via env vars to reduce 503 throttling pressure.
+        # Context-specific overrides:
+        # - SHAREPOINT_BATCH_SIZE_AUDITRUNS
+        # - SHAREPOINT_BATCH_SIZE_SNAPSHOTS
+        # Global fallback:
+        # - SHAREPOINT_BATCH_SIZE
+        try:
+            env_key = None
+            context_lower = str(context_label or '').lower()
+            if 'auditruns' in context_lower:
+                env_key = 'SHAREPOINT_BATCH_SIZE_AUDITRUNS'
+            elif 'rundisplaysnapshots' in context_lower:
+                env_key = 'SHAREPOINT_BATCH_SIZE_SNAPSHOTS'
+
+            env_value = os.getenv(env_key) if env_key else None
+            if not env_value:
+                env_value = os.getenv('SHAREPOINT_BATCH_SIZE')
+
+            if env_value:
+                batch_size = int(env_value)
+        except Exception:
+            pass
+
+        batch_size = max(1, min(20, int(batch_size or 20)))
+
         batch_url = "https://graph.microsoft.com/v1.0/$batch"
         batch_headers = {
             'Authorization': f'Bearer {self.access_token}',
