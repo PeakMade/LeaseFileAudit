@@ -9,6 +9,7 @@ import logging
 import json
 from datetime import datetime
 from time import perf_counter
+import tempfile
 
 from audit_engine import (
     ExcelSourceLoader,
@@ -23,6 +24,7 @@ from audit_engine import (
     build_lease_expectation_overlay,
     refresh_lease_terms_for_lease_interval,
 )
+from audit_engine.api_ingest import fetch_property_api_sources
 from audit_engine.reconcile import reconcile_detail
 from audit_engine.rules import default_registry
 from audit_engine.canonical_fields import CanonicalField
@@ -1685,6 +1687,166 @@ def upload():
         return redirect(url_for('main.index'))
 
 
+@bp.route('/upload-api-property', methods=['POST'])
+@require_auth
+def upload_api_property():
+    """Run audit from API sources for a single property (parallel flow to Excel upload)."""
+    audit_started_at = perf_counter()
+    request_started_at_utc = datetime.utcnow()
+
+    try:
+        property_id_raw = request.form.get('api_property_id')
+        if not property_id_raw:
+            flash('Property ID is required for API upload.', 'danger')
+            return redirect(url_for('main.index'))
+
+        property_id = int(float(property_id_raw))
+
+        audit_year = request.form.get('audit_year')
+        audit_month = request.form.get('audit_month')
+        audit_year = int(audit_year) if audit_year else None
+        audit_month = int(audit_month) if audit_month else None
+
+        transaction_from_date = request.form.get('api_from_date') or None
+        transaction_to_date = request.form.get('api_to_date') or None
+
+        storage = get_storage_service()
+        run_id = storage.generate_run_id()
+
+        api_sources = fetch_property_api_sources(
+            property_id=property_id,
+            transaction_from_date=transaction_from_date,
+            transaction_to_date=transaction_to_date,
+        )
+
+        ar_raw = api_sources.get('ar_raw', pd.DataFrame())
+        scheduled_raw = api_sources.get('scheduled_raw', pd.DataFrame())
+
+        if ar_raw.empty and scheduled_raw.empty:
+            flash('API returned no scheduled charges or AR transactions for that property.', 'warning')
+            return redirect(url_for('main.index'))
+
+        temp_dir = Path(tempfile.mkdtemp())
+        file_path = temp_dir / f"api_property_{property_id}.xlsx"
+        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+            ar_raw.to_excel(writer, index=False, sheet_name='AR_TRANS_API')
+            scheduled_raw.to_excel(writer, index=False, sheet_name='SC_TRANS_API')
+
+        results = execute_audit_run(
+            file_path=file_path,
+            run_id=run_id,
+            audit_year=audit_year,
+            audit_month=audit_month,
+            scoped_property_ids=[str(property_id)],
+        )
+
+        base_run_id = None
+        try:
+            prior_runs = storage.list_runs(limit=50)
+            for run in prior_runs:
+                candidate = run.get('run_id')
+                if candidate and candidate != run_id:
+                    base_run_id = candidate
+                    break
+
+            if base_run_id:
+                logger.info(
+                    f"[PROPERTY API SCOPE] Overlaying API-scoped results for property {property_id} "
+                    f"onto baseline run {base_run_id}"
+                )
+                baseline_run_data = storage.load_run(base_run_id)
+                results = _overlay_property_scope_results(
+                    results,
+                    baseline_run_data,
+                    {str(property_id)}
+                )
+        except Exception as overlay_error:
+            logger.warning(f"[PROPERTY API SCOPE] Baseline overlay skipped due to error: {overlay_error}")
+
+        metadata = storage.create_metadata(run_id, file_path)
+        metadata['run_scope'] = {
+            'type': 'property',
+            'source': 'api_property',
+            'property_ids': [str(property_id)],
+            'base_run_id': base_run_id,
+        }
+        metadata['api_ingest'] = {
+            'property_id': property_id,
+            'property_name': api_sources.get('property_name') or f"Property {property_id}",
+            'lease_count': int(api_sources.get('lease_count') or 0),
+        }
+        if audit_year or audit_month:
+            metadata['audit_period'] = {
+                'year': audit_year,
+                'month': audit_month,
+            }
+
+        storage.save_run(
+            run_id,
+            results["expected_detail"],
+            results["actual_detail"],
+            results["bucket_results"],
+            results["findings"],
+            metadata,
+            results.get("variance_detail"),
+            file_path,
+            property_name_map=results.get("property_name_map"),
+        )
+
+        invalidate_runs_cache()
+        clear_run_cache(run_id)
+
+        try:
+            import shutil
+            shutil.rmtree(temp_dir)
+        except Exception as cleanup_error:
+            logger.warning(f"[PROPERTY API] Failed to cleanup temp dir: {cleanup_error}")
+
+        user = get_current_user()
+        if user and config.auth.can_log_to_sharepoint():
+            log_user_activity(
+                user_info=user,
+                activity_type='Successful Audit',
+                site_url=config.auth.sharepoint_site_url,
+                list_name=config.auth.sharepoint_list_name,
+                details={
+                    'run_id': run_id,
+                    'source': 'api_property',
+                    'property_id': property_id,
+                    'audit_year': audit_year,
+                    'audit_month': audit_month,
+                    'user_role': 'user',
+                }
+            )
+
+        elapsed_seconds = perf_counter() - audit_started_at
+        logger.info(
+            f"[AUDIT TIMER] SUCCESS run_id={run_id} source=api_property property_id={property_id} "
+            f"elapsed_seconds={elapsed_seconds:.2f}"
+        )
+
+        session['pending_upload_timing'] = {
+            'run_id': run_id,
+            'request_started_at_utc': request_started_at_utc.isoformat(),
+            'upload_request_seconds': float(elapsed_seconds),
+            'file_save_seconds': 0.0,
+            'execute_seconds': float(elapsed_seconds),
+            'overlay_seconds': 0.0,
+            'save_run_seconds': 0.0,
+            'cache_clear_seconds': 0.0,
+            'cleanup_seconds': 0.0,
+            'activity_log_seconds': 0.0,
+        }
+
+        return redirect(url_for('main.property_view', property_id=str(property_id), run_id=run_id))
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.exception(f"[PROPERTY API UPLOAD] Failed for property {request.form.get('api_property_id')}: {error_msg}")
+        flash(f'Error processing API property upload: {error_msg}', 'danger')
+        return redirect(url_for('main.index'))
+
+
 @bp.route('/portfolio')
 @bp.route('/portfolio/<run_id>')
 @require_auth
@@ -3003,6 +3165,43 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
                     lease_term_records = json.loads(lease_term_records)
                 except Exception:
                     lease_term_records = []
+
+            if str(lease_interval_id) == "18250886":
+                try:
+                    refresh_status = (refresh_result or {}).get('status') if isinstance(refresh_result, dict) else None
+                    logger.info(
+                        "[LEASE TRACE] lease_interval_id=18250886 lease_key=%s refresh_status=%s term_count=%s",
+                        lease_key,
+                        refresh_status,
+                        len(lease_term_records) if isinstance(lease_term_records, list) else 0,
+                    )
+
+                    if isinstance(lease_term_records, list):
+                        parking_terms = []
+                        for term in lease_term_records:
+                            if not isinstance(term, dict):
+                                continue
+                            term_type = str(term.get('term_type') or '').upper()
+                            mapped_code = str(term.get('mapped_ar_code') or '').strip()
+                            if term_type == 'PARKING' or mapped_code in {'155052', '155385'}:
+                                parking_terms.append({
+                                    'term_key': term.get('term_key'),
+                                    'term_type': term.get('term_type'),
+                                    'mapped_ar_code': term.get('mapped_ar_code'),
+                                    'amount': term.get('amount'),
+                                    'frequency': term.get('frequency'),
+                                    'term_source_doc_id': term.get('term_source_doc_id'),
+                                    'term_source_doc_name': term.get('term_source_doc_name'),
+                                    'start_date': term.get('start_date'),
+                                    'end_date': term.get('end_date'),
+                                })
+
+                        logger.info(
+                            "[LEASE TRACE] lease_interval_id=18250886 parking_terms=%s",
+                            parking_terms,
+                        )
+                except Exception as lease_trace_error:
+                    logger.warning("[LEASE TRACE] Failed parking trace for 18250886: %s", lease_trace_error)
 
             overlay = build_lease_expectation_overlay(all_ar_codes, lease_term_records)
             all_ar_codes = overlay.get('ar_groups', all_ar_codes)

@@ -835,16 +835,39 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
 
                 row_text = _row_excerpt(words, float(token["cy"]))
                 row_lower = row_text.lower()
-                if any(
-                    signal in row_lower
-                    for signal in [
-                        "nsf",
-                        "non-sufficient",
-                        "non sufficient",
-                        "returned check",
-                        "checks returned",
-                    ]
-                ):
+
+                exclusion_signals = [
+                    "nsf",
+                    "non-sufficient",
+                    "non sufficient",
+                    "returned check",
+                    "checks returned",
+                    "violation",
+                    "warning",
+                    "fine",
+                    "citation",
+                    "ticket",
+                    "tow",
+                    "towing",
+                    "boot",
+                    "decal",
+                    "replacement",
+                ]
+                if any(signal in row_lower for signal in exclusion_signals):
+                    continue
+
+                positive_context_signals = [
+                    "parking",
+                    "garage",
+                    "carport",
+                    "cost for parking",
+                    "monthly",
+                    "per month",
+                    "per vehicle",
+                    "per space",
+                    "resident agrees to pay",
+                ]
+                if anchor.get("label") != "cost_for_parking" and not any(signal in row_lower for signal in positive_context_signals):
                     continue
 
                 monthly_parking_signals = [
@@ -863,8 +886,6 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
                     score_boost -= 260.0
                 if anchor.get("label") == "cost_for_parking" and not any(signal in row_lower for signal in monthly_parking_signals):
                     score_boost -= 140.0
-                if any(signal in row_lower for signal in ["replacement", "decal", "violation", "fine"]):
-                    score_boost -= 220.0
 
                 score = score_boost - ((abs(dx) * 1.1) + (dy * 14.0))
                 coordinate_candidates.append({
@@ -916,8 +937,27 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
                 if not normalized:
                     continue
                 snippet = re.sub(r"\s+", " ", page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]).strip()
+                snippet_lower = snippet.lower()
+                if any(
+                    signal in snippet_lower
+                    for signal in [
+                        "violation",
+                        "warning",
+                        "fine",
+                        "citation",
+                        "ticket",
+                        "tow",
+                        "towing",
+                        "boot",
+                        "decal",
+                        "replacement",
+                        "nsf",
+                        "returned check",
+                    ]
+                ):
+                    continue
                 score = 500.0
-                if "cost for parking" in snippet.lower():
+                if "cost for parking" in snippet_lower:
                     score += 120.0
                 regex_candidates.append({
                     "value": f"${float(normalized):.2f}",
@@ -2379,6 +2419,8 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
 
             admin_match = admin_amount_regex.search(window_text)
             if admin_match:
+                if any(token in window_lower for token in ["billing charge", "for billing", "not to exceed", "utility service", "capped at", "cap at"]):
+                    continue
                 admin_normalized = normalize_money(f"${admin_match.group(1)}")
                 admin_amount = _as_float(admin_normalized) if admin_normalized else None
                 if admin_amount is not None and admin_amount > 0:
@@ -2404,6 +2446,67 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
             deduped.append({"amount": amount, "evidence": evidence})
         return deduped
 
+    def _prioritize_admin_fee_candidates(candidates: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped = _dedupe_fee_candidates(candidates)
+        if not deduped:
+            return []
+
+        explicit_clause_markers = [
+            "administration fee shall be",
+            "administrative fee shall be",
+            "admin fee shall be",
+            "administration fee will be",
+            "administrative fee will be",
+            "admin fee will be",
+        ]
+        explicit = [
+            item
+            for item in deduped
+            if any(marker in str(item.get("evidence") or "").lower() for marker in explicit_clause_markers)
+            and not any(
+                token in str(item.get("evidence") or "").lower()
+                for token in ["for billing", "not to exceed", "utility service", "capped at", "cap at"]
+            )
+        ]
+        if explicit:
+            return explicit
+
+        filtered = [
+            item
+            for item in deduped
+            if not any(
+                token in str(item.get("evidence") or "").lower()
+                for token in ["billing charge", "for billing", "not to exceed", "utility", "utility service", "capped at", "cap at"]
+            )
+        ]
+        return filtered or deduped
+
+    def _extract_strict_admin_fee_candidates(text_value: str) -> list[dict[str, Any]]:
+        strict_patterns = [
+            re.compile(
+                r"admin(?:istration|istrative)?\s+fee\s+(?:shall\s+be|will\s+be|is)\s*\$\s*([0-9][0-9,]*(?:\.\d{2})?)",
+                re.IGNORECASE | re.DOTALL,
+            ),
+            re.compile(
+                r"\$\s*([0-9][0-9,]*(?:\.\d{2})?).{0,30}?admin(?:istration|istrative)?\s+fee",
+                re.IGNORECASE | re.DOTALL,
+            ),
+        ]
+        strict_candidates: list[dict[str, Any]] = []
+        for pattern in strict_patterns:
+            for match in pattern.finditer(text_value):
+                evidence = text_value[max(0, match.start() - 80):min(len(text_value), match.end() + 80)]
+                evidence_norm = re.sub(r"\s+", " ", evidence).strip()
+                evidence_lower = evidence_norm.lower()
+                if any(token in evidence_lower for token in ["for billing", "not to exceed", "utility service", "capped at", "cap at"]):
+                    continue
+                normalized = normalize_money(f"${match.group(1)}")
+                amount = _as_float(normalized) if normalized else None
+                if amount is None or amount <= 0:
+                    continue
+                strict_candidates.append({"amount": amount, "evidence": evidence_norm})
+        return _dedupe_fee_candidates(strict_candidates)
+
     application_fee_candidates = _extract_fee_candidates(
         all_text,
         include_patterns=[r"application\s+fee"],
@@ -2411,17 +2514,21 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     admin_fee_candidates = _extract_fee_candidates(
         all_text,
         include_patterns=[r"admin(?:istration|istrative)?\s+fee"],
+        exclude_patterns=[r"billing\s+charge", r"for\s+billing", r"not\s+to\s+exceed", r"utility", r"capped\s+at"],
     )
+    strict_admin_fee_candidates = _extract_strict_admin_fee_candidates(all_text)
     clause_app_candidates, clause_admin_candidates = _extract_application_admin_from_clause_windows(all_text)
     if clause_app_candidates:
         application_fee_candidates = _dedupe_fee_candidates(clause_app_candidates)
     else:
         application_fee_candidates = _dedupe_fee_candidates(application_fee_candidates)
 
-    if clause_admin_candidates:
-        admin_fee_candidates = _dedupe_fee_candidates(clause_admin_candidates)
+    if strict_admin_fee_candidates:
+        admin_fee_candidates = _prioritize_admin_fee_candidates(strict_admin_fee_candidates)
+    elif clause_admin_candidates:
+        admin_fee_candidates = _prioritize_admin_fee_candidates(clause_admin_candidates)
     else:
-        admin_fee_candidates = _dedupe_fee_candidates(admin_fee_candidates)
+        admin_fee_candidates = _prioritize_admin_fee_candidates(admin_fee_candidates)
     amenity_patterns = [r"amenity\s+premium", r"premium\s+feature", r"premium\s+amount", r"floorplan\s+rate\s+addendum"]
     amenity_candidates = _extract_fee_candidates(
         addenda_text if addenda_text.strip() else all_text,

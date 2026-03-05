@@ -1303,6 +1303,8 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-05**: Added separate property-level API audit upload workflow in `web/views.py` + `templates/upload.html` using new API adapter `audit_engine/api_ingest.py`; flow fetches `getLeaseDetails`/`getLeaseArTransactions` from Entrata endpoints, stages equivalent AR/scheduled raw datasets, and executes the existing reconciliation pipeline without altering the Excel upload path
+- **2026-03-05**: Hardened lease-term fee extraction in `audit_engine/entrata_lease_terms.py` to prevent false positives by excluding parking violation/fine/warning context from monthly parking detection and by tightening admin-fee candidate selection to ignore utility billing-cap language (e.g., `for billing`, `not to exceed`)
 - **2026-03-03**: Fixed lease-view overlay skip caused by mixed offset-naive/offset-aware datetime subtraction in `audit_engine/entrata_lease_terms.py` by normalizing TTL age comparison timestamps to UTC-aware values before subtraction
 - **2026-03-03**: Updated lease-term refresh in `audit_engine/entrata_lease_terms.py` and `web/views.py` to pass `run_id` into refresh and bypass TTL short-circuit for new audit runs, so first lease open in a new run always re-checks resident doc list while still reusing cached terms when `DocListFingerprint` is unchanged
 - **2026-03-03**: Fixed persisted lease-term display on unchanged document lists by relaxing SharePoint `LeaseTerms` query filtering in `storage/service.py` (load by `LeaseKey`, then normalize/filter `IsActive` in Python), avoiding Graph boolean-filter mismatches that could return empty term sets on subsequent lease views
