@@ -24,7 +24,7 @@ from audit_engine import (
     build_lease_expectation_overlay,
     refresh_lease_terms_for_lease_interval,
 )
-from audit_engine.api_ingest import fetch_property_api_sources
+from audit_engine.api_ingest import fetch_property_api_sources, fetch_entrata_property_picklist
 from audit_engine.reconcile import reconcile_detail
 from audit_engine.rules import default_registry
 from audit_engine.canonical_fields import CanonicalField
@@ -121,6 +121,13 @@ def cached_load_property_exception_months(run_id: str, property_id: int, session
     return storage.load_property_exception_months_bulk(run_id, property_id)
 
 
+@cache.memoize(timeout=3600)
+def cached_load_api_property_picklist(session_cache_key: str = None):
+    """Cached Entrata properties picklist for API upload form."""
+    logger.info("[CACHE] ⏬ Cache MISS: Loading Entrata property picklist")
+    return fetch_entrata_property_picklist()
+
+
 @cache.memoize(timeout=14400)
 def cached_load_bucket_results(run_id: str, property_id=None, lease_interval_id=None, session_cache_key: str = None):
     """Cached wrapper for bucket results by run and optional scope."""
@@ -212,6 +219,107 @@ def cached_load_run_display_snapshots_for_run(run_id: str, scope_type: str = 'pr
     )
 
 
+def _clean_property_name(value: object) -> str | None:
+    """Normalize a property-name candidate to a safe non-empty string."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    text = str(value).strip()
+    if not text or text.lower() == 'nan':
+        return None
+    return text
+
+
+def _add_property_name_from_row(target: dict[str, str], property_id_value: object, property_name_value: object) -> None:
+    property_key = _normalize_property_id_token(property_id_value)
+    property_name = _clean_property_name(property_name_value)
+    if not property_key or not property_name:
+        return
+    target.setdefault(property_key, property_name)
+
+
+def _add_property_names_from_df(target: dict[str, str], df: pd.DataFrame) -> None:
+    if df is None or df.empty:
+        return
+
+    property_id_candidates = [CanonicalField.PROPERTY_ID.value, 'property_id', 'PropertyId', 'Property ID']
+    property_name_candidates = [CanonicalField.PROPERTY_NAME.value, 'property_name', 'PropertyName', 'Property Name']
+
+    property_id_col = next((col for col in property_id_candidates if col in df.columns), None)
+    property_name_col = next((col for col in property_name_candidates if col in df.columns), None)
+    if not property_id_col or not property_name_col:
+        return
+
+    for _, row in df[[property_id_col, property_name_col]].dropna().iterrows():
+        _add_property_name_from_row(target, row.get(property_id_col), row.get(property_name_col))
+
+
+@cache.memoize(timeout=14400)
+def cached_load_property_name_lookup(run_id: str, session_cache_key: str = None) -> dict[str, str]:
+    """Build a run-scoped property id -> property name lookup with normalized keys."""
+    lookup: dict[str, str] = {}
+
+    try:
+        metadata = cached_load_metadata(run_id, session_cache_key)
+        if isinstance(metadata, dict):
+            _add_property_name_from_row(
+                lookup,
+                metadata.get('property_id'),
+                metadata.get('property_name'),
+            )
+    except Exception:
+        pass
+
+    try:
+        for snapshot_row in cached_load_run_display_snapshots_for_run(
+            run_id=run_id,
+            scope_type='property',
+            session_cache_key=session_cache_key,
+        ):
+            if not isinstance(snapshot_row, dict):
+                continue
+            _add_property_name_from_row(
+                lookup,
+                snapshot_row.get('property_id'),
+                snapshot_row.get('property_name'),
+            )
+    except Exception:
+        pass
+
+    try:
+        _add_property_names_from_df(lookup, cached_load_actual_detail(run_id, session_cache_key))
+    except Exception:
+        pass
+
+    try:
+        _add_property_names_from_df(lookup, cached_load_expected_detail(run_id, session_cache_key))
+    except Exception:
+        pass
+
+    return lookup
+
+
+def _resolve_property_name_for_run(run_id: str, property_id: object, session_cache_key: str = None) -> str:
+    """Resolve display property name for a run and property id with safe fallback."""
+    property_key = _normalize_property_id_token(property_id)
+    fallback = f"Property {property_key or property_id}"
+    if not property_key:
+        return fallback
+
+    try:
+        lookup = cached_load_property_name_lookup(run_id, session_cache_key)
+        resolved = _clean_property_name((lookup or {}).get(property_key))
+        if resolved:
+            return resolved
+    except Exception:
+        pass
+    return fallback
+
+
 def _clear_run_scoped_caches(run_id: str, property_id=None, lease_interval_id=None):
     """Clear memoized caches for a specific run and optional property/lease scope."""
     session_cache_key = _session_cache_token()
@@ -230,6 +338,7 @@ def _clear_run_scoped_caches(run_id: str, property_id=None, lease_interval_id=No
     _safe_delete(cached_load_actual_detail, run_id, session_cache_key)
     _safe_delete(cached_load_expected_detail, run_id, session_cache_key)
     _safe_delete(cached_load_metadata, run_id, session_cache_key)
+    _safe_delete(cached_load_property_name_lookup, run_id, session_cache_key)
     _safe_delete(cached_load_run_display_snapshot, run_id, 'portfolio', None, None, session_cache_key)
     _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'property', session_cache_key)
     _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'lease', session_cache_key)
@@ -1556,6 +1665,11 @@ def index():
     
     storage = get_storage_service()
     recent_runs = storage.list_runs(limit=10)
+    api_property_options = []
+    try:
+        api_property_options = cached_load_api_property_picklist(_session_cache_token())
+    except Exception as e:
+        logger.warning(f"[INDEX] Failed loading Entrata property picklist: {e}")
     user = get_current_user()
     
     # Session lifecycle logging (Start/timeout End) is handled centrally in app.before_request.
@@ -1567,7 +1681,12 @@ def index():
         logger.info(f"[INDEX] SharePoint site URL: {config.auth.sharepoint_site_url}")
         logger.info(f"[INDEX] SharePoint list name: {config.auth.sharepoint_list_name}")
     
-    return render_template('upload.html', recent_runs=recent_runs, user=user)
+    return render_template(
+        'upload.html',
+        recent_runs=recent_runs,
+        user=user,
+        api_property_options=api_property_options,
+    )
 
 
 @bp.route('/end-session')
@@ -2091,6 +2210,7 @@ def portfolio(run_id: str = None):
             scope_type='property',
             session_cache_key=cache_token
         )
+        property_name_lookup = cached_load_property_name_lookup(run_id, cache_token)
         logger.info(f"[SNAPSHOT][PORTFOLIO] Loaded {len(property_snapshots)} property snapshot rows for run {run_id}")
 
         properties = []
@@ -2104,7 +2224,11 @@ def portfolio(run_id: str = None):
             exception_count = int(snapshot_row.get('exception_count', 0) or 0)
 
             properties.append({
-                'property_name': snapshot_row.get('property_name') or f"Property {property_id}",
+                'property_name': (
+                    _clean_property_name(snapshot_row.get('property_name'))
+                    or property_name_lookup.get(_normalize_property_id_token(property_id) or '')
+                    or f"Property {property_id}"
+                ),
                 'property_id': property_id,
                 'total_lease_intervals': int(snapshot_row.get('total_lease_intervals', 0) or 0),
                 'exception_buckets': exception_count,
@@ -2314,34 +2438,7 @@ def property_view(property_id: str, run_id: str = None):
                 f"property {property_id} (snapshot not found or unavailable)"
             )
         
-        # Resolve property name from uploaded run data (actual first, expected fallback)
-        property_name = None
-        try:
-            actual_detail_for_name = cached_load_actual_detail(run_id, cache_token)
-            if not actual_detail_for_name.empty and CanonicalField.PROPERTY_NAME.value in actual_detail_for_name.columns:
-                property_matches = actual_detail_for_name[
-                    actual_detail_for_name[CanonicalField.PROPERTY_ID.value] == float(property_id)
-                ]
-                if not property_matches.empty:
-                    name_value = property_matches[CanonicalField.PROPERTY_NAME.value].iloc[0]
-                    if pd.notna(name_value) and str(name_value).strip():
-                        property_name = str(name_value).strip()
-
-            if not property_name:
-                expected_detail_for_name = cached_load_expected_detail(run_id, cache_token)
-                if not expected_detail_for_name.empty and CanonicalField.PROPERTY_NAME.value in expected_detail_for_name.columns:
-                    property_matches = expected_detail_for_name[
-                        expected_detail_for_name[CanonicalField.PROPERTY_ID.value] == float(property_id)
-                    ]
-                    if not property_matches.empty:
-                        name_value = property_matches[CanonicalField.PROPERTY_NAME.value].iloc[0]
-                        if pd.notna(name_value) and str(name_value).strip():
-                            property_name = str(name_value).strip()
-        except Exception as property_name_error:
-            logger.warning(f"[PROPERTY_VIEW] Failed resolving property name from source data: {property_name_error}")
-
-        if not property_name:
-            property_name = f"Property {int(float(property_id))}"
+        property_name = _resolve_property_name_for_run(run_id, property_id, cache_token)
         
         # Get all unique leases for this property
         all_lease_ids = sorted(all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value].unique())
@@ -2967,14 +3064,8 @@ def lease_view(run_id: str, property_id: str, lease_interval_id: str):
         total_undercharge = 0
         total_overcharge = 0
         
-        # Get property name from lease data only (dynamic from uploaded source)
-        property_name = None
-        if len(lease_actual) > 0 and CanonicalField.PROPERTY_NAME.value in lease_actual.columns:
-            property_name = lease_actual[CanonicalField.PROPERTY_NAME.value].iloc[0]
-        if (not property_name) and len(lease_expected) > 0 and CanonicalField.PROPERTY_NAME.value in lease_expected.columns:
-            property_name = lease_expected[CanonicalField.PROPERTY_NAME.value].iloc[0]
-        if not property_name:
-            property_name = f"Property {int(float(property_id))}"
+        # Resolve from run-scoped lookup so lease pages stay aligned with portfolio/property naming.
+        property_name = _resolve_property_name_for_run(run_id, property_id, cache_token)
         
         # Get customer name and IDs from lease records
         customer_name = None

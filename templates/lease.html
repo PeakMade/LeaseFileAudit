@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Lease {{ lease_interval_id|int }} - Lease Audit{% endblock %}
+{% block title %}{{ property_name if property_name else ('Property ' ~ (property_id|int)) }} - Lease {{ lease_interval_id|int }} - Lease Audit{% endblock %}
 
 {% block content %}
 <!-- Action Buttons (positioned next to user badge) -->

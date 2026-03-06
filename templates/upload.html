@@ -94,7 +94,17 @@
                     <div class="row g-3">
                         <div class="col-md-4">
                             <label for="api_property_id" class="form-label fw-bold">Property ID</label>
+                            {% if api_property_options %}
+                            <select class="form-select" id="api_property_id" name="api_property_id" required>
+                                <option value="">Select Property...</option>
+                                {% for property in api_property_options %}
+                                <option value="{{ property.property_id }}">{{ property.property_name }} ({{ property.property_id }})</option>
+                                {% endfor %}
+                            </select>
+                            {% else %}
                             <input type="number" step="1" class="form-control" id="api_property_id" name="api_property_id" required>
+                            <small class="text-muted">Property picklist unavailable; enter Property ID manually.</small>
+                            {% endif %}
                         </div>
                         <div class="col-md-4">
                             <label for="api_from_date" class="form-label">Transaction From Date</label>

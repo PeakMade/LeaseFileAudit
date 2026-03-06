@@ -68,14 +68,17 @@ def _post_method(
     params: dict[str, Any],
     timeout_seconds: int,
 ) -> dict[str, Any]:
+    method_payload: dict[str, Any] = {
+        "name": method_name,
+        "params": params,
+    }
+    if _to_str(version):
+        method_payload["version"] = version
+
     request_body = {
         "auth": {"type": "apikey"},
         "requestId": str(int(datetime.utcnow().timestamp() * 1000)),
-        "method": {
-            "name": method_name,
-            "version": version,
-            "params": params,
-        },
+        "method": method_payload,
     }
 
     headers = {
@@ -104,6 +107,87 @@ def _post_method(
         if resolved_code is not None and int(resolved_code or 0) != 200:
             raise ValueError(f"{method_name} failed: {payload}")
     return payload
+
+
+def _extract_property_nodes(properties_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    root = properties_payload.get("response") if isinstance(properties_payload.get("response"), dict) else properties_payload
+    result = root.get("result") if isinstance(root, dict) else {}
+
+    physical_property = {}
+    if isinstance(result, dict):
+        physical_property = result.get("PhysicalProperty") or result.get("physicalProperty") or {}
+
+    properties = []
+    if isinstance(physical_property, dict):
+        properties = physical_property.get("Property") or physical_property.get("property") or []
+
+    return [item for item in _as_list(properties) if isinstance(item, dict)]
+
+
+def fetch_entrata_property_picklist() -> list[dict[str, str]]:
+    """Fetch Entrata property id/name pairs for API upload picklist."""
+    properties_url = _to_str(os.getenv("LEASE_API_PROPERTIES_URL")) or "https://apis.entrata.com/ext/orgs/peakmade/v1/properties?page_no=1&per_page=100"
+    api_key = _to_str(os.getenv("LEASE_API_KEY"))
+    api_key_header = _to_str(os.getenv("LEASE_API_KEY_HEADER") or "X-Api-Key")
+    method_name = _to_str(os.getenv("LEASE_API_PROPERTIES_METHOD") or "getProperties")
+    method_version = _to_str(os.getenv("LEASE_API_PROPERTIES_VERSION") or "")
+    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "60") or "60")
+
+    if not properties_url:
+        raise ValueError("Missing LEASE_API_PROPERTIES_URL env var")
+    if not api_key:
+        raise ValueError("Missing LEASE_API_KEY env var")
+
+    params: dict[str, Any] = {
+        "showAllStatus": _to_str(os.getenv("LEASE_API_PROPERTIES_SHOW_ALL_STATUS") or "1"),
+    }
+    property_ids = _to_str(os.getenv("LEASE_API_PROPERTIES_FILTER_IDS") or "")
+    if property_ids:
+        params["propertyIds"] = property_ids
+    property_lookup_code = _to_str(os.getenv("LEASE_API_PROPERTIES_LOOKUP_CODE") or "")
+    if property_lookup_code:
+        params["propertyLookupCode"] = property_lookup_code
+
+    payload = _post_method(
+        endpoint_url=properties_url,
+        api_key=api_key,
+        api_key_header=api_key_header,
+        method_name=method_name,
+        version=method_version,
+        params=params,
+        timeout_seconds=timeout_seconds,
+    )
+
+    rows: list[dict[str, str]] = []
+    for node in _extract_property_nodes(payload):
+        property_id = _to_str(node.get("PropertyID") or node.get("propertyId") or node.get("id"))
+        property_name = _to_str(
+            node.get("MarketingName")
+            or node.get("marketingName")
+            or node.get("PropertyName")
+            or node.get("propertyName")
+            or node.get("name")
+        )
+        if not property_id or not property_name:
+            continue
+        rows.append({
+            "property_id": property_id,
+            "property_name": property_name,
+        })
+
+    deduped: dict[str, dict[str, str]] = {}
+    for row in rows:
+        pid = _to_str(row.get("property_id"))
+        if not pid or pid in deduped:
+            continue
+        deduped[pid] = {
+            "property_id": pid,
+            "property_name": _to_str(row.get("property_name")),
+        }
+
+    result_rows = list(deduped.values())
+    result_rows.sort(key=lambda item: (item.get("property_name", "").lower(), item.get("property_id", "")))
+    return result_rows
 
 
 def _extract_lease_nodes(details_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -220,10 +304,42 @@ def _is_deleted_never_posted(value: Any) -> bool:
     return bool(text) and ("deleted" in text and "never posted" in text)
 
 
-def _is_one_time_charge(charge: dict[str, Any]) -> bool:
+def _is_one_time_charge(charge: dict[str, Any], interval_node: dict[str, Any] | None = None) -> bool:
     timing = _to_str(charge.get("chargeTiming")).lower()
-    # Treat as recurring only when timing explicitly indicates monthly.
-    # Examples like "Application Completed" or "Renewal Start" should behave as one-time.
+    if "monthly" in timing:
+        return False
+
+    # Strong recurring evidence from explicit date span on the charge itself.
+    # If a charge has a multi-day start/end range, treat it as recurring even when
+    # chargeTiming/interval bucket metadata is inconsistent.
+    raw_start = charge.get("chargeStartDate") or charge.get("installmentStartDate")
+    raw_end = charge.get("chargeEndDate") or charge.get("installmentEndDate")
+    start_dt = pd.to_datetime(raw_start, errors="coerce")
+    end_dt = pd.to_datetime(raw_end, errors="coerce")
+    if pd.notna(start_dt) and pd.notna(end_dt):
+        span_days = (end_dt - start_dt).days
+        if span_days >= 7:
+            return False
+
+    one_time_markers = [
+        "one time",
+        "one-time",
+        "onetime",
+        "renewal start",
+        "application completed",
+        "move in",
+        "move-in",
+    ]
+    if any(marker in timing for marker in one_time_markers):
+        return True
+
+    interval_bucket = _to_str((interval_node or {}).get("_interval_charge_bucket")).lower()
+    if interval_bucket == "recurring":
+        return False
+    if interval_bucket == "one_time":
+        return True
+
+    # Last resort fallback to prior behavior.
     return "monthly" not in timing
 
 
@@ -239,9 +355,17 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
         customer_name, customer_id, guarantor_name = _extract_customer_fields(lease_node)
 
         scheduled_node = lease_node.get("scheduledCharges") or {}
-        interval_nodes = []
-        interval_nodes.extend([item for item in _as_list(scheduled_node.get("recurringCharge")) if isinstance(item, dict)])
-        interval_nodes.extend([item for item in _as_list(scheduled_node.get("oneTimeCharge")) if isinstance(item, dict)])
+        interval_nodes: list[dict[str, Any]] = []
+        for item in _as_list(scheduled_node.get("recurringCharge")):
+            if isinstance(item, dict):
+                tagged = dict(item)
+                tagged["_interval_charge_bucket"] = "recurring"
+                interval_nodes.append(tagged)
+        for item in _as_list(scheduled_node.get("oneTimeCharge")):
+            if isinstance(item, dict):
+                tagged = dict(item)
+                tagged["_interval_charge_bucket"] = "one_time"
+                interval_nodes.append(tagged)
 
         for interval_index, interval_node in enumerate(interval_nodes, start=1):
             lease_interval_status = _to_str(interval_node.get("leaseIntervalStatus")).lower()
@@ -272,12 +396,49 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
                 )
 
                 explicit_charge_end = charge.get("chargeEndDate") or charge.get("installmentEndDate")
-                if explicit_charge_end:
-                    charge_end = _to_mmddyyyy(explicit_charge_end)
-                elif _is_one_time_charge(charge):
+                is_one_time = _is_one_time_charge(charge, interval_node=interval_node)
+                explicit_charge_end_normalized = _to_mmddyyyy(explicit_charge_end)
+
+                # Some Entrata payloads use textual sentinels (e.g. "End During Move-Out")
+                # for recurring charges. Preserve recurring behavior by falling back to
+                # lease_end when the explicit end cannot be parsed as a date.
+                if explicit_charge_end_normalized:
+                    charge_end = explicit_charge_end_normalized
+                elif is_one_time:
                     charge_end = ""
                 else:
                     charge_end = lease_end
+
+                # Guard bad upstream ranges: recurring charges with end before start
+                # should default to lease_end rather than collapsing/vanishing.
+                start_dt = pd.to_datetime(charge_start, errors="coerce")
+                end_dt = pd.to_datetime(charge_end, errors="coerce")
+                if pd.notna(start_dt) and pd.notna(end_dt) and end_dt < start_dt:
+                    if is_one_time:
+                        charge_end = ""
+                    else:
+                        charge_end = lease_end
+
+                if str(os.getenv("LEASE_API_DEBUG_PARKING") or "").strip().lower() == "true":
+                    ar_code_token = _to_str(charge.get("arCodeId"))
+                    if ar_code_token == "155052":
+                        debug_payload = {
+                            "leaseId": lease_id,
+                            "leaseIntervalId": lease_interval_id,
+                            "intervalBucket": _to_str(interval_node.get("_interval_charge_bucket")),
+                            "chargeId": _to_str(charge.get("id") or charge.get("scheduledChargeId")),
+                            "amount": _to_str(charge.get("amount")),
+                            "chargeTiming": _to_str(charge.get("chargeTiming")),
+                            "chargeStartDate": _to_str(charge.get("chargeStartDate") or charge.get("installmentStartDate")),
+                            "chargeEndDateRaw": _to_str(explicit_charge_end),
+                            "leaseStartDate": lease_start,
+                            "leaseEndDate": lease_end,
+                            "postedThrough": _to_str(posted_through_value),
+                            "isOneTimeDerived": bool(is_one_time),
+                            "finalChargeStart": charge_start,
+                            "finalChargeEnd": charge_end,
+                        }
+                        print(f"[LEASE API DEBUG][PARKING] {debug_payload}")
 
                 raw_scheduled_charge_id = _to_str(
                     charge.get("scheduledChargeId")
