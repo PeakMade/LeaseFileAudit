@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
 
 from .mappings import ARSourceColumns, ScheduledSourceColumns
+from activity_logging.sharepoint import _get_app_only_token
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -109,71 +111,119 @@ def _post_method(
     return payload
 
 
-def _extract_property_nodes(properties_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    root = properties_payload.get("response") if isinstance(properties_payload.get("response"), dict) else properties_payload
-    result = root.get("result") if isinstance(root, dict) else {}
+def _graph_get_json(url: str, access_token: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+    }
+    response = requests.get(url, headers=headers, params=params, timeout=30)
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        snippet = (response.text or "")[:500]
+        raise ValueError(f"SharePoint Graph GET failed ({response.status_code}) for {url}. Response: {snippet}") from exc
 
-    physical_property = {}
-    if isinstance(result, dict):
-        physical_property = result.get("PhysicalProperty") or result.get("physicalProperty") or {}
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError(f"Unexpected Graph payload type for {url}: {type(payload)}")
+    return payload
 
-    properties = []
-    if isinstance(physical_property, dict):
-        properties = physical_property.get("Property") or physical_property.get("property") or []
 
-    return [item for item in _as_list(properties) if isinstance(item, dict)]
+def _resolve_sharepoint_site_id(access_token: str, sharepoint_site_url: str) -> str:
+    parsed = urlparse(sharepoint_site_url)
+    hostname = _to_str(parsed.hostname)
+    site_path = _to_str(parsed.path)
+    if not hostname or not site_path:
+        raise ValueError("Invalid SHAREPOINT_SITE_URL for property picklist")
+
+    endpoint = f"https://graph.microsoft.com/v1.0/sites/{hostname}:{site_path}"
+    payload = _graph_get_json(endpoint, access_token)
+    site_id = _to_str(payload.get("id"))
+    if not site_id:
+        raise ValueError("Unable to resolve SharePoint site id for property picklist")
+    return site_id
+
+
+def _resolve_sharepoint_list_id(access_token: str, site_id: str, list_name: str) -> str:
+    endpoint = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists"
+    payload = _graph_get_json(
+        endpoint,
+        access_token,
+        params={"$filter": f"displayName eq '{list_name}'", "$select": "id,displayName"},
+    )
+    rows = payload.get("value") if isinstance(payload.get("value"), list) else []
+    if not rows:
+        raise ValueError(f"SharePoint list '{list_name}' not found")
+    list_id = _to_str(rows[0].get("id"))
+    if not list_id:
+        raise ValueError(f"Unable to resolve list id for '{list_name}'")
+    return list_id
+
+
+def _to_legacy_entrata_property_id(value: Any) -> str:
+    token = _to_str(value)
+    if not token:
+        return ""
+    try:
+        numeric = float(token)
+        if numeric.is_integer():
+            return str(int(numeric))
+    except Exception:
+        pass
+    return token
 
 
 def fetch_entrata_property_picklist() -> list[dict[str, str]]:
-    """Fetch Entrata property id/name pairs for API upload picklist."""
-    properties_url = _to_str(os.getenv("LEASE_API_PROPERTIES_URL")) or "https://apis.entrata.com/ext/orgs/peakmade/v1/properties?page_no=1&per_page=100"
-    api_key = _to_str(os.getenv("LEASE_API_KEY"))
-    api_key_header = _to_str(os.getenv("LEASE_API_KEY_HEADER") or "X-Api-Key")
-    method_name = _to_str(os.getenv("LEASE_API_PROPERTIES_METHOD") or "getProperties")
-    method_version = _to_str(os.getenv("LEASE_API_PROPERTIES_VERSION") or "")
-    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "60") or "60")
+    """Fetch property id/name pairs from SharePoint Properties_0 for API upload picklist."""
+    sharepoint_site_url = _to_str(os.getenv("SHAREPOINT_SITE_URL"))
+    list_name = _to_str(os.getenv("LEASE_API_PROPERTIES_SHAREPOINT_LIST") or "Properties_0")
+    require_reportable = _to_str(os.getenv("LEASE_API_PROPERTIES_REQUIRE_REPORTABLE") or "1").lower() not in {"0", "false", "no"}
 
-    if not properties_url:
-        raise ValueError("Missing LEASE_API_PROPERTIES_URL env var")
-    if not api_key:
-        raise ValueError("Missing LEASE_API_KEY env var")
+    if not sharepoint_site_url:
+        raise ValueError("Missing SHAREPOINT_SITE_URL env var")
 
-    params: dict[str, Any] = {
-        "showAllStatus": _to_str(os.getenv("LEASE_API_PROPERTIES_SHOW_ALL_STATUS") or "1"),
+    access_token = _get_app_only_token()
+    if not access_token:
+        raise ValueError("Unable to acquire app-only token for SharePoint property picklist")
+
+    site_id = _resolve_sharepoint_site_id(access_token, sharepoint_site_url)
+    list_id = _resolve_sharepoint_list_id(access_token, site_id, list_name)
+
+    select_fields = [
+        "PROPERTY_NAME",
+        "PropertyName",
+        "LEGACY_ENTRATA_ID",
+        "LegacyEntrataId",
+    ]
+    endpoint = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+    params = {
+        "$expand": f"fields($select={','.join(select_fields)})",
+        "$top": "5000",
     }
-    property_ids = _to_str(os.getenv("LEASE_API_PROPERTIES_FILTER_IDS") or "")
-    if property_ids:
-        params["propertyIds"] = property_ids
-    property_lookup_code = _to_str(os.getenv("LEASE_API_PROPERTIES_LOOKUP_CODE") or "")
-    if property_lookup_code:
-        params["propertyLookupCode"] = property_lookup_code
-
-    payload = _post_method(
-        endpoint_url=properties_url,
-        api_key=api_key,
-        api_key_header=api_key_header,
-        method_name=method_name,
-        version=method_version,
-        params=params,
-        timeout_seconds=timeout_seconds,
-    )
 
     rows: list[dict[str, str]] = []
-    for node in _extract_property_nodes(payload):
-        property_id = _to_str(node.get("PropertyID") or node.get("propertyId") or node.get("id"))
-        property_name = _to_str(
-            node.get("MarketingName")
-            or node.get("marketingName")
-            or node.get("PropertyName")
-            or node.get("propertyName")
-            or node.get("name")
-        )
-        if not property_id or not property_name:
-            continue
-        rows.append({
-            "property_id": property_id,
-            "property_name": property_name,
-        })
+    next_url: str | None = endpoint
+    next_params: dict[str, Any] | None = params
+    while next_url:
+        page_payload = _graph_get_json(next_url, access_token, params=next_params)
+        for item in page_payload.get("value") or []:
+            fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
+            property_name = _to_str(fields.get("PROPERTY_NAME") or fields.get("PropertyName"))
+            property_id = _to_legacy_entrata_property_id(fields.get("LEGACY_ENTRATA_ID") or fields.get("LegacyEntrataId"))
+
+            # Skip if missing required fields or if require_reportable and no LEGACY_ENTRATA_ID
+            if require_reportable and not property_id:
+                continue
+            if not property_id or not property_name:
+                continue
+
+            rows.append({
+                "property_id": property_id,
+                "property_name": property_name,
+            })
+
+        next_url = _to_str(page_payload.get("@odata.nextLink") or "") or None
+        next_params = None
 
     deduped: dict[str, dict[str, str]] = {}
     for row in rows:
