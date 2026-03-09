@@ -1,0 +1,247 @@
+{
+	"test_status": "TEST SUCCESS",
+	"term_extraction_rules": {
+		"BASE_RENT": {
+			"page_hint_patterns": [
+				"monthly\\s+rent",
+				"base\\s+rent",
+				"rent\\s+amount",
+				"total\\s+rent",
+				"payment\\s+terms",
+				"rental\\s+rate",
+				"\\$\\s*\\d+(?:,\\d{3})*(?:\\.\\d{2})?",
+				"due\\s+date"
+			],
+			"heading_patterns": [
+				"rent\\s+and\\s+charges"
+			],
+			"fallback_heading_patterns": [
+				"\\brent\\b"
+			],
+			"monthly_signal_pattern": "monthly|per\\s+month|installments?|each\\s+installment|rent\\s+installment",
+			"total_signal_pattern": "total\\s+rent|total\\s+amount|lease\\s+term|for\\s+the\\s+term|term\\s+rent|annual",
+			"regex_fallback_installment_pattern": "installments?\\s+of\\s*\\$?\\s*([0-9][0-9,\\s]*(?:\\.\\s*\\d{2})?)\\s*(?:each|per\\s+installment)?",
+			"regex_fallback_monthly_patterns": [
+				"(?:monthly|base)\\s+rent(?:\\s*(?:is|:|=))?\\s*\\$?\\s*([0-9][0-9,\\s]*(?:\\.\\s*\\d{2})?)",
+				"rent\\s+amount(?:\\s*(?:is|:|=))?\\s*\\$?\\s*([0-9][0-9,\\s]*(?:\\.\\s*\\d{2})?)",
+				"amount\\s+of\\s+each\\s+rent\\s+installment(?:\\s*(?:is|:|=))?\\s*\\$?\\s*([0-9][0-9,\\s]*(?:\\.\\s*\\d{2})?)"
+			],
+			"excluded_context_tokens": [
+				"income",
+				"salary",
+				"wage",
+				"premium"
+			],
+			"total_context_tokens": [
+				"total",
+				"term"
+			],
+			"installment_context_tokens": [
+				"installment"
+			],
+			"monthly_context_tokens": [
+				"monthly"
+			],
+			"total_rent_guard_tokens": [
+				"total rent"
+			]
+		},
+		"APPLICATION_FEE": {
+			"include_patterns": [
+				"application\\s+fee"
+			],
+			"clause_anchor_pattern": "(?:application\\s+fee|admin(?:istration|istrative)?\\s+fee).{0,260}",
+			"clause_amount_pattern": "application\\s+fee.{0,60}?\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)",
+			"clause_excluded_tokens": [
+				"waived",
+				"waiver",
+				"refund",
+				"credited"
+			]
+		},
+		"ADMIN_FEE": {
+			"include_patterns": [
+				"admin(?:istration|istrative)?\\s+fee"
+			],
+			"exclude_patterns": [
+				"billing\\s+charge",
+				"for\\s+billing",
+				"not\\s+to\\s+exceed",
+				"utility",
+				"capped\\s+at"
+			],
+			"clause_amount_pattern": "admin(?:istration|istrative)?\\s+fee.{0,60}?\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)",
+			"strict_patterns": [
+				"admin(?:istration|istrative)?\\s+fee\\s+(?:shall\\s+be|will\\s+be|is)\\s*\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)",
+				"\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?).{0,30}?admin(?:istration|istrative)?\\s+fee"
+			],
+			"explicit_clause_markers": [
+				"administration fee shall be",
+				"administrative fee shall be",
+				"admin fee shall be",
+				"administration fee will be",
+				"administrative fee will be",
+				"admin fee will be"
+			],
+			"prioritization_excluded_tokens": [
+				"billing charge",
+				"for billing",
+				"not to exceed",
+				"utility",
+				"utility service",
+				"capped at",
+				"cap at"
+			],
+			"application_leak_required_tokens": [
+				"application",
+				"admin"
+			],
+			"application_leak_amount_pattern": "application\\s+fee.{0,80}?\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)"
+		},
+		"AMENITY_PREMIUM": {
+			"include_patterns": [
+				"amenity\\s+premium",
+				"premium\\s+feature",
+				"premium\\s+amount",
+				"exclusive\\s+bedspace",
+				"bedspace\\s+premium"
+			],
+			"exclude_patterns": [
+				"income",
+				"salary",
+				"wage",
+				"floor\\s*plan\\s*rate\\s*addendum",
+				"floorplan\\s*rate\\s*addendum",
+				"floor\\s*plan\\s*rate"
+			],
+			"focus_patterns": [
+				"exclusive\\s+bedspace\\s+addendum",
+				"bedspace\\s+addendum",
+				"exclusive\\s+bedspace"
+			],
+			"source_order": [
+				"focus",
+				"addenda",
+				"all_text"
+			]
+		},
+		"PARKING": {
+			"page_hint_patterns": [
+				"parking\\s+addendum",
+				"parking\\s+space",
+				"parking\\s+fee",
+				"garage\\s+fee",
+				"carport",
+				"monthly\\s+parking",
+				"reserved\\s+parking",
+				"covered\\s+parking"
+			],
+			"page_fallback_pattern": "parking|garage|carport",
+			"anchor_phrase_tokens": [
+				"cost",
+				"for",
+				"parking"
+			],
+			"anchor_keywords": [
+				"parking",
+				"garage",
+				"carport"
+			],
+			"exclusion_signals": [
+				"nsf",
+				"non-sufficient",
+				"non sufficient",
+				"returned check",
+				"checks returned",
+				"violation",
+				"warning",
+				"fine",
+				"citation",
+				"ticket",
+				"tow",
+				"towing",
+				"boot",
+				"decal",
+				"replacement"
+			],
+			"positive_context_signals": [
+				"parking",
+				"garage",
+				"carport",
+				"cost for parking",
+				"monthly",
+				"per month",
+				"per vehicle",
+				"per space",
+				"resident agrees to pay"
+			],
+			"monthly_signals": [
+				"monthly",
+				"per month",
+				"per vehicle",
+				"parking fee",
+				"cost for parking"
+			],
+			"monthly_bonus_signals": [
+				"monthly per vehicle",
+				"per vehicle due on or before"
+			],
+			"one_time_signals": [
+				"one-time",
+				"onetime",
+				"one time"
+			],
+			"regex_fallback_monthly_patterns": [
+				"cost\\s+for\\s+parking.{0,260}?\\$\\s*(\\d{1,6}(?:,\\d{3})*(?:\\.\\d{2})?).{0,80}?(monthly|per\\s+month|per\\s+vehicle)",
+				"\\$\\s*(\\d{1,6}(?:,\\d{3})*(?:\\.\\d{2})?).{0,60}?(monthly|per\\s+month|per\\s+vehicle).{0,120}?parking"
+			],
+			"regex_exclusion_signals": [
+				"violation",
+				"warning",
+				"fine",
+				"citation",
+				"ticket",
+				"tow",
+				"towing",
+				"boot",
+				"decal",
+				"replacement",
+				"nsf",
+				"returned check"
+			],
+			"regex_score_bonus_signals": [
+				"cost for parking"
+			]
+		},
+		"PET_RENT": {
+			"anchor_patterns": [
+				"pet\\s+rent",
+				"pet\\s+fee"
+			],
+			"preferred_tokens": [
+				"pet",
+				"monthly"
+			],
+			"excluded_tokens": [
+				"parking",
+				"application fee",
+				"admin fee",
+				"administrative fee"
+			],
+			"hard_excluded_tokens": [
+				"replacement fee",
+				"replacement",
+				"damaged",
+				"lost",
+				"unreturned",
+				"decal",
+				"security deposit",
+				"move-out",
+				"move out",
+				"fine",
+				"violation",
+				"unauthorized animal"
+			]
+		}
+	}
+}

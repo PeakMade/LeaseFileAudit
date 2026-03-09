@@ -31,6 +31,7 @@ from .lease_term_rules import (
     get_primary_ar_code_for_term,
     get_term_to_ar_code_rules,
 )
+from .lease_term_extraction_rules import get_term_extraction_rule
 
 
 def _load_dotenv_if_available() -> None:
@@ -627,34 +628,14 @@ def identify_relevant_pages(text_pack: dict) -> dict:
         r'term\s+ends'
     ]
 
-    rent_keywords = [
-        r'monthly\s+rent',
-        r'base\s+rent',
-        r'rent\s+amount',
-        r'total\s+rent',
-        r'payment\s+terms',
-        r'rental\s+rate',
-        r'\$\s*\d+(?:,\d{3})*(?:\.\d{2})?',
-        r'due\s+date'
-    ]
+    base_rent_rule = get_term_extraction_rule("BASE_RENT")
+    rent_keywords = list(base_rent_rule.get("page_hint_patterns") or [])
 
-    premium_keywords = [
-        r'floorplan\s+rate\s+addendum',
-        r'premium\s+feature',
-        r'premium\s+amount',
-        r'premium\s+unit\s+charges'
-    ]
+    amenity_rule = get_term_extraction_rule("AMENITY_PREMIUM")
+    premium_keywords = list(amenity_rule.get("focus_patterns") or []) + list(amenity_rule.get("include_patterns") or [])
 
-    parking_keywords = [
-        r'parking\s+addendum',
-        r'parking\s+space',
-        r'parking\s+fee',
-        r'garage\s+fee',
-        r'carport',
-        r'monthly\s+parking',
-        r'reserved\s+parking',
-        r'covered\s+parking'
-    ]
+    parking_rule = get_term_extraction_rule("PARKING")
+    parking_keywords = list(parking_rule.get("page_hint_patterns") or [])
 
     lease_dates_pages = []
     rent_pages = []
@@ -699,6 +680,7 @@ def identify_relevant_pages(text_pack: dict) -> dict:
 
 def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None:
     """Extract parking monthly amount using coordinate anchors first, then text fallback."""
+    parking_rule = get_term_extraction_rule("PARKING")
     if page_hints is None:
         page_hints = identify_relevant_pages(text_pack)
 
@@ -707,10 +689,13 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
 
     parking_pages = list(page_hints.get("parking_pages") or [])
     if not parking_pages:
+        fallback_page_pattern = str(parking_rule.get("page_fallback_pattern") or "").strip()
+        if not fallback_page_pattern:
+            return None
         parking_pages = [
             page_num
             for page_num, page_info in pages_by_number.items()
-            if re.search(r"parking|garage|carport", str(page_info.get("text") or ""), re.IGNORECASE)
+            if re.search(fallback_page_pattern, str(page_info.get("text") or ""), re.IGNORECASE)
         ]
 
     if not parking_pages:
@@ -751,6 +736,17 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
         return tokens
 
     def _anchor_boxes(words: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        anchor_phrase_tokens = [
+            re.sub(r"[^a-z0-9]+", "", str(token or "").lower())
+            for token in (parking_rule.get("anchor_phrase_tokens") or [])
+        ]
+        anchor_phrase_tokens = [token for token in anchor_phrase_tokens if token]
+        anchor_keyword_tokens = {
+            re.sub(r"[^a-z0-9]+", "", str(token or "").lower())
+            for token in (parking_rule.get("anchor_keywords") or [])
+        }
+        anchor_keyword_tokens = {token for token in anchor_keyword_tokens if token}
+
         seq = []
         for word in words:
             token_text = str(word.get("text") or "").strip()
@@ -765,19 +761,22 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
             })
 
         anchors: list[dict[str, Any]] = []
-        for idx in range(len(seq) - 2):
-            first, second, third = seq[idx], seq[idx + 1], seq[idx + 2]
-            if first["token"] == "cost" and second["token"] == "for" and third["token"] == "parking":
+        window_size = len(anchor_phrase_tokens)
+        if window_size >= 2:
+            for idx in range(len(seq) - window_size + 1):
+                window = seq[idx:idx + window_size]
+                if [item["token"] for item in window] != anchor_phrase_tokens:
+                    continue
                 anchors.append({
                     "label": "cost_for_parking",
-                    "x0": min(first["x0"], second["x0"], third["x0"]),
-                    "y0": min(first["y0"], second["y0"], third["y0"]),
-                    "x1": max(first["x1"], second["x1"], third["x1"]),
-                    "y1": max(first["y1"], second["y1"], third["y1"]),
+                    "x0": min(item["x0"] for item in window),
+                    "y0": min(item["y0"] for item in window),
+                    "x1": max(item["x1"] for item in window),
+                    "y1": max(item["y1"] for item in window),
                 })
 
         for item in seq:
-            if item["token"] in {"parking", "garage", "carport"}:
+            if item["token"] in anchor_keyword_tokens:
                 anchors.append({
                     "label": item["token"],
                     "x0": item["x0"],
@@ -840,53 +839,23 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
                 row_text = _row_excerpt(words, float(token["cy"]))
                 row_lower = row_text.lower()
 
-                exclusion_signals = [
-                    "nsf",
-                    "non-sufficient",
-                    "non sufficient",
-                    "returned check",
-                    "checks returned",
-                    "violation",
-                    "warning",
-                    "fine",
-                    "citation",
-                    "ticket",
-                    "tow",
-                    "towing",
-                    "boot",
-                    "decal",
-                    "replacement",
-                ]
+                exclusion_signals = [str(token).lower() for token in (parking_rule.get("exclusion_signals") or [])]
                 if any(signal in row_lower for signal in exclusion_signals):
                     continue
 
-                positive_context_signals = [
-                    "parking",
-                    "garage",
-                    "carport",
-                    "cost for parking",
-                    "monthly",
-                    "per month",
-                    "per vehicle",
-                    "per space",
-                    "resident agrees to pay",
-                ]
+                positive_context_signals = [str(token).lower() for token in (parking_rule.get("positive_context_signals") or [])]
                 if anchor.get("label") != "cost_for_parking" and not any(signal in row_lower for signal in positive_context_signals):
                     continue
 
-                monthly_parking_signals = [
-                    "monthly",
-                    "per month",
-                    "per vehicle",
-                    "parking fee",
-                    "cost for parking",
-                ]
+                monthly_parking_signals = [str(token).lower() for token in (parking_rule.get("monthly_signals") or [])]
+                monthly_bonus_signals = [str(token).lower() for token in (parking_rule.get("monthly_bonus_signals") or [])]
+                one_time_signals = [str(token).lower() for token in (parking_rule.get("one_time_signals") or [])]
 
                 if any(signal in row_lower for signal in monthly_parking_signals):
                     score_boost += 350.0
-                if any(signal in row_lower for signal in ["monthly per vehicle", "per vehicle due on or before"]):
+                if any(signal in row_lower for signal in monthly_bonus_signals):
                     score_boost += 220.0
-                if any(signal in row_lower for signal in ["one-time", "onetime", "one time"]):
+                if any(signal in row_lower for signal in one_time_signals):
                     score_boost -= 260.0
                 if anchor.get("label") == "cost_for_parking" and not any(signal in row_lower for signal in monthly_parking_signals):
                     score_boost -= 140.0
@@ -925,10 +894,17 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
         }
 
     regex_candidates: list[dict[str, Any]] = []
-    monthly_regexes = [
-        re.compile(r"cost\s+for\s+parking.{0,260}?\$\s*(\d{1,6}(?:,\d{3})*(?:\.\d{2})?).{0,80}?(monthly|per\s+month|per\s+vehicle)", re.IGNORECASE | re.DOTALL),
-        re.compile(r"\$\s*(\d{1,6}(?:,\d{3})*(?:\.\d{2})?).{0,60}?(monthly|per\s+month|per\s+vehicle).{0,120}?parking", re.IGNORECASE | re.DOTALL),
+    monthly_regex_patterns = [
+        str(pattern).strip()
+        for pattern in (parking_rule.get("regex_fallback_monthly_patterns") or [])
+        if str(pattern).strip()
     ]
+    monthly_regexes = [
+        re.compile(pattern, re.IGNORECASE | re.DOTALL)
+        for pattern in monthly_regex_patterns
+    ]
+    regex_exclusion_signals = [str(token).lower() for token in (parking_rule.get("regex_exclusion_signals") or [])]
+    regex_score_bonus_signals = [str(token).lower() for token in (parking_rule.get("regex_score_bonus_signals") or [])]
 
     for page_number in parking_pages:
         page_info = pages_by_number.get(int(page_number))
@@ -942,26 +918,10 @@ def extract_parking_fee(text_pack: dict, page_hints: dict = None) -> dict | None
                     continue
                 snippet = re.sub(r"\s+", " ", page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]).strip()
                 snippet_lower = snippet.lower()
-                if any(
-                    signal in snippet_lower
-                    for signal in [
-                        "violation",
-                        "warning",
-                        "fine",
-                        "citation",
-                        "ticket",
-                        "tow",
-                        "towing",
-                        "boot",
-                        "decal",
-                        "replacement",
-                        "nsf",
-                        "returned check",
-                    ]
-                ):
+                if any(signal in snippet_lower for signal in regex_exclusion_signals):
                     continue
                 score = 500.0
-                if "cost for parking" in snippet_lower:
+                if any(signal in snippet_lower for signal in regex_score_bonus_signals):
                     score += 120.0
                 regex_candidates.append({
                     "value": f"${float(normalized):.2f}",
@@ -1796,6 +1756,111 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     base_rent_evidence: str | None = None
     base_rent_candidates: list[dict[str, Any]] = []
 
+    base_rent_rule = get_term_extraction_rule("BASE_RENT")
+    base_rent_heading_patterns = [
+        re.compile(pattern, re.IGNORECASE)
+        for pattern in (base_rent_rule.get("heading_patterns") or [])
+        if str(pattern or "").strip()
+    ]
+    base_rent_fallback_heading_patterns = [
+        re.compile(pattern, re.IGNORECASE)
+        for pattern in (base_rent_rule.get("fallback_heading_patterns") or [])
+        if str(pattern or "").strip()
+    ]
+
+    base_rent_monthly_signal_pattern = str(base_rent_rule.get("monthly_signal_pattern") or "").strip()
+    base_rent_total_signal_pattern = str(base_rent_rule.get("total_signal_pattern") or "").strip()
+    base_rent_monthly_signal_regex = (
+        re.compile(base_rent_monthly_signal_pattern, re.IGNORECASE)
+        if base_rent_monthly_signal_pattern
+        else None
+    )
+    base_rent_total_signal_regex = (
+        re.compile(base_rent_total_signal_pattern, re.IGNORECASE)
+        if base_rent_total_signal_pattern
+        else None
+    )
+
+    base_rent_installment_pattern_text = str(base_rent_rule.get("regex_fallback_installment_pattern") or "").strip()
+    base_rent_installment_pattern = (
+        re.compile(base_rent_installment_pattern_text, re.IGNORECASE)
+        if base_rent_installment_pattern_text
+        else None
+    )
+    base_rent_monthly_patterns = [
+        re.compile(pattern, re.IGNORECASE)
+        for pattern in (base_rent_rule.get("regex_fallback_monthly_patterns") or [])
+        if str(pattern or "").strip()
+    ]
+    base_rent_excluded_context_tokens = [
+        str(token).lower()
+        for token in (base_rent_rule.get("excluded_context_tokens") or [])
+        if str(token or "").strip()
+    ]
+    base_rent_total_context_tokens = [
+        str(token).lower()
+        for token in (base_rent_rule.get("total_context_tokens") or [])
+        if str(token or "").strip()
+    ]
+    base_rent_installment_context_tokens = [
+        str(token).lower()
+        for token in (base_rent_rule.get("installment_context_tokens") or [])
+        if str(token or "").strip()
+    ]
+    base_rent_monthly_context_tokens = [
+        str(token).lower()
+        for token in (base_rent_rule.get("monthly_context_tokens") or [])
+        if str(token or "").strip()
+    ]
+    base_rent_total_rent_guard_tokens = [
+        str(token).lower()
+        for token in (base_rent_rule.get("total_rent_guard_tokens") or [])
+        if str(token or "").strip()
+    ]
+
+    application_fee_rule = get_term_extraction_rule("APPLICATION_FEE")
+    admin_fee_rule = get_term_extraction_rule("ADMIN_FEE")
+
+    application_include_patterns = list(application_fee_rule.get("include_patterns") or [])
+    admin_include_patterns = list(admin_fee_rule.get("include_patterns") or [])
+    admin_exclude_patterns = list(admin_fee_rule.get("exclude_patterns") or [])
+
+    clause_anchor_pattern_text = str(application_fee_rule.get("clause_anchor_pattern") or "").strip()
+    clause_app_amount_pattern_text = str(application_fee_rule.get("clause_amount_pattern") or "").strip()
+    clause_admin_amount_pattern_text = str(admin_fee_rule.get("clause_amount_pattern") or "").strip()
+
+    clause_excluded_tokens = [
+        str(token).lower()
+        for token in (application_fee_rule.get("clause_excluded_tokens") or [])
+        if str(token or "").strip()
+    ]
+    admin_prioritization_excluded_tokens = [
+        str(token).lower()
+        for token in (admin_fee_rule.get("prioritization_excluded_tokens") or [])
+        if str(token or "").strip()
+    ]
+    admin_explicit_clause_markers = [
+        str(marker).lower()
+        for marker in (admin_fee_rule.get("explicit_clause_markers") or [])
+        if str(marker or "").strip()
+    ]
+    admin_strict_pattern_texts = [
+        str(pattern).strip()
+        for pattern in (admin_fee_rule.get("strict_patterns") or [])
+        if str(pattern or "").strip()
+    ]
+    admin_application_leak_required_tokens = [
+        str(token).lower()
+        for token in (admin_fee_rule.get("application_leak_required_tokens") or [])
+        if str(token or "").strip()
+    ]
+    admin_application_leak_amount_pattern_text = str(admin_fee_rule.get("application_leak_amount_pattern") or "").strip()
+    admin_application_leak_amount_regex = (
+        re.compile(admin_application_leak_amount_pattern_text, re.IGNORECASE | re.DOTALL)
+        if admin_application_leak_amount_pattern_text
+        else None
+    )
+
     def _normalized_word_token(word_value: str) -> str:
         return re.sub(r"[^a-z0-9]+", "", str(word_value or "").lower())
 
@@ -1880,17 +1945,14 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         return re.sub(r"\s+", " ", " ".join([str(item.get("text") or "").strip() for item in same_row])).strip()
 
     def _fitz_anchor_monthly_rent() -> tuple[float | None, str | None, str | None, list[dict[str, Any]]]:
-        heading_pattern = re.compile(r"rent\s+and\s+charges", re.IGNORECASE)
-        fallback_heading_pattern = re.compile(r"\brent\b", re.IGNORECASE)
-
         heading_pages = [
             page for page in primary_pages
-            if heading_pattern.search(str(page.get("text") or ""))
+            if any(pattern.search(str(page.get("text") or "")) for pattern in base_rent_heading_patterns)
         ]
         if not heading_pages:
             heading_pages = [
                 page for page in primary_pages
-                if fallback_heading_pattern.search(str(page.get("text") or ""))
+                if any(pattern.search(str(page.get("text") or "")) for pattern in base_rent_fallback_heading_patterns)
             ]
 
         debug_tokens: list[dict[str, Any]] = []
@@ -1952,22 +2014,17 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
 
                     line_excerpt = _extract_line_excerpt(words, float(token["cy"]))
                     line_excerpt_lower = line_excerpt.lower()
-                    has_monthly_signal = bool(re.search(
-                        r"monthly|per\s+month|installments?|each\s+installment|rent\s+installment",
-                        line_excerpt_lower,
-                        re.IGNORECASE,
-                    ))
-                    has_total_signal = bool(re.search(
-                        r"total\s+rent|total\s+amount|lease\s+term|for\s+the\s+term|term\s+rent|annual",
-                        line_excerpt_lower,
-                        re.IGNORECASE,
-                    ))
+                    has_monthly_signal = bool(base_rent_monthly_signal_regex and base_rent_monthly_signal_regex.search(line_excerpt_lower))
+                    has_total_signal = bool(base_rent_total_signal_regex and base_rent_total_signal_regex.search(line_excerpt_lower))
 
                     if has_monthly_signal:
                         score_boost += 950.0
                     if has_total_signal and not has_monthly_signal:
                         score_boost -= 1400.0
-                    elif "total" in line_excerpt_lower and "installment" not in line_excerpt_lower:
+                    elif (
+                        any(token in line_excerpt_lower for token in base_rent_total_context_tokens)
+                        and not any(token in line_excerpt_lower for token in base_rent_installment_context_tokens)
+                    ):
                         score_boost -= 350.0
 
                     score = score_boost + proximity_score
@@ -2002,15 +2059,14 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         return float(best_candidate["amount"]), str(evidence), method_detail, debug_tokens
 
     def _multiple_inference_monthly_rent() -> tuple[float | None, str | None, str | None]:
-        heading_pattern = re.compile(r"rent\s+and\s+charges", re.IGNORECASE)
         rent_pages = [
             page for page in primary_pages
-            if heading_pattern.search(str(page.get("text") or ""))
+            if any(pattern.search(str(page.get("text") or "")) for pattern in base_rent_heading_patterns)
         ]
         if not rent_pages:
             rent_pages = [
                 page for page in primary_pages
-                if re.search(r"\brent\b", str(page.get("text") or ""), re.IGNORECASE)
+                if any(pattern.search(str(page.get("text") or "")) for pattern in base_rent_fallback_heading_patterns)
             ]
 
         amounts: list[float] = []
@@ -2058,17 +2114,16 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         if not pdf_path or not os.path.exists(pdf_path):
             return None, None, None, []
 
-        heading_pattern = re.compile(r"rent\s+and\s+charges", re.IGNORECASE)
         target_pages = [
             int(page.get("page_number") or 0)
             for page in primary_pages
-            if heading_pattern.search(str(page.get("text") or ""))
+            if any(pattern.search(str(page.get("text") or "")) for pattern in base_rent_heading_patterns)
         ]
         if not target_pages:
             target_pages = [
                 int(page.get("page_number") or 0)
                 for page in primary_pages
-                if re.search(r"\brent\b", str(page.get("text") or ""), re.IGNORECASE)
+                if any(pattern.search(str(page.get("text") or "")) for pattern in base_rent_fallback_heading_patterns)
             ]
 
         debug_tokens: list[dict[str, Any]] = []
@@ -2142,21 +2197,16 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
 
                             line_excerpt = _extract_line_excerpt(words, float(token["cy"]))
                             line_excerpt_lower = line_excerpt.lower()
-                            has_monthly_signal = bool(re.search(
-                                r"monthly|per\s+month|installments?|each\s+installment|rent\s+installment",
-                                line_excerpt_lower,
-                                re.IGNORECASE,
-                            ))
-                            has_total_signal = bool(re.search(
-                                r"total\s+rent|total\s+amount|lease\s+term|for\s+the\s+term|term\s+rent|annual",
-                                line_excerpt_lower,
-                                re.IGNORECASE,
-                            ))
+                            has_monthly_signal = bool(base_rent_monthly_signal_regex and base_rent_monthly_signal_regex.search(line_excerpt_lower))
+                            has_total_signal = bool(base_rent_total_signal_regex and base_rent_total_signal_regex.search(line_excerpt_lower))
                             if has_monthly_signal:
                                 score_boost += 950.0
                             if has_total_signal and not has_monthly_signal:
                                 score_boost -= 1400.0
-                            elif "total" in line_excerpt_lower and "installment" not in line_excerpt_lower:
+                            elif (
+                                any(token in line_excerpt_lower for token in base_rent_total_context_tokens)
+                                and not any(token in line_excerpt_lower for token in base_rent_installment_context_tokens)
+                            ):
                                 score_boost -= 350.0
 
                             score = score_boost - ((abs(dx) * 1.2) + (dy * 14.0))
@@ -2208,9 +2258,9 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
             ratio_close = 6 <= ratio_n <= 24 and abs(float(fitz_rent_amount) - (float(inferred_rent_amount) * ratio_n)) <= 0.05
 
             has_total_without_installment = (
-                ("total" in fitz_evidence_lower or "term" in fitz_evidence_lower)
-                and "installment" not in fitz_evidence_lower
-                and "monthly" not in fitz_evidence_lower
+                any(token in fitz_evidence_lower for token in base_rent_total_context_tokens)
+                and not any(token in fitz_evidence_lower for token in base_rent_installment_context_tokens)
+                and not any(token in fitz_evidence_lower for token in base_rent_monthly_context_tokens)
             )
 
             lease_window_matches = False
@@ -2267,16 +2317,6 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
                     "anchor_and_multiple_inference_failed",
                 )
 
-    installment_pattern = re.compile(
-        r"installments?\s+of\s*\$?\s*([0-9][0-9,\s]*(?:\.\s*\d{2})?)\s*(?:each|per\s+installment)?",
-        re.IGNORECASE,
-    )
-    monthly_patterns = [
-        re.compile(r"(?:monthly|base)\s+rent(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,\s]*(?:\.\s*\d{2})?)", re.IGNORECASE),
-        re.compile(r"rent\s+amount(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,\s]*(?:\.\s*\d{2})?)", re.IGNORECASE),
-        re.compile(r"amount\s+of\s+each\s+rent\s+installment(?:\s*(?:is|:|=))?\s*\$?\s*([0-9][0-9,\s]*(?:\.\s*\d{2})?)", re.IGNORECASE),
-    ]
-
     def _normalize_amount_fragment(amount_fragment: str) -> str | None:
         fragment = str(amount_fragment or "")
         if not fragment.strip():
@@ -2313,9 +2353,12 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         if amount_value is None or amount_value <= 0:
             return
         context_lower = context.lower()
-        if "total rent" in context_lower and "installment" not in context_lower:
+        if (
+            any(token in context_lower for token in base_rent_total_rent_guard_tokens)
+            and not any(token in context_lower for token in base_rent_installment_context_tokens)
+        ):
             return
-        if any(token in context_lower for token in ["income", "salary", "wage", "premium"]):
+        if any(token in context_lower for token in base_rent_excluded_context_tokens):
             return
         base_rent_candidates.append({
             "amount": amount_value,
@@ -2326,11 +2369,12 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     if base_rent_amount is None:
         for page in primary_pages:
             page_text = str(page.get("text") or "")
-            for match in installment_pattern.finditer(page_text):
-                context = page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]
-                _append_rent_candidate(match.group(1), context, score=10)
+            if base_rent_installment_pattern:
+                for match in base_rent_installment_pattern.finditer(page_text):
+                    context = page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]
+                    _append_rent_candidate(match.group(1), context, score=10)
 
-            for pattern in monthly_patterns:
+            for pattern in base_rent_monthly_patterns:
                 for match in pattern.finditer(page_text):
                     context = page_text[max(0, match.start() - 100):min(len(page_text), match.end() + 100)]
                     _append_rent_candidate(match.group(1), context, score=8)
@@ -2390,25 +2434,19 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         application_candidates: list[dict[str, Any]] = []
         admin_candidates: list[dict[str, Any]] = []
 
-        clause_anchor = re.compile(
-            r"(?:application\s+fee|admin(?:istration|istrative)?\s+fee).{0,260}",
-            re.IGNORECASE | re.DOTALL,
-        )
-        app_amount_regex = re.compile(
-            r"application\s+fee.{0,60}?\$\s*([0-9][0-9,]*(?:\.\d{2})?)",
-            re.IGNORECASE | re.DOTALL,
-        )
-        admin_amount_regex = re.compile(
-            r"admin(?:istration|istrative)?\s+fee.{0,60}?\$\s*([0-9][0-9,]*(?:\.\d{2})?)",
-            re.IGNORECASE | re.DOTALL,
-        )
+        if not clause_anchor_pattern_text or not clause_app_amount_pattern_text or not clause_admin_amount_pattern_text:
+            return application_candidates, admin_candidates
+
+        clause_anchor = re.compile(clause_anchor_pattern_text, re.IGNORECASE | re.DOTALL)
+        app_amount_regex = re.compile(clause_app_amount_pattern_text, re.IGNORECASE | re.DOTALL)
+        admin_amount_regex = re.compile(clause_admin_amount_pattern_text, re.IGNORECASE | re.DOTALL)
 
         for clause_match in clause_anchor.finditer(text_value):
             window_text = text_value[max(0, clause_match.start() - 40):min(len(text_value), clause_match.end() + 40)]
             window_text_normalized = re.sub(r"\s+", " ", window_text).strip()
             window_lower = window_text_normalized.lower()
 
-            if any(token in window_lower for token in ["waived", "waiver", "refund", "credited"]):
+            if any(token in window_lower for token in clause_excluded_tokens):
                 continue
 
             app_match = app_amount_regex.search(window_text)
@@ -2423,7 +2461,7 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
 
             admin_match = admin_amount_regex.search(window_text)
             if admin_match:
-                if any(token in window_lower for token in ["billing charge", "for billing", "not to exceed", "utility service", "capped at", "cap at"]):
+                if any(token in window_lower for token in admin_prioritization_excluded_tokens):
                     continue
                 admin_normalized = normalize_money(f"${admin_match.group(1)}")
                 admin_amount = _as_float(admin_normalized) if admin_normalized else None
@@ -2450,26 +2488,43 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
             deduped.append({"amount": amount, "evidence": evidence})
         return deduped
 
+    def _is_application_amount_leak_in_admin_context(evidence_text: str, admin_amount: float | None) -> bool:
+        """Detect mixed-line false positives where admin match captures application fee amount."""
+        if admin_amount is None or admin_amount <= 0:
+            return False
+
+        evidence_lower = str(evidence_text or "").lower()
+        if admin_application_leak_required_tokens and not all(
+            token in evidence_lower for token in admin_application_leak_required_tokens
+        ):
+            return False
+
+        if admin_application_leak_amount_regex is None:
+            return False
+
+        app_amount_match = admin_application_leak_amount_regex.search(evidence_lower)
+        if not app_amount_match:
+            return False
+
+        app_normalized = normalize_money(f"${app_amount_match.group(1)}")
+        app_amount = _as_float(app_normalized) if app_normalized else None
+        if app_amount is None:
+            return False
+
+        return abs(float(app_amount) - float(admin_amount)) <= 0.005
+
     def _prioritize_admin_fee_candidates(candidates: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped = _dedupe_fee_candidates(candidates)
         if not deduped:
             return []
 
-        explicit_clause_markers = [
-            "administration fee shall be",
-            "administrative fee shall be",
-            "admin fee shall be",
-            "administration fee will be",
-            "administrative fee will be",
-            "admin fee will be",
-        ]
         explicit = [
             item
             for item in deduped
-            if any(marker in str(item.get("evidence") or "").lower() for marker in explicit_clause_markers)
+            if any(marker in str(item.get("evidence") or "").lower() for marker in admin_explicit_clause_markers)
             and not any(
                 token in str(item.get("evidence") or "").lower()
-                for token in ["for billing", "not to exceed", "utility service", "capped at", "cap at"]
+                for token in admin_prioritization_excluded_tokens
             )
         ]
         if explicit:
@@ -2480,21 +2535,15 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
             for item in deduped
             if not any(
                 token in str(item.get("evidence") or "").lower()
-                for token in ["billing charge", "for billing", "not to exceed", "utility", "utility service", "capped at", "cap at"]
+                for token in admin_prioritization_excluded_tokens
             )
         ]
         return filtered or deduped
 
     def _extract_strict_admin_fee_candidates(text_value: str) -> list[dict[str, Any]]:
         strict_patterns = [
-            re.compile(
-                r"admin(?:istration|istrative)?\s+fee\s+(?:shall\s+be|will\s+be|is)\s*\$\s*([0-9][0-9,]*(?:\.\d{2})?)",
-                re.IGNORECASE | re.DOTALL,
-            ),
-            re.compile(
-                r"\$\s*([0-9][0-9,]*(?:\.\d{2})?).{0,30}?admin(?:istration|istrative)?\s+fee",
-                re.IGNORECASE | re.DOTALL,
-            ),
+            re.compile(pattern, re.IGNORECASE | re.DOTALL)
+            for pattern in admin_strict_pattern_texts
         ]
         strict_candidates: list[dict[str, Any]] = []
         for pattern in strict_patterns:
@@ -2502,23 +2551,25 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
                 evidence = text_value[max(0, match.start() - 80):min(len(text_value), match.end() + 80)]
                 evidence_norm = re.sub(r"\s+", " ", evidence).strip()
                 evidence_lower = evidence_norm.lower()
-                if any(token in evidence_lower for token in ["for billing", "not to exceed", "utility service", "capped at", "cap at"]):
+                if any(token in evidence_lower for token in admin_prioritization_excluded_tokens):
                     continue
                 normalized = normalize_money(f"${match.group(1)}")
                 amount = _as_float(normalized) if normalized else None
                 if amount is None or amount <= 0:
+                    continue
+                if _is_application_amount_leak_in_admin_context(evidence_norm, amount):
                     continue
                 strict_candidates.append({"amount": amount, "evidence": evidence_norm})
         return _dedupe_fee_candidates(strict_candidates)
 
     application_fee_candidates = _extract_fee_candidates(
         all_text,
-        include_patterns=[r"application\s+fee"],
+        include_patterns=application_include_patterns,
     )
     admin_fee_candidates = _extract_fee_candidates(
         all_text,
-        include_patterns=[r"admin(?:istration|istrative)?\s+fee"],
-        exclude_patterns=[r"billing\s+charge", r"for\s+billing", r"not\s+to\s+exceed", r"utility", r"capped\s+at"],
+        include_patterns=admin_include_patterns,
+        exclude_patterns=admin_exclude_patterns,
     )
     strict_admin_fee_candidates = _extract_strict_admin_fee_candidates(all_text)
     clause_app_candidates, clause_admin_candidates = _extract_application_admin_from_clause_windows(all_text)
@@ -2556,56 +2607,44 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
             return ""
         return "\n".join(windows)
 
-    amenity_patterns = [
-        r"amenity\s+premium",
-        r"premium\s+feature",
-        r"premium\s+amount",
-        r"exclusive\s+bedspace",
-        r"bedspace\s+premium",
-    ]
-    amenity_exclude_patterns = [
-        r"income",
-        r"salary",
-        r"wage",
-        r"floor\s*plan\s*rate\s*addendum",
-        r"floorplan\s*rate\s*addendum",
-        r"floor\s*plan\s*rate",
-    ]
-    exclusive_bedspace_focus_patterns = [
-        r"exclusive\s+bedspace\s+addendum",
-        r"bedspace\s+addendum",
-        r"exclusive\s+bedspace",
+    amenity_rule = get_term_extraction_rule("AMENITY_PREMIUM")
+    amenity_patterns = list(amenity_rule.get("include_patterns") or [])
+    amenity_exclude_patterns = list(amenity_rule.get("exclude_patterns") or [])
+    exclusive_bedspace_focus_patterns = list(amenity_rule.get("focus_patterns") or [])
+    amenity_source_order = [
+        str(item).strip().lower()
+        for item in (amenity_rule.get("source_order") or ["focus", "addenda", "all_text"])
+        if str(item).strip()
     ]
 
     amenity_candidates: list[dict[str, Any]] = []
 
-    # First priority: extract from Exclusive Bedspace Addendum context.
     bedspace_focus_text = _extract_focus_windows(
         addenda_text if addenda_text.strip() else all_text,
         exclusive_bedspace_focus_patterns,
     )
-    if bedspace_focus_text:
-        amenity_candidates = _extract_fee_candidates(
-            bedspace_focus_text,
-            include_patterns=amenity_patterns,
-            exclude_patterns=amenity_exclude_patterns,
-        )
 
-    # Fallback: any addenda text (still excluding Floor Plan Rate Addendum context).
-    if not amenity_candidates and addenda_text.strip():
-        amenity_candidates = _extract_fee_candidates(
-            addenda_text,
-            include_patterns=amenity_patterns,
-            exclude_patterns=amenity_exclude_patterns,
-        )
+    for extraction_source in amenity_source_order:
+        source_text = ""
+        if extraction_source == "focus":
+            source_text = bedspace_focus_text
+        elif extraction_source == "addenda":
+            source_text = addenda_text
+        elif extraction_source == "all_text":
+            source_text = all_text
+        else:
+            continue
 
-    # Final fallback: full packet text.
-    if not amenity_candidates:
+        if not source_text or not source_text.strip():
+            continue
+
         amenity_candidates = _extract_fee_candidates(
-            all_text,
+            source_text,
             include_patterns=amenity_patterns,
             exclude_patterns=amenity_exclude_patterns,
         )
+        if amenity_candidates:
+            break
 
     amenity_premium = amenity_candidates[0]["amount"] if amenity_candidates else None
     amenity_evidence = amenity_candidates[0]["evidence"] if amenity_candidates else None
@@ -2659,9 +2698,11 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         preferred_tokens: Sequence[str] | None = None,
         excluded_tokens: Sequence[str] | None = None,
         fallback_anchor_token: str | None = None,
+        hard_excluded_tokens: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
         preferred_tokens = [str(token).lower() for token in (preferred_tokens or [])]
         excluded_tokens = [str(token).lower() for token in (excluded_tokens or [])]
+        hard_excluded_tokens = [str(token).lower() for token in (hard_excluded_tokens or [])]
 
         def _iter_currency_matches(text_value: str):
             for match in re.finditer(r"\$\s*[_:\-\.]*\s*([0-9][0-9,]*(?:\.\d{2})?)", text_value):
@@ -2699,17 +2740,13 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
 
                         if excluded_tokens and any(token in amount_context_lower for token in excluded_tokens):
                             continue
-                        if any(token in amount_context_lower for token in ["replacement fee", "replacement", "damaged", "lost", "unreturned", "decal", "security deposit", "move-out", "move out", "fine", "violation", "unauthorized animal", "animal"]):
+                        if any(token in amount_context_lower for token in hard_excluded_tokens):
                             continue
 
                         score = 1
                         if preferred_tokens:
                             score += sum(1 for token in preferred_tokens if token in amount_context_lower)
                         if "monthly" in amount_context_lower:
-                            score += 2
-                        if "cost for parking" in window_lower:
-                            score += 3
-                        if "resident agrees to pay" in window_lower:
                             score += 2
                         if fallback_anchor_token and fallback_anchor_token in window_lower:
                             score += 1
@@ -2750,19 +2787,13 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
                     amount_context_lower = amount_context.lower()
                     if excluded_tokens and any(token in amount_context_lower for token in excluded_tokens):
                         continue
-                    if any(token in amount_context_lower for token in ["replacement fee", "replacement", "damaged", "lost", "unreturned", "decal", "security deposit", "move-out", "move out", "fine", "violation", "unauthorized animal", "animal"]):
+                    if any(token in amount_context_lower for token in hard_excluded_tokens):
                         continue
                     if fallback_anchor_token and fallback_anchor_token.lower() not in amount_context_lower:
                         continue
                     score = 1 + sum(1 for token in preferred_tokens if token in amount_context_lower)
                     if "monthly" in amount_context_lower:
                         score += 2
-                    if "cost for parking" in amount_context_lower:
-                        score += 3
-                    if "resident agrees to pay" in amount_context_lower:
-                        score += 2
-                    if "per vehicle" in amount_context_lower or "per space" in amount_context_lower:
-                        score += 1
                     candidate = {
                         "amount": amount,
                         "evidence": re.sub(r"\s+", " ", amount_context).strip(),
@@ -2789,11 +2820,13 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         if evidence_rows:
             evidence_rows[-1]["page_number"] = parking_candidate.get("page_number")
 
+    pet_rent_rule = get_term_extraction_rule("PET_RENT")
     pet_candidate = _extract_amount_by_anchors(
         source_pages=pages,
-        anchor_patterns=[r"pet\s+rent", r"pet\s+fee"],
-        preferred_tokens=["pet", "monthly"],
-        excluded_tokens=["parking", "application fee", "admin fee", "administrative fee"],
+        anchor_patterns=list(pet_rent_rule.get("anchor_patterns") or []),
+        preferred_tokens=list(pet_rent_rule.get("preferred_tokens") or []),
+        excluded_tokens=list(pet_rent_rule.get("excluded_tokens") or []),
+        hard_excluded_tokens=list(pet_rent_rule.get("hard_excluded_tokens") or []),
     )
     if pet_candidate:
         term_key_suffix = "PET"
