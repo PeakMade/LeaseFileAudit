@@ -100,11 +100,10 @@
 		},
 		"AMENITY_PREMIUM": {
 			"include_patterns": [
-				"amenity\\s+premium",
-				"premium\\s+feature",
-				"premium\\s+amount",
 				"exclusive\\s+bedspace",
-				"bedspace\\s+premium"
+				"bedspace\\s+addendum",
+				"bedspace\\s+premium",
+				"exclusive\\s+bedspace\\s+addendum"
 			],
 			"exclude_patterns": [
 				"income",
@@ -112,7 +111,10 @@
 				"wage",
 				"floor\\s*plan\\s*rate\\s*addendum",
 				"floorplan\\s*rate\\s*addendum",
-				"floor\\s*plan\\s*rate"
+				"floor\\s*plan\\s*rate",
+				"possible\\s+premium",
+				"premium\\s+features\\s+below",
+				"potential\\s+rent\\s+range"
 			],
 			"focus_patterns": [
 				"exclusive\\s+bedspace\\s+addendum",
@@ -120,9 +122,7 @@
 				"exclusive\\s+bedspace"
 			],
 			"source_order": [
-				"focus",
-				"addenda",
-				"all_text"
+				"focus"
 			]
 		},
 		"PARKING": {
