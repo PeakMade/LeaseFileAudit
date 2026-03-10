@@ -37,7 +37,8 @@ Property managers need to ensure that all scheduled rent and fee charges are bil
 - **Exception Management**: Track and resolve billing exceptions by month and AR code
 - **SharePoint Integration**: Store audit runs, track exceptions, and log user activity in SharePoint
 - **Entrata Lease-Term Sidecar**: Extract lease expectations from Entrata documents and overlay on AR-code review without changing core match statuses
-- **Portfolio Dashboard**: Real-time KPIs showing current and historical undercharge/overcharge
+- **Portfolio Dashboard**: Aggregated view showing latest audit data for each property across all runs with real-time KPIs
+- **Immutable Audit History**: Each property upload creates a new run preserving complete audit trail
 - **Drill-Down Views**: Property → Lease → Exception detail hierarchy
 - **Azure AD Authentication**: Secure, role-based access using Microsoft accounts
 
@@ -337,9 +338,25 @@ StorageService:
 **Key Routes**:
 - `GET /` - Upload form and recent runs
 - `POST /upload` - Process Excel file, run audit
-- `GET /portfolio/<run_id>` - Portfolio KPI dashboard
+- `POST /upload-api-property` - Process API-based property audit (Entrata direct fetch)
+- `GET /portfolio` or `GET /portfolio/<run_id>` - Portfolio dashboard (aggregates latest data per property across all runs)
 - `GET /property/<property_id>/<run_id>` - Property exceptions grouped by lease
 - `GET /lease/<run_id>/<property_id>/<lease_id>` - Detailed lease exceptions
+
+**Portfolio View Behavior** (updated 2026-03-10):
+- **Architecture**: Each property upload stores ONLY that property's data (independent audit trail)
+- **Aggregation**: Portfolio shows the most recent audit data for each property across ALL runs
+- **How it works**:
+  1. Queries all property-scoped snapshots from RunDisplaySnapshots list
+  2. Groups by `PropertyId` and selects the latest `RunId` for each property
+  3. Aggregates KPIs: total undercharge, overcharge, exceptions, match rate
+  4. Each property row links to its specific run_id for drill-down
+- **Benefits**:
+  - Each property has clean, independent audit history
+  - No duplicate data stored across runs
+  - Simpler architecture (no baseline merging)
+  - Portfolio always shows current state of all properties
+- **Use case**: Upload property A (creates run_1 with only A's data), upload property B (creates run_2 with only B's data) → Portfolio shows both A (from run_1) + B (from run_2)
 
 **API Endpoints** (for AJAX):
 - `POST /api/exception-months` - Update month status
@@ -602,6 +619,9 @@ storage.upsert_exception_month_to_sharepoint_list({
 
 **Read/write behavior**:
 - On save, app writes `bucket_results` + `findings` rows to `AuditRuns`.
+- **Write mode**: Synchronous by default (blocks until complete) to prevent partial data display.
+  - Set `ASYNC_AUDIT_RESULTS_WRITE=true` to enable background writes (faster uploads, but may show incomplete data).
+  - Synchronous writes take ~2 minutes for 2,700+ rows but ensure all data is available immediately.
 - On load, app reads `AuditRuns` first and falls back to CSV files if list rows are unavailable.
 - Existing CSV run artifacts remain as compatibility fallback.
 - Write path uses Microsoft Graph `$batch` API with automatic retry logic and configurable batch sizes.
@@ -834,6 +854,12 @@ MICROSOFT_PROVIDER_AUTHENTICATION_SECRET=<secret>
 
 # SharePoint Connection
 SHAREPOINT_SITE_URL=https://peakcampus.sharepoint.com/sites/BaseCampApps
+
+# SharePoint Performance Tuning
+ASYNC_AUDIT_RESULTS_WRITE=false  # Synchronous writes (default - prevents partial data)
+ASYNC_AUDIT_RESULTS_WRITE=true   # Background writes (faster but may show incomplete data)
+SHAREPOINT_BATCH_SIZE_AUDITRUNS=10  # Override batch size for AuditRuns (default: 10)
+SHAREPOINT_BATCH_SIZE_SNAPSHOTS=20  # Override batch size for snapshots (default: 20)
 
 # Authentication Mode
 REQUIRE_AUTH=false  # Development
@@ -1221,14 +1247,49 @@ def calculate_cumulative_metrics(run_id):
   2. Compare `bucket_rows` count in dispatch log vs rows loaded from SharePoint
   3. Example: `Dispatched background AuditRuns write: bucket_rows=1603` but `Loaded audit results: rows=80`
 - Solution (implemented 2026-03-10):
-  - Reduced default AuditRuns batch size from 20 to 10 items
-  - Added exponential backoff retry logic for 429/503/504 errors
-  - Added 0.5s delays between batches
-  - Individual failed items automatically retry up to 3 times
+  - **Changed to synchronous writes by default** (`ASYNC_AUDIT_RESULTS_WRITE=false`)
+  - Property uploads now wait for complete SharePoint list write before returning
+  - Ensures all data is available when viewing property audit
+  - Trade-off: Uploads take ~2 minutes instead of 20 seconds, but no partial data
+  - Alternative: Keep async writes enabled, increase batch size, monitor completion logs
 - Prevention:
   - Ensure AuditRuns list has proper indexes on RunId, ResultType, PropertyId
   - Lower batch size further if throttling persists: set `SHAREPOINT_BATCH_SIZE_AUDITRUNS=5`
   - Monitor batch write completion: `[STORAGE] ✅ Background AuditRuns write finished`
+  - If using async writes, wait for completion log before viewing property
+
+**Properties disappear from portfolio after sequential uploads (Troubleshooting):**
+- Symptom: Upload property A → appears in portfolio. Upload property B → property A disappears from portfolio.
+- Root cause: SharePoint eventual consistency. When property B is uploaded, it queries for the latest run to use as baseline, but SharePoint's folder list hasn't updated yet to show property A's run.
+- Diagnosis:
+  1. Check logs for `[PROPERTY SCOPE] Using baseline from list_runs: run_xxx`
+  2. If all properties are missing, check `[SNAPSHOT][PORTFOLIO] Aggregated X properties from latest runs`
+- Solution (implemented 2026-03-10):
+  - Session-based baseline tracking: Each property upload stores `run_id` in Flask session
+  - Next property upload checks session first: `[PROPERTY SCOPE] Using last saved run from session as baseline`
+  - Falls back to SharePoint list_runs() only if session is empty
+  - Portfolio dashboard now aggregates latest snapshot for each property across ALL runs (not limited to single run)
+- Technical details:
+  - `session['last_saved_run_id']` set after each save_run()
+  - Property overlay uses session baseline immediately (no SharePoint dependency)
+  - Portfolio view calls `load_latest_property_snapshots_across_runs()` which queries all property snapshots and groups by property_id to get most recent data
+  - Each property row links to its specific run_id for drill-down
+
+**Property names missing or showing as "Property XXXXX" (Troubleshooting):**
+- Symptom: Portfolio or property view shows generic property names instead of actual names from picklist.
+- Root cause: Older runs saved without property_name_map in metadata, or baseline run missing property names for all properties.
+- Diagnosis:
+  1. Check `[OVERLAY] Baseline property_name_map:` log - should show all baseline properties
+  2. Check `[OVERLAY] Merged property_name_map:` - should include baseline + newly uploaded property
+  3. Check `[STORAGE] Backfilled property name from data:` - indicates names extracted from DataFrames
+- Solution (implemented 2026-03-10):
+  - Property names saved to metadata JSON: `property_name_map: {property_id: property_name}`
+  - Property names merged during overlay: baseline map + scoped map (scoped overrides on conflict)
+  - Property names backfilled from actual_detail and expected_detail DataFrames when loading runs
+  - Property name priority in snapshots: picklist → API response → DataFrame backfill → "Property {id}"
+- Prevention:
+  - Ensure Properties_0 SharePoint list has PROPERTY_NAME or PropertyName column populated
+  - API uploads automatically fetch property names from picklist before creating runs
 
 ### Scenario 5: Audit Period Filtering Not Working
 

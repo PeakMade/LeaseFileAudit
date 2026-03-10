@@ -477,6 +477,25 @@ def _overlay_property_scope_results(scoped_results: dict, baseline_run_data: dic
 
     # Keep variance_detail scoped (no stable PROPERTY_ID column guaranteed in this dataset).
     merged['variance_detail'] = scoped_results.get('variance_detail', pd.DataFrame())
+    
+    # Merge property_name_map: baseline properties + scoped property (scoped overrides on conflict)
+    merged_property_name_map = {}
+    if baseline_run_data.get('property_name_map'):
+        logger.info(f"[OVERLAY] Baseline property_name_map: {baseline_run_data['property_name_map']}")
+        merged_property_name_map.update(baseline_run_data['property_name_map'])
+    if scoped_results.get('property_name_map'):
+        logger.info(f"[OVERLAY] Scoped property_name_map: {scoped_results['property_name_map']}")
+        merged_property_name_map.update(scoped_results['property_name_map'])
+    if merged_property_name_map:
+        logger.info(f"[OVERLAY] Merged property_name_map: {merged_property_name_map}")
+        merged['property_name_map'] = merged_property_name_map
+    
+    # Log property IDs in merged bucket_results
+    if not merged['bucket_results'].empty:
+        property_col = next((col for col in [CanonicalField.PROPERTY_ID.value, 'property_id'] if col in merged['bucket_results'].columns), None)
+        if property_col:
+            unique_properties = merged['bucket_results'][property_col].unique()
+            logger.info(f"[OVERLAY] Properties in merged bucket_results: {unique_properties}")
 
     merged['property_summary'] = calculate_property_summary(
         merged['bucket_results'],
@@ -1795,12 +1814,24 @@ def upload():
         if scoped_property_ids:
             overlay_started = perf_counter()
             try:
-                prior_runs = storage.list_runs(limit=2)
-                for run in prior_runs:
-                    candidate = run.get('run_id')
-                    if candidate and candidate != run_id:
-                        base_run_id = candidate
-                        break
+                # PRIORITY 1: Use the most recently saved run from this session (avoids SharePoint eventual consistency)
+                last_saved_run = session.get('last_saved_run_id')
+                if last_saved_run and last_saved_run != run_id:
+                    base_run_id = last_saved_run
+                    logger.info(
+                        f"[PROPERTY SCOPE] Using last saved run from session as baseline: {base_run_id}"
+                    )
+                else:
+                    # PRIORITY 2: Fall back to SharePoint list_runs
+                    prior_runs = storage.list_runs(limit=2)
+                    for run in prior_runs:
+                        candidate = run.get('run_id')
+                        if candidate and candidate != run_id:
+                            base_run_id = candidate
+                            logger.info(
+                                f"[PROPERTY SCOPE] Using baseline from list_runs: {base_run_id}"
+                            )
+                            break
 
                 if base_run_id:
                     logger.info(
@@ -1847,6 +1878,11 @@ def upload():
 
         # New run added: invalidate run-picker caches.
         invalidate_runs_cache()
+        
+        # Store this run_id in session for next property upload to use as baseline
+        session['last_saved_run_id'] = run_id
+        logger.info(f"[SESSION] Stored run {run_id} as last_saved_run_id for next baseline")
+        
         save_run_seconds = perf_counter() - save_run_started
         
         # 🧹 CLEAR CACHE after new upload
@@ -1993,6 +2029,17 @@ def upload_api_property():
         storage = get_storage_service()
         run_id = storage.generate_run_id()
 
+        # Load property name from picklist (authoritative source for property names)
+        property_name_from_picklist = None
+        try:
+            picklist = cached_load_api_property_picklist(_session_cache_token())
+            for item in picklist:
+                if str(item.get('property_id')) == str(property_id):
+                    property_name_from_picklist = item.get('property_name')
+                    break
+        except Exception as picklist_error:
+            logger.warning(f"[API UPLOAD] Failed to load property name from picklist: {picklist_error}")
+
         api_fetch_started = perf_counter()
         api_sources = fetch_property_api_sources(
             property_id=property_id,
@@ -2008,6 +2055,10 @@ def upload_api_property():
             flash('API returned no scheduled charges or AR transactions for that property.', 'warning')
             return redirect(url_for('main.index'))
 
+        # Use picklist property name if available, otherwise use API source name
+        property_name = property_name_from_picklist or api_sources.get('property_name') or f"Property {property_id}"
+        logger.info(f"[API UPLOAD] Property {property_id} name: {property_name} (source: {'picklist' if property_name_from_picklist else 'API fallback'})")
+
         execute_started = perf_counter()
         results = execute_audit_run(
             file_path=None,
@@ -2020,17 +2071,33 @@ def upload_api_property():
                 config.scheduled_source.name: scheduled_raw,
             },
         )
+        
+        # Override property_name_map with picklist name for snapshot persistence
+        if property_name_from_picklist:
+            results['property_name_map'] = {property_id: property_name_from_picklist}
         execute_seconds = perf_counter() - execute_started
 
         base_run_id = None
         overlay_seconds = 0.0
         try:
-            prior_runs = storage.list_runs(limit=2)
-            for run in prior_runs:
-                candidate = run.get('run_id')
-                if candidate and candidate != run_id:
-                    base_run_id = candidate
-                    break
+            # PRIORITY 1: Use the most recently saved run from this session (avoids SharePoint eventual consistency)
+            last_saved_run = session.get('last_saved_run_id')
+            if last_saved_run and last_saved_run != run_id:
+                base_run_id = last_saved_run
+                logger.info(
+                    f"[PROPERTY API SCOPE] Using last saved run from session as baseline: {base_run_id}"
+                )
+            else:
+                # PRIORITY 2: Fall back to SharePoint list_runs
+                prior_runs = storage.list_runs(limit=2)
+                for run in prior_runs:
+                    candidate = run.get('run_id')
+                    if candidate and candidate != run_id:
+                        base_run_id = candidate
+                        logger.info(
+                            f"[PROPERTY API SCOPE] Using baseline from list_runs: {base_run_id}"
+                        )
+                        break
 
             if base_run_id:
                 overlay_started = perf_counter()
@@ -2064,7 +2131,7 @@ def upload_api_property():
         }
         metadata['api_ingest'] = {
             'property_id': property_id,
-            'property_name': api_sources.get('property_name') or f"Property {property_id}",
+            'property_name': property_name,  # Use property name from picklist or API fallback
             'lease_count': int(api_sources.get('lease_count') or 0),
         }
         if audit_year or audit_month:
@@ -2086,6 +2153,10 @@ def upload_api_property():
             property_name_map=results.get("property_name_map"),
         )
         save_run_seconds = perf_counter() - save_run_started
+
+        # Store this run_id in session for next property upload to use as baseline
+        session['last_saved_run_id'] = run_id
+        logger.info(f"[SESSION] Stored run {run_id} as last_saved_run_id for next baseline")
 
         cache_clear_started = perf_counter()
         invalidate_runs_cache()
@@ -2153,66 +2224,68 @@ def upload_api_property():
 @bp.route('/portfolio/<run_id>')
 @require_auth
 def portfolio(run_id: str = None):
-    """Portfolio view - Cumulative KPIs across all runs."""
+    """Portfolio view - Aggregated latest data for each property across all runs."""
     try:
         route_started = perf_counter()
         cache_token = _session_cache_token()
-        if not run_id:
-            latest_run = get_latest_run(cache_token)
-            run_id = latest_run.get('run_id')
+        storage = get_storage_service()
+        
+        # Load latest snapshot for each property across ALL runs
+        property_snapshots = storage.load_latest_property_snapshots_across_runs()
+        
+        # If no properties found, fall back to showing latest run
+        if not property_snapshots:
             if not run_id:
-                flash('No audit runs available', 'warning')
-                return redirect(url_for('main.index'))
+                latest_run = get_latest_run(cache_token)
+                run_id = latest_run.get('run_id')
+                if not run_id:
+                    flash('No audit runs available', 'warning')
+                    return redirect(url_for('main.index'))
+            
+            property_snapshots = cached_load_run_display_snapshots_for_run(
+                run_id=run_id,
+                scope_type='property',
+                session_cache_key=cache_token
+            )
 
-        try:
-            metadata = cached_load_metadata(run_id, cache_token)
-        except Exception:
-            metadata = {'timestamp': 'Unknown'}
-
-        # Snapshot-only header metrics.
-        portfolio_snapshot = cached_load_run_display_snapshot(
-            run_id=run_id,
-            scope_type='portfolio',
-            session_cache_key=cache_token
-        )
+        # Aggregate KPIs from all property snapshots
+        total_exceptions = sum(p.get('exception_count', 0) for p in property_snapshots)
+        total_undercharge = sum(p.get('undercharge', 0) for p in property_snapshots)
+        total_overcharge = sum(p.get('overcharge', 0) for p in property_snapshots)
+        total_buckets = sum(p.get('total_buckets', 0) for p in property_snapshots)
+        matched_buckets = sum(p.get('matched_buckets', 0) for p in property_snapshots)
+        match_rate = (matched_buckets / total_buckets * 100) if total_buckets > 0 else 0
 
         kpis = {
-            'current_undercharge': 0.0,
+            'current_undercharge': float(total_undercharge),
             'historical_undercharge': 0.0,
-            'current_overcharge': 0.0,
+            'current_overcharge': float(total_overcharge),
             'historical_overcharge': 0.0,
-            'open_exceptions': 0,
-            'match_rate': 0.0,
+            'open_exceptions': int(total_exceptions),
+            'match_rate': float(match_rate),
             'total_runs': 0,
-            'most_recent_run': {'run_id': run_id} if run_id else None,
+            'most_recent_run': None,
         }
-
-        if portfolio_snapshot:
-            logger.info(
-                f"[SNAPSHOT][PORTFOLIO] Using RunDisplaySnapshots for run {run_id}: "
-                f"exception_count={portfolio_snapshot.get('exception_count')}, "
-                f"undercharge={portfolio_snapshot.get('undercharge')}, "
-                f"overcharge={portfolio_snapshot.get('overcharge')}, "
-                f"match_rate={portfolio_snapshot.get('match_rate')}"
-            )
-            kpis['open_exceptions'] = int(portfolio_snapshot.get('exception_count', 0) or 0)
-            kpis['current_undercharge'] = float(portfolio_snapshot.get('undercharge', 0) or 0)
-            kpis['current_overcharge'] = float(portfolio_snapshot.get('overcharge', 0) or 0)
-            kpis['match_rate'] = float(portfolio_snapshot.get('match_rate', 0) or 0)
+        
+        # Get metadata from the most recent run_id in property snapshots
+        if property_snapshots:
+            # Find the most recent run_id from the snapshots
+            most_recent_run_id = max(p.get('run_id') for p in property_snapshots if p.get('run_id'))
+            kpis['most_recent_run'] = {'run_id': most_recent_run_id}
+            try:
+                metadata = cached_load_metadata(most_recent_run_id, cache_token)
+            except Exception:
+                metadata = {'timestamp': 'Unknown'}
         else:
-            logger.warning(
-                f"[SNAPSHOT][PORTFOLIO] Snapshot missing for run {run_id}; rendering with zeroed KPIs"
-            )
+            metadata = {'timestamp': 'Unknown'}
 
-        # Snapshot-only property rows (no bucket/findings recompute path).
-        property_snapshots = cached_load_run_display_snapshots_for_run(
-            run_id=run_id,
-            scope_type='property',
-            session_cache_key=cache_token
+        logger.info(
+            f"[SNAPSHOT][PORTFOLIO] Aggregated {len(property_snapshots)} properties from latest runs: "
+            f"exception_count={total_exceptions}, undercharge={total_undercharge}, "
+            f"overcharge={total_overcharge}, match_rate={match_rate:.2f}%"
         )
-        property_name_lookup = cached_load_property_name_lookup(run_id, cache_token)
-        logger.info(f"[SNAPSHOT][PORTFOLIO] Loaded {len(property_snapshots)} property snapshot rows for run {run_id}")
 
+        # Build property rows for display
         properties = []
         for snapshot_row in property_snapshots:
             property_id = snapshot_row.get('property_id')
@@ -2222,14 +2295,17 @@ def portfolio(run_id: str = None):
             undercharge = float(snapshot_row.get('undercharge', 0) or 0)
             overcharge = float(snapshot_row.get('overcharge', 0) or 0)
             exception_count = int(snapshot_row.get('exception_count', 0) or 0)
+            
+            # Use run_id from this specific property's snapshot (for drill-down links)
+            property_run_id = snapshot_row.get('run_id')
 
             properties.append({
                 'property_name': (
                     _clean_property_name(snapshot_row.get('property_name'))
-                    or property_name_lookup.get(_normalize_property_id_token(property_id) or '')
                     or f"Property {property_id}"
                 ),
                 'property_id': property_id,
+                'run_id': property_run_id,  # Store which run this property data is from
                 'total_lease_intervals': int(snapshot_row.get('total_lease_intervals', 0) or 0),
                 'exception_buckets': exception_count,
                 'total_undercharge': undercharge,
@@ -2237,15 +2313,14 @@ def portfolio(run_id: str = None):
                 'total_variance': float(snapshot_row.get('total_variance', undercharge + overcharge) or (undercharge + overcharge)),
             })
 
-        if portfolio_snapshot and kpis['open_exceptions'] == 0 and properties:
-            # Safety fallback when header snapshot exists but exception_count is zero unexpectedly.
-            kpis['open_exceptions'] = int(sum(p['exception_buckets'] for p in properties))
-
         properties.sort(key=lambda p: p.get('exception_buckets', 0), reverse=True)
+        
+        # Use the most recent run_id for the render (if available)
+        display_run_id = kpis['most_recent_run']['run_id'] if kpis.get('most_recent_run') else None
         
         response = render_template(
             'portfolio.html',
-            run_id=run_id,
+            run_id=display_run_id,
             metadata=metadata,
             kpis=kpis,
             properties=properties,

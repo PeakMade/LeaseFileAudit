@@ -793,6 +793,15 @@ class StorageService:
                 expected_detail=expected_detail,
                 property_name_map=property_name_map,
             )
+            
+            # Log snapshot details
+            property_snapshots = [row for row in snapshot_rows if row.get('ScopeType') == 'property']
+            property_ids_in_snapshots = [row.get('PropertyId') for row in property_snapshots]
+            logger.info(
+                f"[STORAGE] Building {len(snapshot_rows)} snapshot rows for run {run_id}: "
+                f"{len(property_snapshots)} property snapshots with IDs {property_ids_in_snapshots}"
+            )
+            
             payload_rows = [{'fields': row} for row in snapshot_rows]
 
             snapshot_write_started = perf_counter()
@@ -1350,6 +1359,94 @@ class StorageService:
             )
             return []
 
+    def load_latest_property_snapshots_across_runs(self) -> List[Dict[str, Any]]:
+        """Load the most recent snapshot for each property across ALL runs (for aggregated portfolio view)."""
+        if not self._can_use_sharepoint_lists():
+            return []
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return []
+
+            list_id = self._get_run_display_snapshots_list_id()
+            if not list_id:
+                return []
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            # Load ALL property-scoped snapshots (no RunId filter)
+            params = {
+                '$expand': 'fields',
+                '$filter': "fields/ScopeType eq 'property'",
+                '$top': 5000,
+                '$orderby': 'fields/RunId desc'  # Latest runs first
+            }
+
+            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Failed loading all property snapshots: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return []
+
+            # Group by property_id and keep the latest (first occurrence due to ordering)
+            latest_by_property: Dict[int, Dict[str, Any]] = {}
+            
+            for item in response.json().get('value', []):
+                fields = item.get('fields', {})
+                
+                property_id_int = self._safe_int(fields.get('PropertyId'))
+                if property_id_int is None:
+                    continue
+                
+                # Skip if we already have a snapshot for this property (first one is latest due to orderby)
+                if property_id_int in latest_by_property:
+                    continue
+                
+                exception_count = fields.get('ExceptionCountStatic')
+                if exception_count is None:
+                    exception_count = fields.get('ExceptionCountStatistic')
+                
+                undercharge = float(fields.get('UnderchargeStatic') or 0)
+                overcharge = float(fields.get('OverchargeStatic') or 0)
+                
+                latest_by_property[property_id_int] = {
+                    'snapshot_key': fields.get('SnapshotKey'),
+                    'run_id': fields.get('RunId'),
+                    'scope_type': 'property',
+                    'property_id': property_id_int,
+                    'property_name': fields.get('PropertyNameStatic') or fields.get('PropertyName'),
+                    'exception_count': int(float(exception_count or 0)),
+                    'undercharge': undercharge,
+                    'overcharge': overcharge,
+                    'total_variance': float(fields.get('TotalVarianceStatic') or (undercharge + overcharge)),
+                    'match_rate': float(fields.get('MatchRateStatic') or 0),
+                    'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
+                    'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
+                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalsStatic') or 0))
+                }
+            
+            snapshot_rows = list(latest_by_property.values())
+            snapshot_rows.sort(key=lambda row: row.get('exception_count', 0), reverse=True)
+            
+            logger.info(
+                f"[STORAGE] ✅ Loaded latest snapshots for {len(snapshot_rows)} properties across all runs"
+            )
+            return snapshot_rows
+        except Exception as e:
+            logger.error(
+                f"[STORAGE] Error loading latest property snapshots across runs: {e}",
+                exc_info=True
+            )
+            return []
+
     def validate_run_display_snapshots(self, run_id: str, bucket_results: pd.DataFrame) -> Dict[str, Any]:
         """Validate that required run display snapshots exist and counts align with bucket scope."""
         validation = {
@@ -1730,7 +1827,7 @@ class StorageService:
         property_id: Optional[int] = None,
         lease_interval_id: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Load bucket results from AuditRuns (preferred) with CSV fallback."""
+        """Load bucket results from SharePoint list (preferred) with CSV fallback."""
         bucket_results = self._load_results_from_sharepoint_list(
             run_id,
             'bucket_result',
@@ -1756,7 +1853,7 @@ class StorageService:
         property_id: Optional[int] = None,
         lease_interval_id: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Load findings from AuditRuns (preferred) with CSV fallback."""
+        """Load findings from SharePoint list (preferred) with CSV fallback."""
         findings = self._load_results_from_sharepoint_list(
             run_id,
             'finding',
@@ -3112,7 +3209,7 @@ class StorageService:
         logger.info(f"[STORAGE] 💾 Starting save for run: {run_id}")
         self.create_run_dir(run_id)
 
-        write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'true').lower() == 'true'
+        write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'false').lower() == 'true'
         write_metrics_async = os.getenv('ASYNC_METRICS_WRITE', 'true').lower() == 'true'
         snapshot_validation_async = os.getenv('ASYNC_SNAPSHOT_VALIDATION', 'true').lower() == 'true'
         
@@ -3153,6 +3250,10 @@ class StorageService:
         
         # Save metadata
         logger.info(f"[STORAGE] 📋 Saving metadata...")
+        # Include property_name_map in metadata for baseline overlay merging
+        if property_name_map:
+            metadata = dict(metadata)  # Make a copy to avoid mutating caller's dict
+            metadata['property_name_map'] = {str(k): v for k, v in property_name_map.items()}
         self._save_json(metadata, run_id, "run_meta.json")
         files_saved.append("run_meta.json")
         
@@ -3288,13 +3389,47 @@ class StorageService:
                         pass
                     variance_detail[col] = series
         
+        # Load metadata and extract property_name_map if present
+        metadata = self.load_metadata(run_id)
+        property_name_map = {}
+        if metadata.get('property_name_map'):
+            # Convert string keys back to integers
+            property_name_map = {int(k): v for k, v in metadata['property_name_map'].items()}
+        
+        # Populate missing property names from detail DataFrames (backfill for incomplete metadata)
+        def _extract_property_names_from_detail(detail_df: pd.DataFrame, target_map: dict) -> None:
+            if detail_df is None or len(detail_df) == 0:
+                return
+            
+            property_col = 'PROPERTY_ID' if 'PROPERTY_ID' in detail_df.columns else 'property_id'
+            name_col = 'PROPERTY_NAME' if 'PROPERTY_NAME' in detail_df.columns else 'property_name'
+            
+            if property_col not in detail_df.columns or name_col not in detail_df.columns:
+                return
+            
+            for _, row in detail_df[[property_col, name_col]].dropna().iterrows():
+                property_id_int = self._safe_int(row.get(property_col))
+                property_name = str(row.get(name_col)).strip()
+                if property_id_int is None or not property_name or property_name.lower() == 'nan':
+                    continue
+                if property_id_int not in target_map:
+                    target_map[property_id_int] = property_name
+                    logger.debug(
+                        f"[STORAGE] Backfilled property name from data: {property_id_int} -> {property_name}"
+                    )
+        
+        # Extract from actual_detail first (most authoritative), then expected_detail
+        _extract_property_names_from_detail(actual_detail, property_name_map)
+        _extract_property_names_from_detail(expected_detail, property_name_map)
+        
         return {
             "expected_detail": expected_detail,
             "actual_detail": actual_detail,
             "bucket_results": bucket_results,
             "findings": findings,
             "variance_detail": variance_detail,
-            "metadata": self.load_metadata(run_id)
+            "metadata": metadata,
+            "property_name_map": property_name_map if property_name_map else None
         }
     
     def load_metadata(self, run_id: str) -> Dict[str, Any]:
