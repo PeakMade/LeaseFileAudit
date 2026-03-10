@@ -604,7 +604,20 @@ storage.upsert_exception_month_to_sharepoint_list({
 - On save, app writes `bucket_results` + `findings` rows to `AuditRuns`.
 - On load, app reads `AuditRuns` first and falls back to CSV files if list rows are unavailable.
 - Existing CSV run artifacts remain as compatibility fallback.
-- Write path uses Microsoft Graph `$batch` (20 rows/request) for faster persistence, with per-row fallback if a batch call fails.
+- Write path uses Microsoft Graph `$batch` API with automatic retry logic and configurable batch sizes.
+
+**Batch write resilience (implemented 2026-03-10)**:
+- **Default batch sizes**: 10 items for AuditRuns, 20 items for snapshots
+- **Retry logic**: Automatic exponential backoff for 429/503/504 throttling errors
+  - Individual items: up to 3 retries with 0.5s → 1s → 2s backoff
+  - Batch requests: up to 3 retries with 1s → 2s backoff
+  - Failed batches automatically fall back to individual item posts with retry
+- **Delays between batches**: 0.5s pause reduces API pressure and throttling
+- **Environment variables** (optional):
+  - `SHAREPOINT_BATCH_SIZE_AUDITRUNS` - Override AuditRuns batch size (default: 10)
+  - `SHAREPOINT_BATCH_SIZE_SNAPSHOTS` - Override snapshots batch size (default: 20)
+  - `SHAREPOINT_BATCH_SIZE` - Global fallback batch size
+- **Logging**: Look for `[STORAGE] Batch X/Y throttled` to monitor retry activity
 
 **Indexing required for reliable filtered reads**:
 - Index `RunId` (required)
@@ -1199,6 +1212,23 @@ def calculate_cumulative_metrics(run_id):
    - `Total Overcharge` = sum of unresolved month-level `max(0, actual_total - expected_total)`
 - Scope note: This fix is applied in `lease_view()` summary totals only; drawer rendering/behavior is intentionally unchanged.
 - Resolved-month exclusion behavior remains unchanged (`month_status == 'Resolved'` is still excluded from current totals).
+
+**Property view shows fewer leases than expected (Troubleshooting):**
+- Symptom: After uploading a property, only 2-5 leases appear in the property view, but the undercharge/overcharge totals reflect all 40+ leases.
+- Root cause: SharePoint batch write failures (504 Gateway Timeout errors) causing only partial bucket_results to persist. When background write completes, only the successfully written rows are available for display.
+- Diagnosis:
+  1. Check terminal logs for `[STORAGE] Batch X/Y throttled` or `504` errors
+  2. Compare `bucket_rows` count in dispatch log vs rows loaded from SharePoint
+  3. Example: `Dispatched background AuditRuns write: bucket_rows=1603` but `Loaded audit results: rows=80`
+- Solution (implemented 2026-03-10):
+  - Reduced default AuditRuns batch size from 20 to 10 items
+  - Added exponential backoff retry logic for 429/503/504 errors
+  - Added 0.5s delays between batches
+  - Individual failed items automatically retry up to 3 times
+- Prevention:
+  - Ensure AuditRuns list has proper indexes on RunId, ResultType, PropertyId
+  - Lower batch size further if throttling persists: set `SHAREPOINT_BATCH_SIZE_AUDITRUNS=5`
+  - Monitor batch write completion: `[STORAGE] ✅ Background AuditRuns write finished`
 
 ### Scenario 5: Audit Period Filtering Not Working
 

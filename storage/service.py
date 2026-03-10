@@ -15,7 +15,7 @@ from datetime import datetime
 import math
 import pandas as pd
 import requests
-from time import perf_counter
+from time import perf_counter, sleep
 from urllib.parse import unquote
 from activity_logging.sharepoint import _get_app_only_token
 
@@ -847,7 +847,9 @@ class StorageService:
         except Exception:
             pass
 
-        batch_size = max(1, min(20, int(batch_size or 20)))
+        # Default to smaller batch size (10) for AuditRuns to avoid 504 timeouts
+        default_size = 10 if 'auditruns' in context_lower else 20
+        batch_size = max(1, min(20, int(batch_size or default_size)))
 
         batch_url = "https://graph.microsoft.com/v1.0/$batch"
         batch_headers = {
@@ -861,18 +863,48 @@ class StorageService:
             'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly',
         }
 
-        def _post_single(payload: Dict[str, Any], row_idx: int) -> bool:
-            create_response = requests.post(items_url, headers=item_headers, json=payload, timeout=60)
-            if create_response.status_code in [200, 201]:
-                return True
-            logger.warning(
-                f"[STORAGE] Failed creating {context_label} row {row_idx}: "
-                f"{create_response.status_code} - {create_response.text}"
-            )
+        def _post_single(payload: Dict[str, Any], row_idx: int, max_retries: int = 3) -> bool:
+            """Post single item with retry logic for throttling errors."""
+            for attempt in range(max_retries):
+                try:
+                    create_response = requests.post(items_url, headers=item_headers, json=payload, timeout=60)
+                    if create_response.status_code in [200, 201]:
+                        return True
+                    
+                    # Retry on throttling errors
+                    if create_response.status_code in [429, 503, 504] and attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) * 0.5  # Exponential backoff: 0.5s, 1s, 2s
+                        logger.warning(
+                            f"[STORAGE] Throttled creating {context_label} row {row_idx} "
+                            f"({create_response.status_code}), retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})"
+                        )
+                        sleep(wait_time)
+                        continue
+                    
+                    logger.warning(
+                        f"[STORAGE] Failed creating {context_label} row {row_idx}: "
+                        f"{create_response.status_code} - {create_response.text}"
+                    )
+                    return False
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) * 0.5
+                        logger.warning(
+                            f"[STORAGE] Exception creating {context_label} row {row_idx}, "
+                            f"retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries}): {e}"
+                        )
+                        sleep(wait_time)
+                        continue
+                    logger.warning(f"[STORAGE] Failed creating {context_label} row {row_idx}: {e}")
+                    return False
             return False
 
         created = 0
+        batch_count = 0
+        total_batches = (len(row_payloads) + batch_size - 1) // batch_size
+        
         for start in range(0, len(row_payloads), batch_size):
+            batch_count += 1
             chunk = row_payloads[start:start + batch_size]
             batch_requests = []
             row_ids = []
@@ -888,59 +920,92 @@ class StorageService:
                     'body': payload,
                 })
 
-            try:
-                batch_response = requests.post(
-                    batch_url,
-                    headers=batch_headers,
-                    json={'requests': batch_requests},
-                    timeout=120,
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[STORAGE] Batch create request failed for {context_label}; "
-                    f"falling back to single posts: {e}"
-                )
-                for offset, payload in enumerate(chunk):
-                    if _post_single(payload, start + offset):
-                        created += 1
-                continue
-
-            if batch_response.status_code != 200:
-                logger.warning(
-                    f"[STORAGE] Batch create failed for {context_label} (HTTP {batch_response.status_code}); "
-                    "falling back to single posts"
-                )
-                for offset, payload in enumerate(chunk):
-                    if _post_single(payload, start + offset):
-                        created += 1
-                continue
-
-            response_items = batch_response.json().get('responses', [])
-            response_map = {item.get('id'): item for item in response_items}
-
-            for offset, payload in enumerate(chunk):
-                row_idx = start + offset
-                response_item = response_map.get(str(row_idx))
-                if not response_item:
+            # Retry logic for batch request
+            batch_success = False
+            for attempt in range(3):  # Max 3 retries per batch
+                try:
+                    batch_response = requests.post(
+                        batch_url,
+                        headers=batch_headers,
+                        json={'requests': batch_requests},
+                        timeout=120,
+                    )
+                    
+                    # Handle batch-level throttling
+                    if batch_response.status_code in [429, 503, 504] and attempt < 2:
+                        wait_time = (2 ** attempt) * 1.0  # Exponential backoff: 1s, 2s
+                        logger.warning(
+                            f"[STORAGE] Batch {batch_count}/{total_batches} throttled for {context_label} "
+                            f"({batch_response.status_code}), retrying in {wait_time}s... (attempt {attempt + 1}/3)"
+                        )
+                        sleep(wait_time)
+                        continue
+                    
+                    if batch_response.status_code == 200:
+                        batch_success = True
+                        break
+                    
+                    # Non-retryable error
                     logger.warning(
-                        f"[STORAGE] Missing batch response for {context_label} row {row_idx}; "
-                        "falling back to single post"
+                        f"[STORAGE] Batch {batch_count}/{total_batches} failed for {context_label} "
+                        f"(HTTP {batch_response.status_code}); falling back to single posts"
+                    )
+                    break
+                    
+                except Exception as e:
+                    if attempt < 2:
+                        wait_time = (2 ** attempt) * 1.0
+                        logger.warning(
+                            f"[STORAGE] Batch {batch_count}/{total_batches} request exception for {context_label}, "
+                            f"retrying in {wait_time}s... (attempt {attempt + 1}/3): {e}"
+                        )
+                        sleep(wait_time)
+                        continue
+                    
+                    logger.warning(
+                        f"[STORAGE] Batch {batch_count}/{total_batches} request failed for {context_label}; "
+                        f"falling back to single posts: {e}"
+                    )
+                    break
+
+            # Process batch response or fall back to single posts
+            if batch_success:
+                response_items = batch_response.json().get('responses', [])
+                response_map = {item.get('id'): item for item in response_items}
+
+                for offset, payload in enumerate(chunk):
+                    row_idx = start + offset
+                    response_item = response_map.get(str(row_idx))
+                    if not response_item:
+                        logger.warning(
+                            f"[STORAGE] Missing batch response for {context_label} row {row_idx}; "
+                            "falling back to single post"
+                        )
+                        if _post_single(payload, row_idx):
+                            created += 1
+                        continue
+
+                    status_code = response_item.get('status')
+                    if status_code in [200, 201]:
+                        created += 1
+                        continue
+
+                    # Retry individual item failures (especially 504s within batch)
+                    logger.warning(
+                        f"[STORAGE] Batch item failed for {context_label} row {row_idx}: "
+                        f"{status_code} - {response_item.get('body')}; retrying individually"
                     )
                     if _post_single(payload, row_idx):
                         created += 1
-                    continue
-
-                status_code = response_item.get('status')
-                if status_code in [200, 201]:
-                    created += 1
-                    continue
-
-                logger.warning(
-                    f"[STORAGE] Batch create failed for {context_label} row {row_idx}: "
-                    f"{status_code} - {response_item.get('body')}"
-                )
-                if _post_single(payload, row_idx):
-                    created += 1
+            else:
+                # Batch failed, post items individually with retry
+                for offset, payload in enumerate(chunk):
+                    if _post_single(payload, start + offset):
+                        created += 1
+            
+            # Delay between batches to reduce API pressure (skip on last batch)
+            if batch_count < total_batches:
+                sleep(0.5)
 
         return created
 
