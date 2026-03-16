@@ -122,6 +122,34 @@
                         </button>
                     </div>
                 </form>
+
+                <hr class="my-4">
+
+                <h5 class="mb-3"><i class="fas fa-user-check me-2"></i>Run Single Lease Audit from API</h5>
+                <p class="text-muted small">Analyze one resident's lease without fetching entire property data.</p>
+                <form method="POST" action="{{ url_for('main.upload_api_lease') }}">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label for="api_lease_id" class="form-label fw-bold">Lease ID</label>
+                            <input type="number" step="1" class="form-control" id="api_lease_id" name="api_lease_id" required placeholder="e.g. 12345">
+                        </div>
+                        <div class="col-md-4">
+                            <label for="api_lease_property_id" class="form-label">Property ID (optional)</label>
+                            <input type="number" step="1" class="form-control" id="api_lease_property_id" name="api_lease_property_id" placeholder="Auto-detected if not provided">
+                            <small class="text-muted">Usually auto-detected from lease data.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="api_lease_from_date" class="form-label">Transaction From Date</label>
+                            <input type="date" class="form-control" id="api_lease_from_date" name="api_lease_from_date">
+                        </div>
+                    </div>
+
+                    <div class="mt-3">
+                        <button type="submit" class="btn btn-outline-success">
+                            <i class="fas fa-user-check me-2"></i>Fetch Single Lease and Run Audit
+                        </button>
+                    </div>
+                </form>
             </div>
         </div>
 

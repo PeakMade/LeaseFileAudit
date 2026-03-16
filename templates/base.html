@@ -222,6 +222,33 @@
             font-size: 0.8rem;
         }
         
+        /* Responsive adjustments for smaller screens */
+        @media (max-width: 1200px) {
+            .action-buttons-container {
+                right: 220px;
+            }
+        }
+        
+        @media (max-width: 992px) {
+            .action-buttons-container {
+                position: static;
+                margin-bottom: 15px;
+                justify-content: flex-start;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .action-buttons-container {
+                flex-direction: column;
+                gap: 8px;
+            }
+            
+            .action-buttons-container .btn {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+        
         .user-badge:hover {
             box-shadow: 0 4px 12px rgba(0,0,0,0.12);
             border-color: #00a8c8;

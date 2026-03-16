@@ -24,7 +24,7 @@ from audit_engine import (
     build_lease_expectation_overlay,
     refresh_lease_terms_for_lease_interval,
 )
-from audit_engine.api_ingest import fetch_property_api_sources, fetch_entrata_property_picklist
+from audit_engine.api_ingest import fetch_property_api_sources, fetch_entrata_property_picklist, fetch_single_lease_api_sources
 from audit_engine.reconcile import reconcile_detail
 from audit_engine.rules import default_registry
 from audit_engine.canonical_fields import CanonicalField
@@ -1403,17 +1403,62 @@ def execute_audit_run(
     print(f"[EXECUTE_AUDIT_RUN] Upload-time property name map size: {len(property_name_map)}")
     
     # Apply source mappings to convert RAW -> CANONICAL
-    print(f"\n[EXECUTE_AUDIT_RUN] Applying source mappings...")
+    print(f"\n{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 2: SOURCE MAPPING (RAW → CANONICAL) =====")
+    print(f"{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] Applying AR transactions source mapping...")
+    print(f"[EXECUTE_AUDIT_RUN] AR source columns: {list(sources[config.ar_source.name].columns) if not sources[config.ar_source.name].empty else 'Empty'}")
     ar_canonical = apply_source_mapping(sources[config.ar_source.name], AR_TRANSACTIONS_MAPPING)
+    print(f"[EXECUTE_AUDIT_RUN] ✓ AR canonical DataFrame: {ar_canonical.shape}")
+    print(f"[EXECUTE_AUDIT_RUN] AR canonical columns: {list(ar_canonical.columns) if not ar_canonical.empty else 'Empty'}")
+    
+    print(f"\n[EXECUTE_AUDIT_RUN] Applying scheduled charges source mapping...")
+    print(f"[EXECUTE_AUDIT_RUN] Scheduled source columns: {list(sources[config.scheduled_source.name].columns) if not sources[config.scheduled_source.name].empty else 'Empty'}")
     scheduled_canonical = apply_source_mapping(sources[config.scheduled_source.name], SCHEDULED_CHARGES_MAPPING)
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Scheduled canonical DataFrame: {scheduled_canonical.shape}")
+    print(f"[EXECUTE_AUDIT_RUN] Scheduled canonical columns: {list(scheduled_canonical.columns) if not scheduled_canonical.empty else 'Empty'}")
     
     # Normalize (validate canonical data)
-    print(f"\n[EXECUTE_AUDIT_RUN] Normalizing canonical data...")
+    print(f"\n{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 3: NORMALIZATION & VALIDATION =====")
+    print(f"{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] Normalizing AR transactions...")
+    print(f"[EXECUTE_AUDIT_RUN] Input: {ar_canonical.shape}")
     actual_detail = normalize_ar_transactions(ar_canonical)
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Normalized AR detail: {actual_detail.shape}")
+    if not actual_detail.empty:
+        print(f"[EXECUTE_AUDIT_RUN] AR validation: {len(actual_detail)} transactions validated")
+        if 'PROPERTY_ID' in actual_detail.columns:
+            unique_properties = actual_detail['PROPERTY_ID'].nunique()
+            print(f"[EXECUTE_AUDIT_RUN] AR properties: {unique_properties}")
+        if 'AUDIT_MONTH' in actual_detail.columns:
+            date_range = actual_detail['AUDIT_MONTH'].agg(['min', 'max'])
+            print(f"[EXECUTE_AUDIT_RUN] AR date range: {date_range['min']} to {date_range['max']}")
+    
+    print(f"\n[EXECUTE_AUDIT_RUN] Normalizing scheduled charges...")
+    print(f"[EXECUTE_AUDIT_RUN] Input: {scheduled_canonical.shape}")
     scheduled_normalized = normalize_scheduled_charges(scheduled_canonical)
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Normalized scheduled charges: {scheduled_normalized.shape}")
+    if not scheduled_normalized.empty:
+        print(f"[EXECUTE_AUDIT_RUN] Scheduled validation: {len(scheduled_normalized)} charge schedules validated")
+        if 'PROPERTY_ID' in scheduled_normalized.columns:
+            unique_properties = scheduled_normalized['PROPERTY_ID'].nunique()
+            print(f"[EXECUTE_AUDIT_RUN] Scheduled properties: {unique_properties}")
     
     # Expand scheduled to months
+    print(f"\n{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 4: EXPANSION (SCHEDULED → MONTHLY) =====")
+    print(f"{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] Expanding scheduled charges to monthly buckets...")
+    print(f"[EXECUTE_AUDIT_RUN] Input: {scheduled_normalized.shape}")
     expected_detail = expand_scheduled_to_months(scheduled_normalized)
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Expanded to monthly detail: {expected_detail.shape}")
+    if not expected_detail.empty and not scheduled_normalized.empty:
+        expansion_ratio = len(expected_detail) / len(scheduled_normalized) if len(scheduled_normalized) > 0 else 0
+        print(f"[EXECUTE_AUDIT_RUN] Expansion factor: {expansion_ratio:.1f}x ({len(scheduled_normalized)} schedules → {len(expected_detail)} monthly buckets)")
+        if 'AUDIT_MONTH' in expected_detail.columns:
+            date_range = expected_detail['AUDIT_MONTH'].agg(['min', 'max'])
+            print(f"[EXECUTE_AUDIT_RUN] Expected date range: {date_range['min']} to {date_range['max']}")
 
     if early_prefilter_enabled:
         window_start, window_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
@@ -1549,7 +1594,10 @@ def execute_audit_run(
         set(scheduled_by_property.keys())
     )
 
-    print(f"\n[PROPERTY EXECUTION] Running reconciliation per property ({len(property_keys)} properties)")
+    print(f"\n{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 5: RECONCILIATION (EXPECTED vs ACTUAL) =====")
+    print(f"{'='*80}")
+    print(f"[PROPERTY EXECUTION] Running reconciliation per property ({len(property_keys)} properties)")
 
     expected_parts = []
     actual_parts = []
@@ -1568,29 +1616,61 @@ def execute_audit_run(
         scheduled_prop = scheduled_by_property.get(property_key, empty_scheduled_template)
 
         print(
+            f"\n[PROPERTY EXECUTION] {'─'*60}"
+        )
+        print(
             f"[PROPERTY EXECUTION] PROPERTY_ID={property_key}: "
             f"expected={len(expected_prop)}, actual={len(actual_prop)}, scheduled={len(scheduled_prop)}"
         )
 
         # Reconcile detail for this property only.
+        print(f"[PROPERTY EXECUTION] Running reconciliation for property {property_key}...")
         variance_detail_prop, recon_stats_prop = reconcile_detail(
             scheduled_prop,
             actual_prop,
             config.reconciliation
         )
+        print(f"[PROPERTY EXECUTION] ✓ Reconciliation complete for property {property_key}")
+        print(f"[PROPERTY EXECUTION] Buckets created: {len(variance_detail_prop)}")
+        if recon_stats_prop:
+            print(f"[PROPERTY EXECUTION] Reconciliation stats:")
+            for stat_key, stat_value in recon_stats_prop.items():
+                print(f"[PROPERTY EXECUTION]   - {stat_key}: {stat_value}")
 
         # Reconcile buckets for this property only.
+        print(f"[PROPERTY EXECUTION] Running bucket reconciliation for property {property_key}...")
         bucket_results_prop = reconcile_buckets(expected_prop, actual_prop, config.reconciliation)
+        print(f"[PROPERTY EXECUTION] ✓ Bucket reconciliation complete: {len(bucket_results_prop)} total buckets")
+        
+        # Show bucket breakdown by category
+        if not bucket_results_prop.empty and 'BUCKET_CATEGORY' in bucket_results_prop.columns:
+            bucket_breakdown = bucket_results_prop['BUCKET_CATEGORY'].value_counts().to_dict()
+            print(f"[PROPERTY EXECUTION] Bucket breakdown for property {property_key}:")
+            for category, count in sorted(bucket_breakdown.items()):
+                symbol = "✓" if category == "matched" else ("⚠️" if category == "unbilled" else "❌")
+                print(f"[PROPERTY EXECUTION]   {symbol} {category}: {count} buckets")
 
         # Run rules scoped to this property only.
+        print(f"[PROPERTY EXECUTION] Running audit rules for property {property_key}...")
         context_prop = RuleContext(
             run_id=run_id,
             expected_detail=expected_prop,
             actual_detail=actual_prop,
             bucket_results=bucket_results_prop
         )
+        print(f"[PROPERTY EXECUTION] Evaluating rules with context: expected={len(expected_prop)}, actual={len(actual_prop)}, buckets={len(bucket_results_prop)}")
         finding_dicts_prop = default_registry.evaluate_all(context_prop)
+        print(f"[PROPERTY EXECUTION] ✓ Rule evaluation complete: {len(finding_dicts_prop)} finding dictionaries")
         findings_prop = generate_findings(finding_dicts_prop, run_id)
+        print(f"[PROPERTY EXECUTION] ✓ Generated {len(findings_prop)} findings for property {property_key}")
+        
+        # Show findings breakdown by severity
+        if not findings_prop.empty and 'SEVERITY' in findings_prop.columns:
+            severity_breakdown = findings_prop['SEVERITY'].value_counts().to_dict()
+            if severity_breakdown:
+                print(f"[PROPERTY EXECUTION] Findings by severity:")
+                for severity, count in sorted(severity_breakdown.items()):
+                    print(f"[PROPERTY EXECUTION]   - {severity}: {count}")
 
         expected_parts.append(expected_prop)
         actual_parts.append(actual_prop)
@@ -1622,10 +1702,18 @@ def execute_audit_run(
                 pass
         return fallback.iloc[0:0].copy()
 
+    print(f"\n{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 6: AGGREGATION (COMBINING PROPERTY RESULTS) =====")
+    print(f"{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] Concatenating results from {len(property_keys)} properties...")
     expected_detail = _concat_frames(expected_parts, expected_detail)
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Expected detail: {expected_detail.shape}")
     actual_detail = _concat_frames(actual_parts, actual_detail)
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Actual detail: {actual_detail.shape}")
     bucket_results = _concat_frames(bucket_parts, pd.DataFrame())
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Bucket results: {bucket_results.shape}")
     findings = _concat_frames(finding_parts, pd.DataFrame())
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Findings: {findings.shape}")
 
     variance_frames = [df for df in variance_parts if df is not None]
     if variance_frames:
@@ -1648,18 +1736,38 @@ def execute_audit_run(
         "properties_processed": len(property_execution_stats),
     }
 
-    print(f"\n[RECONCILIATION STATS - AGGREGATED]")
+    print(f"\n{'='*80}")
+    print(f"[RECONCILIATION STATS - AGGREGATED]")
+    print(f"{'='*80}")
     print(f"  Properties processed: {recon_stats['properties_processed']}")
-    print(f"  Primary matches: {recon_stats['primary_matched_ar']}")
-    print(f"  Secondary matches: {recon_stats['secondary_matched_ar']}")
-    print(f"  Tertiary matches: {recon_stats['tertiary_matched_ar']}")
-    print(f"  Unmatched AR: {recon_stats['unmatched_ar']}")
-    print(f"  Unmatched scheduled: {recon_stats['unmatched_scheduled']}")
-    print(f"  Total variances: {recon_stats['variances']}")
+    print(f"  Total scheduled charges: {recon_stats['total_scheduled']}")
+    print(f"  Total AR transactions: {recon_stats['total_ar']}")
+    print(f"  ")
+    print(f"  MATCH TIER BREAKDOWN:")
+    print(f"  ✓ Primary matches: {recon_stats['primary_matched_ar']}")
+    print(f"  ✓ Secondary matches: {recon_stats['secondary_matched_ar']}")
+    print(f"  ✓ Tertiary matches: {recon_stats['tertiary_matched_ar']}")
+    print(f"  ")
+    print(f"  UNMATCHED:")
+    print(f"  ⚠️  Unmatched AR (billed without schedule): {recon_stats['unmatched_ar']}")
+    print(f"  ⚠️  Unmatched scheduled (expected but not billed): {recon_stats['unmatched_scheduled']}")
+    print(f"  ")
+    print(f"  ❌ Total variances (amount mismatches): {recon_stats['variances']}")
+    print(f"{'='*80}\n")
 
     # Aggregate property summaries into portfolio totals (computed from concatenated outputs).
+    print(f"\n{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 7: CALCULATING KPIs & SUMMARY =====")
+    print(f"{'='*80}")
+    print(f"[EXECUTE_AUDIT_RUN] Calculating property-level summaries...")
     property_summary = calculate_property_summary(bucket_results, findings, actual_detail)
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Property summary calculated: {len(property_summary)} properties")
+    
+    print(f"[EXECUTE_AUDIT_RUN] Calculating portfolio-level KPIs...")
     portfolio_totals = calculate_kpis(bucket_results, findings)
+    print(f"[EXECUTE_AUDIT_RUN] ✓ Portfolio KPIs calculated")
+    print(f"\n[EXECUTE_AUDIT_RUN] ===== AUDIT PIPELINE COMPLETE =====")
+    print(f"{'='*80}\n")
 
     return {
         "expected_detail": expected_detail,
@@ -2220,6 +2328,148 @@ def upload_api_property():
         return redirect(url_for('main.index'))
 
 
+@bp.route('/upload-api-lease', methods=['POST'])
+@optional_auth
+def upload_api_lease():
+    """Run audit from API sources for a single lease."""
+    audit_started_at = perf_counter()
+    request_started_at_utc = datetime.utcnow()
+
+    try:
+        lease_id_raw = request.form.get('api_lease_id')
+        if not lease_id_raw:
+            flash('Lease ID is required for single lease audit.', 'danger')
+            return redirect(url_for('main.index'))
+
+        lease_id = int(float(lease_id_raw))
+
+        property_id_raw = request.form.get('api_lease_property_id')
+        property_id = int(float(property_id_raw)) if property_id_raw else None
+
+        transaction_from_date = request.form.get('api_lease_from_date') or None
+
+        storage = get_storage_service()
+        run_id = storage.generate_run_id()
+
+        api_fetch_started = perf_counter()
+        api_sources = fetch_single_lease_api_sources(
+            lease_id=lease_id,
+            property_id=property_id,
+            transaction_from_date=transaction_from_date,
+        )
+        api_fetch_seconds = perf_counter() - api_fetch_started
+
+        ar_raw = api_sources.get('ar_raw', pd.DataFrame())
+        scheduled_raw = api_sources.get('scheduled_raw', pd.DataFrame())
+
+        if ar_raw.empty and scheduled_raw.empty:
+            flash('API returned no data for that lease ID.', 'warning')
+            return redirect(url_for('main.index'))
+
+        property_name = api_sources.get('property_name') or f"Property {property_id}"
+        discovered_property_id = api_sources.get('property_id') or property_id
+
+        logger.info(f"[API LEASE UPLOAD] Lease {lease_id}, Property {discovered_property_id} ({property_name})")
+
+        execute_started = perf_counter()
+        results = execute_audit_run(
+            file_path=None,
+            run_id=run_id,
+            audit_year=None,  # Single lease audits typically don't filter by year
+            audit_month=None,
+            scoped_property_ids=None,  # Don't filter by property since we already have only one lease
+            preloaded_sources={
+                config.ar_source.name: ar_raw,
+                config.scheduled_source.name: scheduled_raw,
+            },
+        )
+        execute_seconds = perf_counter() - execute_started
+
+        metadata = {
+            'run_id': run_id,
+            'timestamp': datetime.now().isoformat(),
+            'config_version': 'v1',
+            'file_name': f'api_lease_{lease_id}.json',
+            'file_hash': '',
+            'file_size': 0,
+        }
+        metadata['run_scope'] = {
+            'type': 'lease',
+            'source': 'api_lease',
+            'lease_id': str(lease_id),
+            'property_id': str(discovered_property_id) if discovered_property_id else None,
+        }
+        metadata['api_ingest'] = {
+            'lease_id': lease_id,
+            'property_id': discovered_property_id,
+            'property_name': property_name,
+            'lease_count': 1,
+        }
+
+        save_run_started = perf_counter()
+        storage.save_run(
+            run_id,
+            results["expected_detail"],
+            results["actual_detail"],
+            results["bucket_results"],
+            results["findings"],
+            metadata,
+            results.get("variance_detail"),
+            None,
+            property_name_map=results.get("property_name_map"),
+        )
+        save_run_seconds = perf_counter() - save_run_started
+
+        cache_clear_started = perf_counter()
+        invalidate_runs_cache()
+        clear_run_cache(run_id)
+        cache_clear_seconds = perf_counter() - cache_clear_started
+
+        activity_log_seconds = 0.0
+        user = get_current_user()
+        if user and config.auth.can_log_to_sharepoint():
+            activity_started = perf_counter()
+            log_user_activity(
+                user_info=user,
+                activity_type='Successful Audit',
+                site_url=config.auth.sharepoint_site_url,
+                list_name=config.auth.sharepoint_list_name,
+                details={
+                    'run_id': run_id,
+                    'source': 'api_lease',
+                    'lease_id': lease_id,
+                    'property_id': discovered_property_id,
+                    'user_role': 'user',
+                }
+            )
+            activity_log_seconds = perf_counter() - activity_started
+
+        elapsed_seconds = perf_counter() - audit_started_at
+        logger.info(
+            f"[AUDIT TIMER] SUCCESS run_id={run_id} source=api_lease lease_id={lease_id} "
+            f"elapsed_seconds={elapsed_seconds:.2f} "
+            f"api_fetch_seconds={api_fetch_seconds:.2f} "
+            f"execute_seconds={execute_seconds:.2f} "
+            f"save_run_seconds={save_run_seconds:.2f} "
+            f"cache_clear_seconds={cache_clear_seconds:.2f} "
+            f"activity_log_seconds={activity_log_seconds:.2f}"
+        )
+
+        flash(f'Successfully audited Lease {lease_id}. Viewing results for property {discovered_property_id}.', 'success')
+        
+        # Redirect to property view if we have a property_id, otherwise to portfolio view
+        if discovered_property_id:
+            return redirect(url_for('main.property_view', property_id=str(discovered_property_id), run_id=run_id))
+        else:
+            return redirect(url_for('main.portfolio', run_id=run_id))
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.exception(f"[LEASE API UPLOAD] Failed for lease {request.form.get('api_lease_id')}: {error_msg}")
+        flash(f'Error processing API lease upload: {error_msg}', 'danger')
+        return redirect(url_for('main.index'))
+
+
 @bp.route('/portfolio')
 @bp.route('/portfolio/<run_id>')
 @require_auth
@@ -2703,11 +2953,29 @@ def property_view(property_id: str, run_id: str = None):
                 lease_all_buckets[CanonicalField.STATUS.value] == config.reconciliation.status_matched
             ])
             
+            # Calculate lease status based on exception states
+            static_exception_count = int(lease_snapshot.get('exception_count', 0)) if lease_snapshot else 0
+            unresolved_exception_count = len(lease_groups.get(lease_id, []))
+            resolved_exception_count = max(0, static_exception_count - unresolved_exception_count)
+            
+            # Determine overall lease status
+            if static_exception_count == 0:
+                status_label = 'Passed'
+                status_color = 'success'
+            elif unresolved_exception_count == 0:
+                status_label = 'Resolved'
+                status_color = 'success'
+            else:
+                if resolved_exception_count > 0:
+                    status_label = f'Open ({resolved_exception_count}/{static_exception_count} resolved)'
+                else:
+                    status_label = 'Open'
+                status_color = 'danger'
+            
             if lease_id in lease_groups:
                 # Lease has exceptions
                 exceptions = lease_groups[lease_id]
                 total_variance = sum(e['variance'] for e in exceptions)
-                static_exception_count = int(lease_snapshot.get('exception_count', len(exceptions))) if lease_snapshot else len(exceptions)
                 lease_summary.append({
                     'lease_interval_id': lease_id,
                     'lease_id': resolved_lease_id,
@@ -2715,14 +2983,15 @@ def property_view(property_id: str, run_id: str = None):
                     'guarantor_name': guarantor_name,
                     'has_exceptions': static_exception_count > 0,
                     'exception_count': static_exception_count,
-                    'unresolved_exception_count': len(exceptions),
+                    'unresolved_exception_count': unresolved_exception_count,
                     'matched_count': matched_count,
                     'total_variance': total_variance,
+                    'status_label': status_label,
+                    'status_color': status_color,
                     'exceptions': sorted(exceptions, key=lambda x: abs(x['variance']), reverse=True)
                 })
             else:
                 # Clean lease - no exceptions
-                static_exception_count = int(lease_snapshot.get('exception_count', 0)) if lease_snapshot else 0
                 lease_summary.append({
                     'lease_interval_id': lease_id,
                     'lease_id': resolved_lease_id,
@@ -2733,6 +3002,8 @@ def property_view(property_id: str, run_id: str = None):
                     'unresolved_exception_count': 0,
                     'matched_count': matched_count,
                     'total_variance': 0,
+                    'status_label': status_label,
+                    'status_color': status_color,
                     'exceptions': []
                 })
 

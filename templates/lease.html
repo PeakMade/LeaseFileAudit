@@ -24,16 +24,15 @@
     <div class="row mb-4">
         <div class="col">
             {% if customer_name %}
-                <h2>
-                    {{ customer_name }}
-                    <span style="font-size: 0.7em; color: #6c757d;">
-                        ({% if lease_id %}Lease ID: {{ lease_id|int }} | {% endif %}Lease Interval ID: {{ lease_interval_id|int }})
-                    </span>
-                </h2>
-            {% else %}
-                <h2>
+                <h2 class="mb-1">{{ customer_name }}</h2>
+                <p class="text-muted mb-0" style="font-size: 0.85rem;">
                     {% if lease_id %}Lease ID: {{ lease_id|int }} | {% endif %}Lease Interval ID: {{ lease_interval_id|int }}
-                </h2>
+                </p>
+            {% else %}
+                <h2 class="mb-1">Lease Details</h2>
+                <p class="text-muted mb-0" style="font-size: 0.85rem;">
+                    {% if lease_id %}Lease ID: {{ lease_id|int }} | {% endif %}Lease Interval ID: {{ lease_interval_id|int }}
+                </p>
             {% endif %}
         </div>
     </div>

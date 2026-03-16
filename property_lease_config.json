@@ -1,0 +1,43 @@
+{
+  "description": "Property-specific configurations for lease document selection and processing",
+  "default": {
+    "lease_document_selection": {
+      "preferred_codes_tier1": ["LP", "OEP", "PACKET"],
+      "preferred_codes_tier2": ["LEASE", "LD", "OEL"],
+      "min_file_size_bytes": 50000,
+      "exclude_title_patterns": [
+        "e-?sign.*modification",
+        "lease\\s+modification"
+      ],
+      "preferred_title_patterns": [],
+      "require_signed": true
+    }
+  },
+  "properties": {
+    "100139752": {
+      "property_name": "Chateau on Wells",
+      "lease_document_selection": {
+        "preferred_codes_tier1": ["LP", "OEP", "PACKET"],
+        "preferred_codes_tier2": ["LEASE", "LD", "OEL"],
+        "min_file_size_bytes": 100000,
+        "exclude_title_patterns": [
+          "e-?sign.*modification",
+          "lease\\s+modification",
+          "co-applicant",
+          "applicant\\s+upload"
+        ],
+        "preferred_title_patterns": [
+          "lease\\s+document",
+          ".*_.*_.*_attachment.*\\.pdf"
+        ],
+        "require_signed": true,
+        "notes": "Prefer documents with 'Lease Document' title or PDF attachments with specific naming pattern. Exclude e-Sign modifications and applicant uploads. Require minimum 100KB file size."
+      },
+      "reconciliation": {
+        "pre_acquisition_date": "2026-01-01",
+        "mark_pre_acquisition_scheduled_as_expected": true,
+        "notes": "Property was acquired mid-lease in January 2026. Scheduled charges before this date should not flag as 'Scheduled Not Billed' exceptions since we have no transaction history before acquisition."
+      }
+    }
+  }
+}

@@ -175,15 +175,16 @@
                         <table class="table table-hover table-bordered mb-0" id="leasesTable" style="border-collapse: collapse;">
                             <thead style="background-color: #f8f9fa; position: sticky; top: 0; z-index: 10;">
                                 <tr style="border-bottom: 2px solid #dee2e6;">
-                                    <th class="sortable" data-sort="customer_name" style="width: 200px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">
+                                    <th class="sortable" data-sort="customer_name" style="width: 180px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">
                                         Resident Name <span id="customerSortIcon" style="font-size: 1em; color: #000;">↓</span>
                                     </th>
-                                    <th style="width: 170px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease ID</th>
-                                    <th style="width: 190px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease Interval ID</th>
-                                    <th class="text-center" style="width: 120px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Matched</th>
-                                    <th class="text-center sortable" data-sort="exceptions" style="width: 120px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">Exceptions <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span></th>
-                                    <th class="text-end" style="width: 150px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Variance</th>
-                                    <th class="text-center" style="width: 100px; padding: 12px; font-weight: 600; color: #495057;">Details</th>
+                                    <th style="width: 150px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease ID</th>
+                                    <th style="width: 170px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease Interval ID</th>
+                                    <th class="text-center" style="width: 100px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Matched</th>
+                                    <th class="text-center sortable" data-sort="exceptions" style="width: 110px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">Exceptions <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span></th>
+                                    <th class="text-end" style="width: 130px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Variance</th>
+                                    <th class="text-center" style="width: 100px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Status</th>
+                                    <th class="text-center" style="width: 80px; padding: 12px; font-weight: 600; color: #495057;">Details</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -219,6 +220,9 @@
                                         {% else %}
                                             <span class="text-muted">$0</span>
                                         {% endif %}
+                                    </td>
+                                    <td class="text-center" style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
+                                        <span class="badge bg-{{ lease.status_color }}">{{ lease.status_label }}</span>
                                     </td>
                                     <td class="text-center" style="padding: 10px 12px;">
                                         <i class="fas fa-eye" style="color: #6c757d;"></i>

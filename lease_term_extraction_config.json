@@ -242,6 +242,80 @@
 				"violation",
 				"unauthorized animal"
 			]
+		},
+		"TELECOM_FEE": {
+			"include_patterns": [
+				"telecom\\s+fee",
+				"internet\\s+(?:setup|set-up|set\\s+up)\\s+fee",
+				"internet\\s+service\\s+fee",
+				"account\\s+set-?up\\s+fee",
+				"internet\\s+(?:billing|management)\\s+(?:service|fee)",
+				"set-?up\\s+(?:and\\s+)?management\\s+of\\s+internet"
+			],
+			"anchor_patterns": [
+				"telecom",
+				"internet\\s+(?:setup|set-up|set\\s+up|service|billing|management)",
+				"account\\s+set-?up"
+			],
+			"clause_amount_pattern": "(?:telecom|internet|account\\s+set-?up|billing).{0,150}?\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)",
+			"clause_anchor_pattern": "(?:telecom\\s+fee|internet.{0,30}?fee|set-?up.{0,40}?internet).{0,300}",
+			"context_patterns": [
+				"new\\s+lease",
+				"renewal\\s+lease",
+				"move-?in",
+				"renewal",
+				"internet\\s+service",
+				"management\\s+of\\s+internet",
+				"billing\\s+(?:service|provider)",
+				"third-?party\\s+billing"
+			],
+			"amount_capture_patterns": [
+				"\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)\\s+for\\s+(?:new\\s+)?lease",
+				"\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)\\s+(?:for\\s+)?(?:at\\s+the\\s+time\\s+of\\s+)?(?:new\\s+)?move-?in",
+				"\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)\\s+for\\s+renewal",
+				"(?:of|is)\\s+\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)\\s+for"
+			],
+			"preferred_tokens": [
+				"telecom",
+				"internet",
+				"setup",
+				"set-up",
+				"set up",
+				"account",
+				"billing",
+				"service"
+			],
+			"excluded_tokens": [
+				"monthly",
+				"per month",
+				"recurring",
+				"ongoing",
+				"each month"
+			],
+			"hard_excluded_tokens": [
+				"refund",
+				"waived",
+				"waiver",
+				"credited",
+				"optional",
+				"if resident chooses"
+			],
+			"one_time_signals": [
+				"one-time",
+				"onetime",
+				"one time",
+				"at the time of",
+				"move-in",
+				"move in",
+				"new lease",
+				"renewal",
+				"required by owner",
+				"includes the cost"
+			],
+			"multi_tier_patterns": [
+				"\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)\\s+for\\s+new\\s+lease",
+				"\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)\\s+for\\s+renewal"
+			]
 		}
 	}
 }

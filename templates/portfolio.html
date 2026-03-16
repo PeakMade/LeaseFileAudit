@@ -104,7 +104,6 @@
                                         Property Name <span id="propertyNameSortIcon" style="font-size: 1em; color: #999;">↕</span>
                                     </th>
                                     <th>Property ID</th>
-                                    <th class="text-center">Total Lease Intervals</th>
                                     <th class="text-center sortable" data-sort="exceptions" style="cursor: pointer;">
                                         Exceptions <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span>
                                     </th>
@@ -120,7 +119,6 @@
                                     onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href='{{ url_for('main.property_view', property_id=property.property_id, run_id=property.run_id) }}'">
                                     <td><strong>{{ property.property_name if property.property_name else '-' }}</strong></td>
                                     <td>{{ property.property_id|int }}</td>
-                                    <td class="text-center">{{ property.total_lease_intervals }}</td>
                                     <td class="text-center">
                                         {% if property.exception_buckets > 0 %}
                                             <i class="fas fa-exclamation-circle me-1" style="color: #c20068;"></i>{{ property.exception_buckets }}

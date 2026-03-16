@@ -596,7 +596,7 @@ class StorageService:
         field_candidates = {
             'property_name': ['PropertyNameStatic', 'PropertyName'],
             'total_variance': ['TotalVarianceStatic'],
-            'total_lease_intervals': ['TotalLeaseIntervalsStatic'],
+            'total_lease_intervals': ['TotalLeaseIntervalStatic'],
         }
         resolved = {
             'property_name': None,
@@ -1142,7 +1142,7 @@ class StorageService:
                 'undercharge': float(fields.get('UnderchargeStatic') or 0),
                 'overcharge': float(fields.get('OverchargeStatic') or 0),
                 'total_variance': float(fields.get('TotalVarianceStatic') or 0),
-                'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalsStatic') or 0)),
+                'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalStatic') or 0)),
                 'match_rate': float(fields.get('MatchRateStatic') or 0),
                 'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
                 'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
@@ -1229,7 +1229,7 @@ class StorageService:
                     'undercharge': undercharge,
                     'overcharge': overcharge,
                     'total_variance': float(fields.get('TotalVarianceStatic') or (undercharge + overcharge)),
-                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalsStatic') or 1)),
+                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalStatic') or 1)),
                     'match_rate': float(fields.get('MatchRateStatic') or 0),
                     'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
                     'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
@@ -1342,7 +1342,7 @@ class StorageService:
                     'match_rate': float(fields.get('MatchRateStatic') or 0),
                     'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
                     'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
-                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalsStatic') or lease_counts_by_property.get(property_id_int, 0) or 0))
+                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalStatic') or lease_counts_by_property.get(property_id_int, 0) or 0))
                 })
 
             snapshot_rows.sort(key=lambda row: (row.get('property_id') is None, row.get('property_id', 0)))
@@ -1430,7 +1430,7 @@ class StorageService:
                     'match_rate': float(fields.get('MatchRateStatic') or 0),
                     'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
                     'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
-                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalsStatic') or 0))
+                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalStatic') or 0))
                 }
             
             snapshot_rows = list(latest_by_property.values())
@@ -3206,7 +3206,18 @@ class StorageService:
         property_name_map: Optional[Dict[int, str]] = None,
     ):
         """Save complete audit run to storage."""
+        print(f"\n{'='*80}")
+        print(f"[STORAGE] ===== PHASE 8: SAVING TO SHAREPOINT =====")
+        print(f"{'='*80}")
         logger.info(f"[STORAGE] 💾 Starting save for run: {run_id}")
+        print(f"[STORAGE] Target: {'SharePoint' if self.use_sharepoint else 'Local Filesystem'}")
+        print(f"[STORAGE] Data volumes:")
+        print(f"  - Expected detail: {expected_detail.shape}")
+        print(f"  - Actual detail: {actual_detail.shape}")
+        print(f"  - Bucket results: {bucket_results.shape}")
+        print(f"  - Findings: {findings.shape}")
+        if variance_detail is not None:
+            print(f"  - Variance detail: {variance_detail.shape}")
         self.create_run_dir(run_id)
 
         write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'false').lower() == 'true'
@@ -3224,44 +3235,57 @@ class StorageService:
         
         # Save original uploaded file if provided
         if original_file_path and original_file_path.exists():
+            print(f"[STORAGE] Step 1/7: Saving original uploaded file...")
             self.save_uploaded_file(run_id, original_file_path, original_file_path.name)
             files_saved.append(original_file_path.name)
+            print(f"[STORAGE] ✓ Saved: {original_file_path.name}")
         
         # Save inputs
+        print(f"\n[STORAGE] Step 2/7: Saving input files (normalized data)...")
         logger.info(f"[STORAGE] 📊 Saving input files...")
         self._save_dataframe(expected_detail, run_id, "inputs_normalized/expected_detail.csv")
+        print(f"[STORAGE] ✓ Saved: expected_detail.csv ({len(expected_detail)} rows)")
         files_saved.append("expected_detail.csv")
         
         self._save_dataframe(actual_detail, run_id, "inputs_normalized/actual_detail.csv")
+        print(f"[STORAGE] ✓ Saved: actual_detail.csv ({len(actual_detail)} rows)")
         files_saved.append("actual_detail.csv")
         
         # Save outputs
+        print(f"\n[STORAGE] Step 3/7: Saving output files (results)...")
         logger.info(f"[STORAGE] 📈 Saving output files...")
         self._save_dataframe(bucket_results, run_id, "outputs/bucket_results.csv")
+        print(f"[STORAGE] ✓ Saved: bucket_results.csv ({len(bucket_results)} rows)")
         files_saved.append("bucket_results.csv")
         
         self._save_dataframe(findings, run_id, "outputs/findings.csv")
+        print(f"[STORAGE] ✓ Saved: findings.csv ({len(findings)} rows)")
         files_saved.append("findings.csv")
         
         # Save variance detail if provided
         if variance_detail is not None and len(variance_detail) > 0:
             self._save_dataframe(variance_detail, run_id, "outputs/variance_detail.csv")
+            print(f"[STORAGE] ✓ Saved: variance_detail.csv ({len(variance_detail)} rows)")
             files_saved.append("variance_detail.csv")
         
         # Save metadata
+        print(f"\n[STORAGE] Step 4/7: Saving metadata...")
         logger.info(f"[STORAGE] 📋 Saving metadata...")
         # Include property_name_map in metadata for baseline overlay merging
         if property_name_map:
             metadata = dict(metadata)  # Make a copy to avoid mutating caller's dict
             metadata['property_name_map'] = {str(k): v for k, v in property_name_map.items()}
         self._save_json(metadata, run_id, "run_meta.json")
+        print(f"[STORAGE] ✓ Saved: run_meta.json")
         files_saved.append("run_meta.json")
         
         # Write metrics to SharePoint list (don't fail save if this fails)
+        print(f"\n[STORAGE] Step 5/7: Writing metrics to SharePoint List (AuditRuns)...")
         try:
             can_write_sharepoint_lists = self._can_use_sharepoint_lists()
             if write_metrics_async and can_write_sharepoint_lists:
                 metrics_started = perf_counter()
+                print(f"[STORAGE] 🚀 Dispatching async metrics write...")
                 metrics_thread = threading.Thread(
                     target=self._write_metrics_to_sharepoint_list_async,
                     args=(run_id, bucket_results, findings, dict(metadata)),
@@ -3270,14 +3294,19 @@ class StorageService:
                 )
                 metrics_thread.start()
                 stage_timers['metrics_write_seconds'] = float(perf_counter() - metrics_started)
+                print(f"[STORAGE] ✓ Metrics write dispatched (async mode)")
             else:
                 metrics_started = perf_counter()
+                print(f"[STORAGE] Writing metrics synchronously...")
                 self._write_metrics_to_sharepoint_list(run_id, bucket_results, findings, metadata)
                 stage_timers['metrics_write_seconds'] = float(perf_counter() - metrics_started)
+                print(f"[STORAGE] ✓ Metrics written in {stage_timers['metrics_write_seconds']:.2f}s")
         except Exception as e:
+            print(f"[STORAGE] ⚠️  Metrics write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write metrics to SharePoint list: {e}")
 
         # Write static display snapshots (portfolio/property/lease) for fast UI loads.
+        print(f"\n[STORAGE] Step 6/7: Writing display snapshots (portfolio/property/lease views)...")
         try:
             snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
                 run_id,
@@ -3288,8 +3317,10 @@ class StorageService:
                 stage_timers=stage_timers,
             )
             if snapshot_write_ok:
+                print(f"[STORAGE] ✓ Display snapshots written successfully")
                 if snapshot_validation_async and self._can_use_sharepoint_lists():
                     validate_started = perf_counter()
+                    print(f"[STORAGE] 🚀 Dispatching async snapshot validation...")
                     validate_thread = threading.Thread(
                         target=self._validate_run_display_snapshots_async,
                         args=(run_id, bucket_results),
@@ -3298,11 +3329,19 @@ class StorageService:
                     )
                     validate_thread.start()
                     stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
+                    print(f"[STORAGE] ✓ Snapshot validation dispatched (async mode)")
                 else:
                     validate_started = perf_counter()
+                    print(f"[STORAGE] Validating snapshots synchronously...")
                     validation = self.validate_run_display_snapshots(run_id, bucket_results)
                     stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
                     if validation.get('ok'):
+                        print(
+                            f"[STORAGE] ✓ Snapshot validation passed: "
+                            f"portfolio={validation['actual']['portfolio']}, "
+                            f"property={validation['actual']['property']}, "
+                            f"lease={validation['actual']['lease']}"
+                        )
                         logger.info(
                             f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
                             f"portfolio={validation['actual']['portfolio']}, "
@@ -3310,17 +3349,24 @@ class StorageService:
                             f"lease={validation['actual']['lease']}"
                         )
                     else:
+                        print(f"[STORAGE] ⚠️  Snapshot validation warnings: {validation.get('errors', [])}")
                         logger.warning(
                             f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
                         )
         except Exception as e:
+            print(f"[STORAGE] ⚠️  Display snapshots write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
 
         # Write detailed results to SharePoint list (list-backed results DB).
         # Keep CSVs as fallback for compatibility. Run asynchronously by default to reduce upload latency.
+        print(f"\n[STORAGE] Step 7/7: Writing detailed results to SharePoint List (AuditRuns Detail)...")
         try:
             can_write_sharepoint_lists = self._can_use_sharepoint_lists()
             if write_details_async and can_write_sharepoint_lists:
+                print(
+                    f"[STORAGE] 🚀 Dispatching async detail write: "
+                    f"bucket_rows={len(bucket_results)}, finding_rows={len(findings)}"
+                )
                 writer_thread = threading.Thread(
                     target=self._write_results_to_sharepoint_list_async,
                     args=(run_id, bucket_results, findings),
@@ -3332,9 +3378,13 @@ class StorageService:
                     f"[STORAGE] 🚀 Dispatched background AuditRuns write for {run_id}: "
                     f"bucket_rows={len(bucket_results)}, finding_rows={len(findings)}"
                 )
+                print(f"[STORAGE] ✓ Detail write dispatched (async mode)")
             else:
+                print(f"[STORAGE] Writing details synchronously...")
                 self._write_results_to_sharepoint_list(run_id, bucket_results, findings)
+                print(f"[STORAGE] ✓ Details written successfully")
         except Exception as e:
+            print(f"[STORAGE] ⚠️  Detail write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write detailed results to SharePoint list: {e}")
 
         logger.info(
@@ -3347,7 +3397,16 @@ class StorageService:
             f"snapshot_validation_mode={'async' if snapshot_validation_async else 'sync'}"
         )
         
+        print(f"\n{'='*80}")
         logger.info(f"[STORAGE] ✅ Successfully saved run {run_id} - {len(files_saved)} files")
+        print(f"[STORAGE] ===== SAVE COMPLETE =====")
+        print(f"[STORAGE] ✅ Successfully saved {len(files_saved)} files for run {run_id}")
+        print(f"[STORAGE] Performance:")
+        print(f"  - Metrics write: {stage_timers.get('metrics_write_seconds', 0.0):.2f}s")
+        print(f"  - Snapshot filter: {stage_timers.get('snapshot_filter_seconds', 0.0):.2f}s")
+        print(f"  - Snapshot write: {stage_timers.get('snapshot_write_seconds', 0.0):.2f}s")
+        print(f"  - Snapshot validate: {stage_timers.get('snapshot_validate_seconds', 0.0):.2f}s")
+        print(f"{'='*80}\n")
         if self.use_sharepoint:
             logger.info(f"[STORAGE] 📍 Location: SharePoint/{self.library_name}/{run_id}")
         else:

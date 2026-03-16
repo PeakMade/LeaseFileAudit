@@ -733,3 +733,225 @@ def fetch_property_api_sources(
         "ar_raw": ar_df,
         "lease_count": len(lease_ids),
     }
+
+
+def fetch_single_lease_api_sources(
+    lease_id: int,
+    property_id: int = None,
+    transaction_from_date: str | None = None,
+    transaction_to_date: str | None = None,
+) -> dict[str, Any]:
+    """
+    Fetch AR transactions and scheduled charges for a single lease from Entrata API.
+    
+    This is useful for debugging/analyzing one resident without fetching all property data.
+    
+    Args:
+        lease_id: The lease ID to fetch
+        property_id: Optional property ID (will be inferred from lease details if not provided)
+        transaction_from_date: Optional start date filter for AR transactions (MM/DD/YYYY)
+        transaction_to_date: Optional end date filter for AR transactions (MM/DD/YYYY)
+    
+    Returns:
+        Dict with:
+            - property_name: Property name
+            - scheduled_raw: DataFrame of scheduled charges
+            - ar_raw: DataFrame of AR transactions
+            - lease_count: Always 1 for single lease fetch
+    """
+    details_url = _to_str(os.getenv("LEASE_API_DETAILS_URL")) or _to_str(os.getenv("LEASE_API_BASE_URL")) or "https://apis.entrata.com/ext/orgs/peakmade/v1/leases?page_no=1&per_page=100"
+    ar_url = _to_str(os.getenv("LEASE_API_AR_URL")) or _to_str(os.getenv("LEASE_API_BASE_URL")) or "https://apis.entrata.com/ext/orgs/peakmade/v1/artransactions?page_no=1&per_page=100"
+    api_key = _to_str(os.getenv("LEASE_API_KEY"))
+    api_key_header = _to_str(os.getenv("LEASE_API_KEY_HEADER") or "X-Api-Key")
+
+    if not details_url:
+        raise ValueError("Missing LEASE_API_DETAILS_URL (or LEASE_API_BASE_URL) env var")
+    if not ar_url:
+        raise ValueError("Missing LEASE_API_AR_URL (or LEASE_API_BASE_URL) env var")
+    if not api_key:
+        raise ValueError("Missing LEASE_API_KEY env var")
+
+    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "60") or "60")
+
+    print(f"\n{'='*80}")
+    print(f"[SINGLE LEASE API] ===== STARTING API FETCH FOR LEASE {lease_id} =====")
+    print(f"{'='*80}")
+    print(f"[SINGLE LEASE API] Input Parameters:")
+    print(f"  - lease_id: {lease_id}")
+    print(f"  - property_id: {property_id or 'None (will be discovered)'}")
+    print(f"  - transaction_from_date: {transaction_from_date or 'None'}")
+    print(f"  - transaction_to_date: {transaction_to_date or 'None'}")
+    print(f"[SINGLE LEASE API] API Endpoints:")
+    print(f"  - Details URL: {details_url}")
+    print(f"  - AR URL: {ar_url}")
+    
+    # If property_id not provided, we need to discover it first with a minimal call
+    if property_id is None:
+        print(f"\n[SINGLE LEASE API] STEP 1: Property ID Discovery")
+        print(f"[SINGLE LEASE API] Making discovery API call to find property_id...")
+        # Make initial call to discover property_id from the lease
+        discovery_params = {
+            "leaseIds": str(lease_id),
+            "includeAddOns": "0",
+            "includeCharge": "0",
+            "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_LEASE_STATUS_TYPE_IDS") or "3,4"),
+        }
+        print(f"[SINGLE LEASE API] Discovery request parameters: {discovery_params}")
+        discovery_payload = _post_method(
+            endpoint_url=details_url,
+            api_key=api_key,
+            api_key_header=api_key_header,
+            method_name=_to_str(os.getenv("LEASE_API_DETAILS_METHOD") or "getLeaseDetails"),
+            version=_to_str(os.getenv("LEASE_API_DETAILS_VERSION") or "r2"),
+            timeout_seconds=timeout_seconds,
+            params=discovery_params,
+        )
+        discovery_nodes = _extract_lease_nodes(discovery_payload)
+        if not discovery_nodes:
+            raise ValueError(f"No lease found with ID {lease_id}")
+        property_id = int(discovery_nodes[0].get("propertyId"))
+        print(f"[SINGLE LEASE API] ✓ Successfully discovered property_id={property_id} for lease_id={lease_id}")
+    else:
+        print(f"\n[SINGLE LEASE API] STEP 1: Using provided property_id={property_id}")
+
+    # Fetch lease details with BOTH propertyId and leaseIds
+    # Entrata API requires both parameters to properly filter to a single lease
+    print(f"\n[SINGLE LEASE API] STEP 2: Fetching Lease Details (Scheduled Charges)")
+    lease_details_params: dict[str, Any] = {
+        "propertyId": int(property_id),
+        "leaseIds": str(lease_id),
+        "includeAddOns": _to_str(os.getenv("LEASE_API_INCLUDE_ADDONS") or "0"),
+        "includeCharge": _to_str(os.getenv("LEASE_API_INCLUDE_CHARGE") or "1"),
+        "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_LEASE_STATUS_TYPE_IDS") or "3,4"),
+    }
+    print(f"[SINGLE LEASE API] getLeaseDetails request parameters: {lease_details_params}")
+    print(f"[SINGLE LEASE API] ✓ Both propertyId AND leaseIds sent together (Entrata requirement)")
+
+    lease_details_payload = _post_method(
+        endpoint_url=details_url,
+        api_key=api_key,
+        api_key_header=api_key_header,
+        method_name=_to_str(os.getenv("LEASE_API_DETAILS_METHOD") or "getLeaseDetails"),
+        version=_to_str(os.getenv("LEASE_API_DETAILS_VERSION") or "r2"),
+        timeout_seconds=timeout_seconds,
+        params=lease_details_params,
+    )
+    print(f"[SINGLE LEASE API] ✓ Received lease details response from Entrata")
+
+    # Extract lease nodes (should only be one)
+    lease_nodes = _extract_lease_nodes(lease_details_payload)
+    
+    if not lease_nodes:
+        raise ValueError(f"No lease found with ID {lease_id}")
+    
+    # Get property info from the lease
+    property_name = _to_str(lease_nodes[0].get("propertyName"))
+    discovered_property_id = lease_nodes[0].get("propertyId")
+    
+    if not property_id and discovered_property_id:
+        property_id = int(discovered_property_id)
+    
+    if not property_name:
+        property_name = f"Property {int(property_id)}" if property_id else "Unknown Property"
+
+    # Build scheduled charges DataFrame
+    print(f"[SINGLE LEASE API] Building scheduled charges DataFrame from API response...")
+    scheduled_df, lease_ids_list = _build_scheduled_df(
+        int(property_id) if property_id else 0, 
+        property_name, 
+        lease_details_payload
+    )
+    print(f"[SINGLE LEASE API] Initial scheduled charges DataFrame: {scheduled_df.shape}")
+    if len(lease_ids_list) > 0:
+        print(f"[SINGLE LEASE API] Lease IDs in response: {lease_ids_list}")
+    
+    # Filter scheduled charges to ONLY the requested lease_id
+    # (in case API returned multiple leases despite leaseIds parameter)
+    if not scheduled_df.empty and 'LEASE_ID' in scheduled_df.columns:
+        before_count = len(scheduled_df)
+        scheduled_df = scheduled_df[scheduled_df['LEASE_ID'] == str(lease_id)].copy()
+        after_count = len(scheduled_df)
+        if before_count != after_count:
+            print(f"[SINGLE LEASE API] ⚠️  Defensive filtering triggered (API returned multiple leases)")
+            print(f"[SINGLE LEASE API] Filtered scheduled charges: {before_count} → {after_count} rows (lease_id={lease_id})")
+        else:
+            print(f"[SINGLE LEASE API] ✓ API correctly returned only requested lease (no defensive filtering needed)")
+    
+    print(f"[SINGLE LEASE API] Final scheduled charges DataFrame: {scheduled_df.shape}")
+    if not scheduled_df.empty:
+        print(f"[SINGLE LEASE API] Scheduled charge columns: {list(scheduled_df.columns)}")
+
+    # Fetch AR transactions with BOTH propertyId and leaseIds
+    # Entrata API requires both parameters to properly filter to a single lease
+    print(f"\n[SINGLE LEASE API] STEP 3: Fetching AR Transactions")
+    ar_params: dict[str, Any] = {
+        "propertyId": int(property_id),
+        "leaseIds": str(lease_id),
+        "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_AR_LEASE_STATUS_TYPE_IDS") or "3,4"),
+        "transactionTypeIds": _to_str(os.getenv("LEASE_API_TRANSACTION_TYPE_IDS") or ""),
+        "arCodeIds": _to_str(os.getenv("LEASE_API_AR_CODE_IDS") or ""),
+        "showFullLedger": _to_str(os.getenv("LEASE_API_SHOW_FULL_LEDGER") or "1"),
+        "residentFriendlyMode": _to_str(os.getenv("LEASE_API_RESIDENT_FRIENDLY_MODE") or "0"),
+        "includeOtherIncomeLeases": _to_str(os.getenv("LEASE_API_INCLUDE_OTHER_INCOME_LEASES") or "0"),
+        "includeReversals": _to_str(os.getenv("LEASE_API_INCLUDE_REVERSALS") or "1"),
+        "ledgerIds": _to_str(os.getenv("LEASE_API_LEDGER_IDS") or ""),
+    }
+    
+    if transaction_from_date:
+        ar_params["transactionFromDate"] = transaction_from_date
+    if transaction_to_date:
+        ar_params["transactionToDate"] = transaction_to_date
+    
+    print(f"[SINGLE LEASE API] getLeaseArTransactions request parameters: {ar_params}")
+    print(f"[SINGLE LEASE API] ✓ Both propertyId AND leaseIds sent together (Entrata requirement)")
+
+    ar_payload = _post_method(
+        endpoint_url=ar_url,
+        api_key=api_key,
+        api_key_header=api_key_header,
+        method_name=_to_str(os.getenv("LEASE_API_AR_METHOD") or "getLeaseArTransactions"),
+        version=_to_str(os.getenv("LEASE_API_AR_VERSION") or "r1"),
+        timeout_seconds=timeout_seconds,
+        params=ar_params,
+    )
+    print(f"[SINGLE LEASE API] ✓ Received AR transactions response from Entrata")
+
+    print(f"[SINGLE LEASE API] Building AR transactions DataFrame from API response...")
+    ar_df = _build_ar_df(
+        int(property_id) if property_id else 0, 
+        property_name, 
+        ar_payload
+    )
+    print(f"[SINGLE LEASE API] Initial AR transactions DataFrame: {ar_df.shape}")
+    
+    # Filter AR transactions to ONLY the requested lease_id
+    # (in case API returned multiple leases despite leaseIds parameter)
+    if not ar_df.empty and 'LEASE_ID' in ar_df.columns:
+        before_count = len(ar_df)
+        ar_df = ar_df[ar_df['LEASE_ID'] == str(lease_id)].copy()
+        after_count = len(ar_df)
+        if before_count != after_count:
+            print(f"[SINGLE LEASE API] ⚠️  Defensive filtering triggered (API returned multiple leases)")
+            print(f"[SINGLE LEASE API] Filtered AR transactions: {before_count} → {after_count} rows (lease_id={lease_id})")
+        else:
+            print(f"[SINGLE LEASE API] ✓ API correctly returned only requested lease (no defensive filtering needed)")
+    
+    print(f"[SINGLE LEASE API] Final AR transactions DataFrame: {ar_df.shape}")
+    if not ar_df.empty:
+        print(f"[SINGLE LEASE API] AR transaction columns: {list(ar_df.columns)}")
+    
+    print(f"\n[SINGLE LEASE API] ===== API FETCH COMPLETE =====")
+    print(f"[SINGLE LEASE API] Summary for lease {lease_id}:")
+    print(f"  - Property: {property_name} (ID: {property_id})")
+    print(f"  - Scheduled Charges: {len(scheduled_df)} rows")
+    print(f"  - AR Transactions: {len(ar_df)} rows")
+    print(f"{'='*80}\n")
+
+    return {
+        "property_name": property_name,
+        "property_id": property_id,
+        "scheduled_raw": scheduled_df,
+        "ar_raw": ar_df,
+        "lease_count": 1,
+        "lease_id": lease_id,
+    }
