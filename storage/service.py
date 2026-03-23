@@ -1070,6 +1070,59 @@ class StorageService:
         except Exception as e:
             logger.error(f"[STORAGE] Background snapshot validation failed for {run_id}: {e}", exc_info=True)
 
+    def _write_run_display_snapshots_async(
+        self,
+        run_id: str,
+        bucket_results: pd.DataFrame,
+        actual_detail: Optional[pd.DataFrame] = None,
+        expected_detail: Optional[pd.DataFrame] = None,
+        property_name_map: Optional[Dict[int, str]] = None,
+        snapshot_validation_async: bool = True,
+    ) -> None:
+        """Background wrapper for RunDisplaySnapshots persistence and optional validation."""
+        try:
+            logger.info(f"[STORAGE] 🚀 Background RunDisplaySnapshots write started for {run_id}")
+            snapshot_stage_timers: Dict[str, float] = {
+                'snapshot_filter_seconds': 0.0,
+                'snapshot_write_seconds': 0.0,
+                'snapshot_validate_seconds': 0.0,
+            }
+            snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
+                run_id,
+                bucket_results,
+                actual_detail=actual_detail,
+                expected_detail=expected_detail,
+                property_name_map=property_name_map,
+                stage_timers=snapshot_stage_timers,
+            )
+            if snapshot_write_ok:
+                logger.info(
+                    f"[STORAGE] ✅ Background RunDisplaySnapshots write finished for {run_id}: "
+                    f"filter={snapshot_stage_timers.get('snapshot_filter_seconds', 0.0):.2f}s "
+                    f"write={snapshot_stage_timers.get('snapshot_write_seconds', 0.0):.2f}s"
+                )
+                if snapshot_validation_async and self._can_use_sharepoint_lists():
+                    self._validate_run_display_snapshots_async(run_id, bucket_results)
+                else:
+                    validate_started = perf_counter()
+                    validation = self.validate_run_display_snapshots(run_id, bucket_results)
+                    snapshot_stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
+                    if validation.get('ok'):
+                        logger.info(
+                            f"[STORAGE] ✅ Background snapshot validation passed for {run_id}: "
+                            f"portfolio={validation['actual']['portfolio']}, "
+                            f"property={validation['actual']['property']}, "
+                            f"lease={validation['actual']['lease']}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[STORAGE] Background snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
+                        )
+            else:
+                logger.warning(f"[STORAGE] Background RunDisplaySnapshots write skipped/failed for {run_id}")
+        except Exception as e:
+            logger.error(f"[STORAGE] Background RunDisplaySnapshots write failed for {run_id}: {e}", exc_info=True)
+
     def load_run_display_snapshot_from_sharepoint_list(
         self,
         run_id: str,
@@ -1835,7 +1888,25 @@ class StorageService:
             lease_interval_id=lease_interval_id,
         )
         if bucket_results is not None:
-            return self._normalize_loaded_dataframe(bucket_results)
+            list_results = self._normalize_loaded_dataframe(bucket_results)
+
+            csv_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
+            if csv_results is not None:
+                if property_id is not None and 'PROPERTY_ID' in csv_results.columns:
+                    csv_results = csv_results[csv_results['PROPERTY_ID'] == float(property_id)]
+                if lease_interval_id is not None and 'LEASE_INTERVAL_ID' in csv_results.columns:
+                    csv_results = csv_results[csv_results['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
+
+                csv_results = self._normalize_loaded_dataframe(csv_results.copy())
+                if len(list_results) < len(csv_results):
+                    logger.warning(
+                        f"[STORAGE] Partial list-backed bucket_results for run={run_id} "
+                        f"(list_rows={len(list_results)}, csv_rows={len(csv_results)}); "
+                        "falling back to CSV for complete view"
+                    )
+                    return csv_results
+
+            return list_results
 
         bucket_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
         if bucket_results is None:
@@ -1861,7 +1932,32 @@ class StorageService:
             lease_interval_id=lease_interval_id,
         )
         if findings is not None:
-            return self._normalize_loaded_dataframe(findings)
+            list_findings = self._normalize_loaded_dataframe(findings)
+
+            csv_findings = self._load_dataframe(run_id, "outputs/findings.csv")
+            if csv_findings is not None:
+                if property_id is not None:
+                    if 'property_id' in csv_findings.columns:
+                        csv_findings = csv_findings[csv_findings['property_id'] == float(property_id)]
+                    elif 'PROPERTY_ID' in csv_findings.columns:
+                        csv_findings = csv_findings[csv_findings['PROPERTY_ID'] == float(property_id)]
+
+                if lease_interval_id is not None:
+                    if 'lease_interval_id' in csv_findings.columns:
+                        csv_findings = csv_findings[csv_findings['lease_interval_id'] == float(lease_interval_id)]
+                    elif 'LEASE_INTERVAL_ID' in csv_findings.columns:
+                        csv_findings = csv_findings[csv_findings['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
+
+                csv_findings = self._normalize_loaded_dataframe(csv_findings.copy())
+                if len(list_findings) < len(csv_findings):
+                    logger.warning(
+                        f"[STORAGE] Partial list-backed findings for run={run_id} "
+                        f"(list_rows={len(list_findings)}, csv_rows={len(csv_findings)}); "
+                        "falling back to CSV for complete view"
+                    )
+                    return csv_findings
+
+            return list_findings
 
         findings = self._load_dataframe(run_id, "outputs/findings.csv")
         if findings is None:
@@ -3220,8 +3316,9 @@ class StorageService:
             print(f"  - Variance detail: {variance_detail.shape}")
         self.create_run_dir(run_id)
 
-        write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'false').lower() == 'true'
+        write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'true').lower() == 'true'
         write_metrics_async = os.getenv('ASYNC_METRICS_WRITE', 'true').lower() == 'true'
+        write_snapshots_async = os.getenv('ASYNC_RUN_DISPLAY_SNAPSHOTS', 'true').lower() == 'true'
         snapshot_validation_async = os.getenv('ASYNC_SNAPSHOT_VALIDATION', 'true').lower() == 'true'
         
         files_saved = []
@@ -3308,51 +3405,71 @@ class StorageService:
         # Write static display snapshots (portfolio/property/lease) for fast UI loads.
         print(f"\n[STORAGE] Step 6/7: Writing display snapshots (portfolio/property/lease views)...")
         try:
-            snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
-                run_id,
-                bucket_results,
-                actual_detail=actual_detail,
-                expected_detail=expected_detail,
-                property_name_map=property_name_map,
-                stage_timers=stage_timers,
-            )
-            if snapshot_write_ok:
-                print(f"[STORAGE] ✓ Display snapshots written successfully")
-                if snapshot_validation_async and self._can_use_sharepoint_lists():
-                    validate_started = perf_counter()
-                    print(f"[STORAGE] 🚀 Dispatching async snapshot validation...")
-                    validate_thread = threading.Thread(
-                        target=self._validate_run_display_snapshots_async,
-                        args=(run_id, bucket_results),
-                        daemon=True,
-                        name=f"snapshot-validate-{run_id}",
-                    )
-                    validate_thread.start()
-                    stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
-                    print(f"[STORAGE] ✓ Snapshot validation dispatched (async mode)")
-                else:
-                    validate_started = perf_counter()
-                    print(f"[STORAGE] Validating snapshots synchronously...")
-                    validation = self.validate_run_display_snapshots(run_id, bucket_results)
-                    stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
-                    if validation.get('ok'):
-                        print(
-                            f"[STORAGE] ✓ Snapshot validation passed: "
-                            f"portfolio={validation['actual']['portfolio']}, "
-                            f"property={validation['actual']['property']}, "
-                            f"lease={validation['actual']['lease']}"
+            can_write_sharepoint_lists = self._can_use_sharepoint_lists()
+            if write_snapshots_async and can_write_sharepoint_lists:
+                snapshot_dispatch_started = perf_counter()
+                print(f"[STORAGE] 🚀 Dispatching async display snapshot write...")
+                snapshot_thread = threading.Thread(
+                    target=self._write_run_display_snapshots_async,
+                    args=(run_id, bucket_results),
+                    kwargs={
+                        'actual_detail': actual_detail,
+                        'expected_detail': expected_detail,
+                        'property_name_map': property_name_map,
+                        'snapshot_validation_async': snapshot_validation_async,
+                    },
+                    daemon=True,
+                    name=f"snapshot-write-{run_id}",
+                )
+                snapshot_thread.start()
+                stage_timers['snapshot_write_seconds'] = float(perf_counter() - snapshot_dispatch_started)
+                print(f"[STORAGE] ✓ Display snapshot write dispatched (async mode)")
+            else:
+                snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
+                    run_id,
+                    bucket_results,
+                    actual_detail=actual_detail,
+                    expected_detail=expected_detail,
+                    property_name_map=property_name_map,
+                    stage_timers=stage_timers,
+                )
+                if snapshot_write_ok:
+                    print(f"[STORAGE] ✓ Display snapshots written successfully")
+                    if snapshot_validation_async and self._can_use_sharepoint_lists():
+                        validate_started = perf_counter()
+                        print(f"[STORAGE] 🚀 Dispatching async snapshot validation...")
+                        validate_thread = threading.Thread(
+                            target=self._validate_run_display_snapshots_async,
+                            args=(run_id, bucket_results),
+                            daemon=True,
+                            name=f"snapshot-validate-{run_id}",
                         )
-                        logger.info(
-                            f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
-                            f"portfolio={validation['actual']['portfolio']}, "
-                            f"property={validation['actual']['property']}, "
-                            f"lease={validation['actual']['lease']}"
-                        )
+                        validate_thread.start()
+                        stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
+                        print(f"[STORAGE] ✓ Snapshot validation dispatched (async mode)")
                     else:
-                        print(f"[STORAGE] ⚠️  Snapshot validation warnings: {validation.get('errors', [])}")
-                        logger.warning(
-                            f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
-                        )
+                        validate_started = perf_counter()
+                        print(f"[STORAGE] Validating snapshots synchronously...")
+                        validation = self.validate_run_display_snapshots(run_id, bucket_results)
+                        stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
+                        if validation.get('ok'):
+                            print(
+                                f"[STORAGE] ✓ Snapshot validation passed: "
+                                f"portfolio={validation['actual']['portfolio']}, "
+                                f"property={validation['actual']['property']}, "
+                                f"lease={validation['actual']['lease']}"
+                            )
+                            logger.info(
+                                f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
+                                f"portfolio={validation['actual']['portfolio']}, "
+                                f"property={validation['actual']['property']}, "
+                                f"lease={validation['actual']['lease']}"
+                            )
+                        else:
+                            print(f"[STORAGE] ⚠️  Snapshot validation warnings: {validation.get('errors', [])}")
+                            logger.warning(
+                                f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
+                            )
         except Exception as e:
             print(f"[STORAGE] ⚠️  Display snapshots write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
@@ -3394,6 +3511,7 @@ class StorageService:
             f"snapshot_write_seconds={stage_timers.get('snapshot_write_seconds', 0.0):.2f} "
             f"snapshot_validate_seconds={stage_timers.get('snapshot_validate_seconds', 0.0):.2f} "
             f"metrics_mode={'async' if write_metrics_async else 'sync'} "
+            f"snapshots_mode={'async' if write_snapshots_async else 'sync'} "
             f"snapshot_validation_mode={'async' if snapshot_validation_async else 'sync'}"
         )
         

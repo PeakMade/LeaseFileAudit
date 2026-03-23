@@ -1941,46 +1941,14 @@ def upload():
         )
         execute_seconds = perf_counter() - execute_started
 
-        # For property-scoped runs, overlay onto latest baseline run so portfolio remains complete.
+        # For property-scoped runs, keep initial save/response strictly scoped to requested property IDs.
         base_run_id = None
         overlay_seconds = 0.0
         if scoped_property_ids:
-            overlay_started = perf_counter()
-            try:
-                # PRIORITY 1: Use the most recently saved run from this session (avoids SharePoint eventual consistency)
-                last_saved_run = session.get('last_saved_run_id')
-                if last_saved_run and last_saved_run != run_id:
-                    base_run_id = last_saved_run
-                    logger.info(
-                        f"[PROPERTY SCOPE] Using last saved run from session as baseline: {base_run_id}"
-                    )
-                else:
-                    # PRIORITY 2: Fall back to SharePoint list_runs
-                    prior_runs = storage.list_runs(limit=2)
-                    for run in prior_runs:
-                        candidate = run.get('run_id')
-                        if candidate and candidate != run_id:
-                            base_run_id = candidate
-                            logger.info(
-                                f"[PROPERTY SCOPE] Using baseline from list_runs: {base_run_id}"
-                            )
-                            break
-
-                if base_run_id:
-                    logger.info(
-                        f"[PROPERTY SCOPE] Overlaying scoped results for {scoped_property_ids} "
-                        f"onto baseline run {base_run_id}"
-                    )
-                    baseline_run_data = storage.load_run(base_run_id)
-                    results = _overlay_property_scope_results(
-                        results,
-                        baseline_run_data,
-                        set(scoped_property_ids)
-                    )
-            except Exception as overlay_error:
-                logger.warning(f"[PROPERTY SCOPE] Baseline overlay skipped due to error: {overlay_error}")
-            finally:
-                overlay_seconds = perf_counter() - overlay_started
+            logger.info(
+                f"[PROPERTY SCOPE] Skipping baseline overlay for initial POST response; "
+                f"saving scoped results only for properties={scoped_property_ids}"
+            )
         
         # Save results
         metadata = storage.create_metadata(run_id, file_path)
@@ -2012,17 +1980,24 @@ def upload():
         # New run added: invalidate run-picker caches.
         invalidate_runs_cache()
         
-        # Store this run_id in session for next property upload to use as baseline
+        # Store latest run_id in session for follow-up navigation/context.
         session['last_saved_run_id'] = run_id
-        logger.info(f"[SESSION] Stored run {run_id} as last_saved_run_id for next baseline")
+        logger.info(f"[SESSION] Stored run {run_id} as last_saved_run_id")
         
         save_run_seconds = perf_counter() - save_run_started
+        logger.info(
+            f"[UPLOAD DEBUG] save_run completed for run_id={run_id} in {save_run_seconds:.2f}s; "
+            f"starting post-save UI prep"
+        )
         
         # 🧹 CLEAR CACHE after new upload
         logger.info(f"[CACHE] Clearing cache after new upload (run_id: {run_id})")
         cache_clear_started = perf_counter()
         clear_run_cache(run_id)
         cache_clear_seconds = perf_counter() - cache_clear_started
+        logger.info(
+            f"[UPLOAD DEBUG] run cache cleared for run_id={run_id} in {cache_clear_seconds:.2f}s"
+        )
         
         # Clean up temp file if using SharePoint
         cleanup_seconds = 0.0
@@ -2069,6 +2044,15 @@ def upload():
                 }
             )
             activity_log_seconds = perf_counter() - activity_started
+            logger.info(
+                f"[UPLOAD DEBUG] activity log write completed for run_id={run_id} "
+                f"in {activity_log_seconds:.2f}s"
+            )
+        else:
+            logger.info(
+                f"[UPLOAD DEBUG] activity log skipped for run_id={run_id}; "
+                f"user_present={bool(user)} can_log={config.auth.can_log_to_sharepoint() if user else False}"
+            )
 
         if audit_started_at is not None:
             elapsed_seconds = perf_counter() - audit_started_at
@@ -2096,10 +2080,19 @@ def upload():
             'cleanup_seconds': float(cleanup_seconds),
             'activity_log_seconds': float(activity_log_seconds),
         }
+        logger.info(
+            f"[UPLOAD DEBUG] pending upload timing stored for run_id={run_id}; "
+            f"scoped_property_count={len(scoped_property_ids)}"
+        )
 
         if len(scoped_property_ids) == 1:
+            logger.info(
+                f"[UPLOAD DEBUG] redirecting to property view for run_id={run_id}, "
+                f"property_id={scoped_property_ids[0]}"
+            )
             return redirect(url_for('main.property_view', property_id=scoped_property_ids[0], run_id=run_id))
 
+        logger.info(f"[UPLOAD DEBUG] redirecting to portfolio view for run_id={run_id}")
         return redirect(url_for('main.portfolio', run_id=run_id))
         
     except Exception as e:
@@ -2212,41 +2205,10 @@ def upload_api_property():
 
         base_run_id = None
         overlay_seconds = 0.0
-        try:
-            # PRIORITY 1: Use the most recently saved run from this session (avoids SharePoint eventual consistency)
-            last_saved_run = session.get('last_saved_run_id')
-            if last_saved_run and last_saved_run != run_id:
-                base_run_id = last_saved_run
-                logger.info(
-                    f"[PROPERTY API SCOPE] Using last saved run from session as baseline: {base_run_id}"
-                )
-            else:
-                # PRIORITY 2: Fall back to SharePoint list_runs
-                prior_runs = storage.list_runs(limit=2)
-                for run in prior_runs:
-                    candidate = run.get('run_id')
-                    if candidate and candidate != run_id:
-                        base_run_id = candidate
-                        logger.info(
-                            f"[PROPERTY API SCOPE] Using baseline from list_runs: {base_run_id}"
-                        )
-                        break
-
-            if base_run_id:
-                overlay_started = perf_counter()
-                logger.info(
-                    f"[PROPERTY API SCOPE] Overlaying API-scoped results for property {property_id} "
-                    f"onto baseline run {base_run_id}"
-                )
-                baseline_run_data = storage.load_run(base_run_id)
-                results = _overlay_property_scope_results(
-                    results,
-                    baseline_run_data,
-                    {str(property_id)}
-                )
-                overlay_seconds = perf_counter() - overlay_started
-        except Exception as overlay_error:
-            logger.warning(f"[PROPERTY API SCOPE] Baseline overlay skipped due to error: {overlay_error}")
+        logger.info(
+            f"[PROPERTY API SCOPE] Skipping baseline overlay for initial POST response; "
+            f"saving scoped results only for property={property_id}"
+        )
 
         metadata = {
             'run_id': run_id,
@@ -2286,15 +2248,23 @@ def upload_api_property():
             property_name_map=results.get("property_name_map"),
         )
         save_run_seconds = perf_counter() - save_run_started
+        logger.info(
+            f"[API UPLOAD DEBUG] save_run completed for run_id={run_id} in {save_run_seconds:.2f}s; "
+            f"starting post-save UI prep"
+        )
 
-        # Store this run_id in session for next property upload to use as baseline
+        # Store latest run_id in session for follow-up navigation/context.
         session['last_saved_run_id'] = run_id
-        logger.info(f"[SESSION] Stored run {run_id} as last_saved_run_id for next baseline")
+        logger.info(f"[SESSION] Stored run {run_id} as last_saved_run_id")
 
         cache_clear_started = perf_counter()
         invalidate_runs_cache()
         clear_run_cache(run_id)
         cache_clear_seconds = perf_counter() - cache_clear_started
+        logger.info(
+            f"[API UPLOAD DEBUG] run cache invalidated/cleared for run_id={run_id} "
+            f"in {cache_clear_seconds:.2f}s"
+        )
         cleanup_seconds = 0.0
 
         activity_log_seconds = 0.0
@@ -2316,6 +2286,15 @@ def upload_api_property():
                 }
             )
             activity_log_seconds = perf_counter() - activity_started
+            logger.info(
+                f"[API UPLOAD DEBUG] activity log write completed for run_id={run_id} "
+                f"in {activity_log_seconds:.2f}s"
+            )
+        else:
+            logger.info(
+                f"[API UPLOAD DEBUG] activity log skipped for run_id={run_id}; "
+                f"user_present={bool(user)} can_log={config.auth.can_log_to_sharepoint() if user else False}"
+            )
 
         elapsed_seconds = perf_counter() - audit_started_at
         logger.info(
@@ -2343,6 +2322,10 @@ def upload_api_property():
             'cleanup_seconds': float(cleanup_seconds),
             'activity_log_seconds': float(activity_log_seconds),
         }
+        logger.info(
+            f"[API UPLOAD DEBUG] pending upload timing stored for run_id={run_id}; "
+            f"redirecting to property_id={property_id}"
+        )
 
         return redirect(url_for('main.property_view', property_id=str(property_id), run_id=run_id))
 
@@ -2739,6 +2722,7 @@ def property_view(property_id: str, run_id: str = None):
     """Property view - exceptions grouped by lease with run selector."""
     try:
         route_started = perf_counter()
+        stage_started = route_started
         storage = get_storage_service()
         cache_token = _session_cache_token()
 
@@ -2755,6 +2739,11 @@ def property_view(property_id: str, run_id: str = None):
             metadata = cached_load_metadata(run_id, cache_token)
         except Exception:
             metadata = {'timestamp': 'Unknown'}
+        logger.info(
+            f"[PROPERTY_VIEW DEBUG] stage=metadata_loaded run_id={run_id} property_id={property_id} "
+            f"seconds={perf_counter() - stage_started:.2f}"
+        )
+        stage_started = perf_counter()
 
         # Get bucket results for this property from AuditRuns
         all_property_buckets = cached_load_bucket_results(
@@ -2763,6 +2752,11 @@ def property_view(property_id: str, run_id: str = None):
             session_cache_key=cache_token
         )
         all_property_buckets = _ensure_bucket_results_dataframe(all_property_buckets)
+        logger.info(
+            f"[PROPERTY_VIEW DEBUG] stage=buckets_loaded run_id={run_id} property_id={property_id} "
+            f"rows={len(all_property_buckets)} seconds={perf_counter() - stage_started:.2f}"
+        )
+        stage_started = perf_counter()
 
         required_property_cols = {
             CanonicalField.PROPERTY_ID.value,
@@ -2799,6 +2793,11 @@ def property_view(property_id: str, run_id: str = None):
             scope_type='lease',
             session_cache_key=cache_token
         )
+        logger.info(
+            f"[PROPERTY_VIEW DEBUG] stage=snapshots_loaded run_id={run_id} property_id={property_id} "
+            f"lease_snapshot_count={len(lease_snapshot_map)} seconds={perf_counter() - stage_started:.2f}"
+        )
+        stage_started = perf_counter()
         if property_snapshot:
             logger.info(
                 f"[SNAPSHOT][PROPERTY] Using RunDisplaySnapshots for run {run_id}, property {property_id}: "
@@ -2915,6 +2914,11 @@ def property_view(property_id: str, run_id: str = None):
                             pass
         except Exception as name_error:
             logger.warning(f"[PROPERTY_VIEW] Failed to load resident names for lease rows: {name_error}")
+        logger.info(
+            f"[PROPERTY_VIEW DEBUG] stage=lease_names_loaded run_id={run_id} property_id={property_id} "
+            f"lease_count={len(all_lease_ids)} seconds={perf_counter() - stage_started:.2f}"
+        )
+        stage_started = perf_counter()
         
         # Filter to only exceptions for grouping
         property_buckets = all_property_buckets[
@@ -2928,6 +2932,11 @@ def property_view(property_id: str, run_id: str = None):
             int(float(property_id)),
             cache_token
         )
+        logger.info(
+            f"[PROPERTY_VIEW DEBUG] stage=bulk_exception_months_loaded run_id={run_id} "
+            f"property_id={property_id} groups={len(bulk_exception_data)} seconds={perf_counter() - stage_started:.2f}"
+        )
+        stage_started = perf_counter()
         
         # Build resolved_keys from bulk data
         resolved_keys = set()
@@ -2956,6 +2965,11 @@ def property_view(property_id: str, run_id: str = None):
         
         property_buckets = property_buckets[property_buckets.apply(is_unresolved, axis=1)].copy()
         logger.info(f"[PROPERTY_VIEW] After filtering resolved: {len(property_buckets)} unresolved exceptions remain")
+        logger.info(
+            f"[PROPERTY_VIEW DEBUG] stage=resolved_filter_applied run_id={run_id} property_id={property_id} "
+            f"unresolved_rows={len(property_buckets)} seconds={perf_counter() - stage_started:.2f}"
+        )
+        stage_started = perf_counter()
         
         # Group exceptions by lease_interval_id
         lease_groups = {}
@@ -3003,8 +3017,8 @@ def property_view(property_id: str, run_id: str = None):
             ])
             
             # Calculate lease status based on exception states
-            static_exception_count = int(lease_snapshot.get('exception_count', 0)) if lease_snapshot else 0
             unresolved_exception_count = len(lease_groups.get(lease_id, []))
+            static_exception_count = int(lease_snapshot.get('exception_count', 0)) if lease_snapshot else unresolved_exception_count
             resolved_exception_count = max(0, static_exception_count - unresolved_exception_count)
             
             # Determine overall lease status
@@ -3065,6 +3079,11 @@ def property_view(property_id: str, run_id: str = None):
                 -abs(float(x.get('total_variance') or 0)),
             )
         )
+        logger.info(
+            f"[PROPERTY_VIEW DEBUG] stage=lease_summary_built run_id={run_id} property_id={property_id} "
+            f"lease_summary_count={len(lease_summary)} seconds={perf_counter() - stage_started:.2f}"
+        )
+        stage_started = perf_counter()
         
         # Calculate property KPIs
         # Combine matched buckets with unresolved exceptions only (exclude resolved exceptions)
@@ -3108,10 +3127,18 @@ def property_view(property_id: str, run_id: str = None):
             ],
             current_run_id=run_id
         )
+        logger.info(
+            f"[PROPERTY_VIEW DEBUG] stage=template_rendered run_id={run_id} property_id={property_id} "
+            f"seconds={perf_counter() - stage_started:.2f}"
+        )
         _log_and_clear_pending_upload_timing(
             run_id=run_id,
             destination='property',
             destination_route_seconds=(perf_counter() - route_started)
+        )
+        logger.info(
+            f"[PROPERTY_VIEW DEBUG] stage=complete run_id={run_id} property_id={property_id} "
+            f"total_route_seconds={perf_counter() - route_started:.2f}"
         )
         return response
     except Exception as e:

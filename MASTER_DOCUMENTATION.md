@@ -619,10 +619,12 @@ storage.upsert_exception_month_to_sharepoint_list({
 
 **Read/write behavior**:
 - On save, app writes `bucket_results` + `findings` rows to `AuditRuns`.
-- **Write mode**: Synchronous by default (blocks until complete) to prevent partial data display.
-  - Set `ASYNC_AUDIT_RESULTS_WRITE=true` to enable background writes (faster uploads, but may show incomplete data).
-  - Synchronous writes take ~2 minutes for 2,700+ rows but ensure all data is available immediately.
+- **Write mode**: Background writes are enabled by default to reduce upload timeout risk.
+   - `ASYNC_AUDIT_RESULTS_WRITE=true` (default) writes AuditRuns detail rows asynchronously.
+   - `ASYNC_RUN_DISPLAY_SNAPSHOTS=true` (default) writes RunDisplaySnapshots asynchronously.
+   - Set either env var to `false` to force synchronous blocking writes for troubleshooting.
 - On load, app reads `AuditRuns` first and falls back to CSV files if list rows are unavailable.
+- If list-backed results are partially written, loaders compare list row count vs CSV row count and use CSV for complete rendering.
 - Existing CSV run artifacts remain as compatibility fallback.
 - Write path uses Microsoft Graph `$batch` API with automatic retry logic and configurable batch sizes.
 
@@ -857,8 +859,9 @@ MICROSOFT_PROVIDER_AUTHENTICATION_SECRET=<secret>
 SHAREPOINT_SITE_URL=https://peakcampus.sharepoint.com/sites/BaseCampApps
 
 # SharePoint Performance Tuning
-ASYNC_AUDIT_RESULTS_WRITE=false  # Synchronous writes (default - prevents partial data)
-ASYNC_AUDIT_RESULTS_WRITE=true   # Background writes (faster but may show incomplete data)
+ASYNC_AUDIT_RESULTS_WRITE=true   # Background AuditRuns detail writes (default)
+ASYNC_RUN_DISPLAY_SNAPSHOTS=true # Background RunDisplaySnapshots writes (default)
+ASYNC_SNAPSHOT_VALIDATION=true   # Background snapshot validation (default)
 SHAREPOINT_BATCH_SIZE_AUDITRUNS=10  # Override batch size for AuditRuns (default: 10)
 SHAREPOINT_BATCH_SIZE_SNAPSHOTS=20  # Override batch size for snapshots (default: 20)
 
@@ -1247,12 +1250,11 @@ def calculate_cumulative_metrics(run_id):
   1. Check terminal logs for `[STORAGE] Batch X/Y throttled` or `504` errors
   2. Compare `bucket_rows` count in dispatch log vs rows loaded from SharePoint
   3. Example: `Dispatched background AuditRuns write: bucket_rows=1603` but `Loaded audit results: rows=80`
-- Solution (implemented 2026-03-10):
-  - **Changed to synchronous writes by default** (`ASYNC_AUDIT_RESULTS_WRITE=false`)
-  - Property uploads now wait for complete SharePoint list write before returning
-  - Ensures all data is available when viewing property audit
-  - Trade-off: Uploads take ~2 minutes instead of 20 seconds, but no partial data
-  - Alternative: Keep async writes enabled, increase batch size, monitor completion logs
+- Solution (updated 2026-03-23):
+   - Keep async writes enabled for faster responses and lower timeout risk.
+   - `load_bucket_results()` and `load_findings()` now automatically fall back to CSV when list row counts are lower than CSV row counts.
+   - Property view lease status now falls back to unresolved bucket counts when lease snapshots are not yet available.
+   - Optional fallback mode: set `ASYNC_AUDIT_RESULTS_WRITE=false` and/or `ASYNC_RUN_DISPLAY_SNAPSHOTS=false` if you need fully blocking writes.
 - Prevention:
   - Ensure AuditRuns list has proper indexes on RunId, ResultType, PropertyId
   - Lower batch size further if throttling persists: set `SHAREPOINT_BATCH_SIZE_AUDITRUNS=5`
@@ -1395,6 +1397,7 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-23**: Reduced upload timeout risk by moving RunDisplaySnapshots writes to async by default in `storage/service.py` via `ASYNC_RUN_DISPLAY_SNAPSHOTS` (default `true`); added background wrapper `_write_run_display_snapshots_async()` with post-write validation support; retained UI correctness during async lag by adding CSV completeness fallback when list rows are partial in `load_bucket_results()` and `load_findings()` and by updating `property_view` lease status fallback to use unresolved bucket counts when lease snapshots are not yet available
 - **2026-03-20**: Switched Entrata lease-term document handling to memory-first extraction in `audit_engine/entrata_lease_terms.py`: selected resident packet/addenda are parsed from in-memory PDF bytes (no required local file path dependency), merged packet+addenda is built in-memory via PyMuPDF, and documents are uploaded to SharePoint Document Library path `Entrata leases/<property_id>/...`; added optional debug/local persistence flag `SAVE_LOCAL_ENTRATA_PDFS` (default `false`) while keeping local path parsing fallback compatibility for explicit path inputs
 - **2026-03-16**: Added status badge column to property view lease table showing per-lease status (Passed/Open/Resolved) with color-coded Bootstrap badges; status calculation logic in `web/views.py` compares static exception count from snapshots with unresolved exception count from filtered lease groups to determine resolution progress; status label shows "Open (X/Y resolved)" format for partially resolved leases
 - **2026-03-16**: Fixed SharePoint column name reference from `TotalLeaseIntervalsStatic` to `TotalLeaseIntervalStatic` throughout `storage/service.py` to match actual SharePoint list column naming; corrected field candidate mapping and all snapshot read operations to properly display lease interval counts in portfolio view
