@@ -80,7 +80,9 @@ HEADERS = {
 }
 
 OUT_DIR = os.environ.get("OUT_DIR", r"C:\Users\svanorder\Downloads\EntrataLeases")
-os.makedirs(OUT_DIR, exist_ok=True)
+SAVE_LOCAL_ENTRATA_PDFS = os.environ.get("SAVE_LOCAL_ENTRATA_PDFS", "false").lower() == "true"
+if SAVE_LOCAL_ENTRATA_PDFS:
+    os.makedirs(OUT_DIR, exist_ok=True)
 PROPERTY_ID = os.environ.get("ENTRATA_DEFAULT_PROPERTY_ID")
 LEASE_ID = os.environ.get("ENTRATA_DEFAULT_LEASE_ID")
 PICKLIST_CACHE = {
@@ -399,6 +401,17 @@ def safe_filename(name: str) -> str:
     return re.sub(r"[\\/:*?\"<>|]+", "_", name).strip()
 
 
+def _json_safe_for_logging(value: Any) -> Any:
+    """Convert non-JSON-safe values (like bytes) into lightweight log-safe forms."""
+    if isinstance(value, (bytes, bytearray)):
+        return f"<bytes:{len(value)}>"
+    if isinstance(value, dict):
+        return {k: _json_safe_for_logging(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_for_logging(v) for v in value]
+    return value
+
+
 def normalize_money(money_str: str) -> str | None:
     """Normalize money string to clean decimal format.
 
@@ -421,14 +434,14 @@ def normalize_money(money_str: str) -> str | None:
         return None
 
 
-def parse_pdf_to_text_pack(pdf_path: str) -> dict:
+def parse_pdf_to_text_pack(pdf_source: str | bytes | bytearray) -> dict:
     """Parse PDF and extract text using PyMuPDF (respects ToUnicode for Type0/Type3 fonts).
 
     This uses PyMuPDF which handles embedded fonts with proper ToUnicode mappings,
     and improves extraction from embedded-font PDFs.
 
     Args:
-        pdf_path: Path to the PDF file
+        pdf_source: Path to a PDF file or PDF bytes
 
     Returns:
         dict with:
@@ -447,8 +460,12 @@ def parse_pdf_to_text_pack(pdf_path: str) -> dict:
         return result
 
     try:
-        logger.info(f"Extracting text from PDF using PyMuPDF: {pdf_path}")
-        doc = fitz.open(pdf_path)
+        if isinstance(pdf_source, (bytes, bytearray)):
+            logger.info("Extracting text from PDF using PyMuPDF from in-memory bytes")
+            doc = fitz.open(stream=bytes(pdf_source), filetype="pdf")
+        else:
+            logger.info(f"Extracting text from PDF using PyMuPDF: {pdf_source}")
+            doc = fitz.open(str(pdf_source))
         result["total_pages"] = len(doc)
 
         def _score_text_candidate(candidate_text: str) -> float:
@@ -598,7 +615,7 @@ def parse_pdf_to_text_pack(pdf_path: str) -> dict:
 
         doc.close()
     except Exception as e:
-        logger.error(f"Error parsing PDF {pdf_path}: {str(e)}")
+        logger.error(f"Error parsing PDF source: {str(e)}")
         result["error"] = str(e)
 
     return result
@@ -957,6 +974,7 @@ def download_lease_document(
     docs: Sequence[Mapping[str, Any]] | None = None,
     audit_period_start: Any = None,
     audit_period_end: Any = None,
+    storage_service: Any = None,
 ):
     """
     Download the most recent signed lease document.
@@ -966,7 +984,7 @@ def download_lease_document(
         lease_id: Lease ID (defaults to LEASE_ID constant)
 
     Returns:
-        Tuple of (file_path, filename, doc_info)
+        Tuple of (pdf_bytes, filename, doc_info)
     """
     prop_id = property_id if property_id is not None else PROPERTY_ID
     l_id = lease_id if lease_id is not None else LEASE_ID
@@ -1133,8 +1151,11 @@ def download_lease_document(
 
         return base64.b64decode(filedata.strip())
 
-    def save_pdf_bytes(pdf_bytes: bytes, preferred_filename: str) -> tuple:
+    def save_pdf_bytes_locally(pdf_bytes: bytes, preferred_filename: str) -> tuple[str | None, str]:
         filename_local = safe_filename(preferred_filename)
+        if not SAVE_LOCAL_ENTRATA_PDFS:
+            return None, filename_local
+
         out_path_local = os.path.join(OUT_DIR, filename_local)
         try:
             with open(out_path_local, "wb") as f:
@@ -1148,75 +1169,118 @@ def download_lease_document(
             logger.warning(f"Primary output file was locked, wrote to alternate path: {out_path_local}")
         return out_path_local, filename_local
 
+    def upload_pdf_bytes_to_sharepoint(pdf_bytes: bytes, filename_local: str) -> str | None:
+        if storage_service is None:
+            return None
+
+        if not bool(getattr(storage_service, "use_sharepoint", False)):
+            return None
+
+        upload_fn = getattr(storage_service, "_upload_binary_file_to_sharepoint", None)
+        if not callable(upload_fn):
+            logger.warning("SharePoint storage enabled but upload helper is unavailable on storage_service")
+            return None
+
+        property_folder = safe_filename(str(prop_id))
+        sharepoint_relative_path = f"Entrata leases/{property_folder}/{filename_local}"
+
+        try:
+            upload_success = bool(upload_fn(pdf_bytes, sharepoint_relative_path))
+            if upload_success:
+                logger.info(f"Uploaded lease PDF to SharePoint: {sharepoint_relative_path}")
+                return sharepoint_relative_path
+
+            logger.warning(f"Failed to upload lease PDF to SharePoint: {sharepoint_relative_path}")
+            return None
+        except Exception as upload_exc:
+            logger.warning(f"SharePoint upload failed for {sharepoint_relative_path}: {upload_exc}")
+            return None
+
     primary_pdf_bytes = fetch_document_pdf_bytes(doc_id)
-    primary_path, primary_filename = save_pdf_bytes(primary_pdf_bytes, f"{title}_{doc_id}.pdf")
-    logger.info(f"Saved primary packet PDF to: {primary_path}")
+    primary_path, primary_filename = save_pdf_bytes_locally(primary_pdf_bytes, f"{title}_{doc_id}.pdf")
+    primary_sharepoint_path = upload_pdf_bytes_to_sharepoint(primary_pdf_bytes, primary_filename)
+    primary_page_count: int | None = None
+    if fitz is not None:
+        try:
+            with fitz.open(stream=primary_pdf_bytes, filetype="pdf") as primary_doc:
+                primary_page_count = len(primary_doc)
+        except Exception as page_count_error:
+            logger.warning(f"Could not determine primary packet page count for doc_id={doc_id}: {page_count_error}")
+    logger.info(
+        f"Prepared primary packet PDF: filename={primary_filename} local_path={primary_path or 'disabled'}"
+    )
 
     addenda_saved = []
+    addenda_pdf_bytes: list[dict[str, Any]] = []
     for addendum in newer_signed_addenda:
         add_doc_id = addendum["doc_id"]
         add_title = addendum["title"]
         add_pdf_bytes = fetch_document_pdf_bytes(add_doc_id)
-        add_path, add_filename = save_pdf_bytes(add_pdf_bytes, f"{add_title}_{add_doc_id}.pdf")
+        add_path, add_filename = save_pdf_bytes_locally(add_pdf_bytes, f"{add_title}_{add_doc_id}.pdf")
+        add_sharepoint_path = upload_pdf_bytes_to_sharepoint(add_pdf_bytes, add_filename)
+        addenda_pdf_bytes.append({
+            "doc_id": add_doc_id,
+            "pdf_bytes": add_pdf_bytes,
+            "filename": add_filename,
+        })
         addenda_saved.append({
             "doc_id": add_doc_id,
             "title": add_title,
             "activity_timestamp": addendum["activity_ts"].isoformat() if addendum["activity_ts"] != datetime.min else None,
             "saved_path": add_path,
             "filename": add_filename,
-            "file_size": len(add_pdf_bytes)
+            "file_size": len(add_pdf_bytes),
+            "sharepoint_path": add_sharepoint_path,
         })
-        logger.info(f"Saved addendum PDF to: {add_path}")
+        logger.info(
+            f"Prepared addendum PDF: filename={add_filename} local_path={add_path or 'disabled'}"
+        )
 
+    out_pdf_bytes = primary_pdf_bytes
     out_path = primary_path
     filename = primary_filename
+    combined_sharepoint_path = None
 
     if addenda_saved:
         if fitz is None:
             logger.warning("PyMuPDF unavailable; skipping merge of packet + addenda and returning primary PDF")
         else:
             merged_filename = safe_filename(f"{title}_{doc_id}_with_addenda.pdf")
-            merged_path = os.path.join(OUT_DIR, merged_filename)
-
             merged_doc = fitz.open()
             try:
-                with fitz.open(primary_path) as packet_doc:
+                with fitz.open(stream=primary_pdf_bytes, filetype="pdf") as packet_doc:
                     merged_doc.insert_pdf(packet_doc)
-                for addendum in addenda_saved:
-                    with fitz.open(addendum["saved_path"]) as addendum_doc:
+                for addendum_item in addenda_pdf_bytes:
+                    with fitz.open(stream=addendum_item["pdf_bytes"], filetype="pdf") as addendum_doc:
                         merged_doc.insert_pdf(addendum_doc)
-                try:
-                    merged_doc.save(merged_path)
-                except Exception as save_exc:
-                    if "Permission denied" in str(save_exc) or "cannot remove file" in str(save_exc):
-                        unique_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        merged_filename = safe_filename(f"{title}_{doc_id}_with_addenda_{unique_suffix}.pdf")
-                        merged_path = os.path.join(OUT_DIR, merged_filename)
-                        merged_doc.save(merged_path)
-                        logger.warning(f"Merged output file was locked, wrote to alternate path: {merged_path}")
-                    else:
-                        raise
+                out_pdf_bytes = merged_doc.tobytes()
             finally:
                 merged_doc.close()
 
-            out_path = merged_path
+            out_path, merged_filename = save_pdf_bytes_locally(out_pdf_bytes, merged_filename)
             filename = merged_filename
-            logger.info(f"Saved merged packet + addenda PDF to: {merged_path}")
+            combined_sharepoint_path = upload_pdf_bytes_to_sharepoint(out_pdf_bytes, merged_filename)
+            logger.info(
+                f"Prepared merged packet + addenda PDF: filename={filename} local_path={out_path or 'disabled'}"
+            )
 
     doc_info = {
         "doc_id": doc_id,
         "title": title,
         "start_date": signed_latest.get("leaseIntervalStartDate") or signed_latest.get("AddedOn"),
-        "file_size": os.path.getsize(out_path),
+        "file_size": len(out_pdf_bytes),
         "included_addenda_count": len(addenda_saved),
         "included_addenda": addenda_saved,
         "source_packet_path": primary_path,
-        "combined_path": out_path if addenda_saved and fitz is not None else None
+        "combined_path": out_path if addenda_saved and fitz is not None else None,
+        "source_packet_sharepoint_path": primary_sharepoint_path,
+        "combined_sharepoint_path": combined_sharepoint_path,
+        "primary_page_count": primary_page_count,
     }
 
-    logger.info(f"Document info: {json.dumps(doc_info, indent=2)}")
+    logger.info(f"Document info: {json.dumps(_json_safe_for_logging(doc_info), indent=2, default=str)}")
     logger.info("#" * 80 + "\n")
-    return out_path, filename, doc_info
+    return out_pdf_bytes, filename, doc_info
 
 
 def normalize_id(value: Any) -> str | None:
@@ -1621,15 +1685,25 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
     all_text_lower = all_text.lower()
 
     primary_pages = pages
-    source_packet_path = str(doc_info.get("source_packet_path") or "").strip()
-    if source_packet_path and os.path.exists(source_packet_path):
+    primary_page_count = doc_info.get("primary_page_count")
+    if isinstance(primary_page_count, (int, float)):
+        primary_page_count_int = int(primary_page_count)
+        if 0 < primary_page_count_int <= len(pages):
+            primary_pages = pages[:primary_page_count_int]
+
+    source_packet_bytes = doc_info.get("source_packet_bytes")
+    if (
+        primary_pages is pages
+        and isinstance(source_packet_bytes, (bytes, bytearray))
+        and source_packet_bytes
+    ):
         try:
-            primary_pack = parse_pdf_to_text_pack(source_packet_path)
+            primary_pack = parse_pdf_to_text_pack(source_packet_bytes)
             candidate_primary_pages = list(primary_pack.get("pages", []))
             if candidate_primary_pages:
                 primary_pages = candidate_primary_pages
         except Exception as e:
-            logger.warning(f"[LEASE TERMS] Could not parse source packet path for primary-only extraction: {e}")
+            logger.warning(f"[LEASE TERMS] Could not parse source packet bytes for primary-only extraction: {e}")
 
     primary_text = "\n".join([str(page.get("text") or "") for page in primary_pages])
     primary_text_lower = primary_text.lower()
@@ -3028,14 +3102,15 @@ def refresh_lease_terms_for_lease_interval(
                 "term_set": cached_term_set,
             }
 
-        pdf_path, _, doc_info = download_lease_document(
+        pdf_bytes, _, doc_info = download_lease_document(
             property_id=property_id,
             lease_id=lease_identifier,
             docs=docs,
             audit_period_start=audit_period_start,
             audit_period_end=audit_period_end,
+            storage_service=storage_service,
         )
-        text_pack = parse_pdf_to_text_pack(pdf_path)
+        text_pack = parse_pdf_to_text_pack(pdf_bytes)
         extractor = term_extractor or _extract_basic_terms_from_text_pack
         extracted_terms, evidence_rows = extractor(text_pack, doc_info)
 

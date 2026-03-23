@@ -836,6 +836,7 @@ ENTRATA_ORG=peakmade
 ENTRATA_DEFAULT_PROPERTY_ID=<optional>
 ENTRATA_DEFAULT_LEASE_ID=<optional>
 OUT_DIR=C:\Users\<user>\Downloads\EntrataLeases
+SAVE_LOCAL_ENTRATA_PDFS=false
 LEASE_TERM_REFRESH_TTL_HOURS=24
 LEASE_TERM_FORCE_REFRESH=false
 
@@ -1394,6 +1395,7 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-20**: Switched Entrata lease-term document handling to memory-first extraction in `audit_engine/entrata_lease_terms.py`: selected resident packet/addenda are parsed from in-memory PDF bytes (no required local file path dependency), merged packet+addenda is built in-memory via PyMuPDF, and documents are uploaded to SharePoint Document Library path `Entrata leases/<property_id>/...`; added optional debug/local persistence flag `SAVE_LOCAL_ENTRATA_PDFS` (default `false`) while keeping local path parsing fallback compatibility for explicit path inputs
 - **2026-03-16**: Added status badge column to property view lease table showing per-lease status (Passed/Open/Resolved) with color-coded Bootstrap badges; status calculation logic in `web/views.py` compares static exception count from snapshots with unresolved exception count from filtered lease groups to determine resolution progress; status label shows "Open (X/Y resolved)" format for partially resolved leases
 - **2026-03-16**: Fixed SharePoint column name reference from `TotalLeaseIntervalsStatic` to `TotalLeaseIntervalStatic` throughout `storage/service.py` to match actual SharePoint list column naming; corrected field candidate mapping and all snapshot read operations to properly display lease interval counts in portfolio view
 - **2026-03-16**: Removed "Total Lease Intervals" column from portfolio page table in `templates/portfolio.html` to simplify dashboard layout; portfolio now displays Property Name, Property ID, Exceptions, Undercharge, Overcharge, Total Variance, and Details columns only

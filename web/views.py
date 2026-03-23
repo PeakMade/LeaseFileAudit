@@ -10,6 +10,7 @@ import json
 from datetime import datetime
 from time import perf_counter
 import tempfile
+from typing import Any
 
 from audit_engine import (
     ExcelSourceLoader,
@@ -44,6 +45,30 @@ def _session_cache_token() -> str:
     if not has_request_context():
         return "no-request"
     return session.get('session_id') or "no-session"
+
+
+def _ensure_bucket_results_dataframe(df: Any) -> pd.DataFrame:
+    """Return a bucket-results dataframe with required columns present."""
+    required_columns = [
+        CanonicalField.PROPERTY_ID.value,
+        CanonicalField.LEASE_INTERVAL_ID.value,
+        CanonicalField.AR_CODE_ID.value,
+        CanonicalField.AUDIT_MONTH.value,
+        CanonicalField.STATUS.value,
+        CanonicalField.EXPECTED_TOTAL.value,
+        CanonicalField.ACTUAL_TOTAL.value,
+        CanonicalField.VARIANCE.value,
+    ]
+
+    if not isinstance(df, pd.DataFrame):
+        return pd.DataFrame(columns=required_columns)
+
+    normalized = df.copy()
+    for column in required_columns:
+        if column not in normalized.columns:
+            normalized[column] = pd.NA
+
+    return normalized
 
 
 def _safe_seconds_from_iso(started_at_iso: str) -> float:
@@ -2737,6 +2762,30 @@ def property_view(property_id: str, run_id: str = None):
             property_id=int(float(property_id)),
             session_cache_key=cache_token
         )
+        all_property_buckets = _ensure_bucket_results_dataframe(all_property_buckets)
+
+        required_property_cols = {
+            CanonicalField.PROPERTY_ID.value,
+            CanonicalField.LEASE_INTERVAL_ID.value,
+            CanonicalField.STATUS.value,
+        }
+        if all_property_buckets.empty or not required_property_cols.issubset(set(all_property_buckets.columns)):
+            logger.warning(
+                "[PROPERTY_VIEW] Scoped bucket query returned empty/malformed data; "
+                "falling back to run-level buckets and local filtering"
+            )
+            fallback_property_buckets = cached_load_bucket_results(
+                run_id,
+                property_id=None,
+                lease_interval_id=None,
+                session_cache_key=cache_token,
+            )
+            fallback_property_buckets = _ensure_bucket_results_dataframe(fallback_property_buckets)
+            if not fallback_property_buckets.empty:
+                normalized_property_id = int(float(property_id))
+                all_property_buckets = fallback_property_buckets[
+                    fallback_property_buckets[CanonicalField.PROPERTY_ID.value] == normalized_property_id
+                ].copy()
 
         property_snapshot = cached_load_run_display_snapshot(
             run_id=run_id,
@@ -3146,19 +3195,63 @@ def build_entrata_url(lease_id: str, customer_id: str = None) -> str:
         return f"{base_url}?module=customers_systemxxx"
 
 
+@bp.route('/lease/<property_id>/<lease_interval_id>')
 @bp.route('/lease/<run_id>/<property_id>/<lease_interval_id>')
 @require_auth
-def lease_view(run_id: str, property_id: str, lease_interval_id: str):
+def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
     """Lease view - detailed exceptions for a specific lease."""
     try:
         storage = get_storage_service()
         cache_token = _session_cache_token()
+
+        # Canonical route supports run_id as query param to avoid path parsing issues.
+        # Legacy route still passes run_id in path and remains supported.
+        if not run_id:
+            run_id = request.args.get('run_id')
+
+        if not run_id:
+            latest_runs = get_available_runs(cache_token)
+            if latest_runs:
+                run_id = latest_runs[0]['run_id']
+            else:
+                flash('No audit runs available', 'warning')
+                return redirect(url_for('main.index'))
+
         bucket_results = cached_load_bucket_results(
             run_id,
             property_id=int(float(property_id)),
             lease_interval_id=int(float(lease_interval_id)),
             session_cache_key=cache_token
         )
+        bucket_results = _ensure_bucket_results_dataframe(bucket_results)
+        required_bucket_cols = {
+            CanonicalField.STATUS.value,
+            CanonicalField.PROPERTY_ID.value,
+            CanonicalField.LEASE_INTERVAL_ID.value,
+        }
+        if bucket_results is None or bucket_results.empty or not required_bucket_cols.issubset(set(bucket_results.columns)):
+            logger.warning(
+                "[LEASE_VIEW] Scoped bucket query returned empty/malformed data; "
+                "falling back to run-level buckets and local filtering"
+            )
+            fallback_bucket_results = cached_load_bucket_results(
+                run_id,
+                property_id=None,
+                lease_interval_id=None,
+                session_cache_key=cache_token
+            )
+            fallback_bucket_results = _ensure_bucket_results_dataframe(fallback_bucket_results)
+            if isinstance(fallback_bucket_results, pd.DataFrame) and not fallback_bucket_results.empty:
+                normalized_property_id = int(float(property_id))
+                normalized_lease_interval_id = int(float(lease_interval_id))
+                if required_bucket_cols.issubset(set(fallback_bucket_results.columns)):
+                    bucket_results = fallback_bucket_results[
+                        (fallback_bucket_results[CanonicalField.PROPERTY_ID.value] == normalized_property_id)
+                        & (fallback_bucket_results[CanonicalField.LEASE_INTERVAL_ID.value] == normalized_lease_interval_id)
+                    ].copy()
+                else:
+                    bucket_results = fallback_bucket_results.copy()
+
         expected_detail = cached_load_expected_detail(run_id, cache_token)
         actual_detail = cached_load_actual_detail(run_id, cache_token)
         try:
