@@ -992,14 +992,17 @@ The audit mapping layer supports JSON-driven exclusions so updates can be made w
       - `{"api_posted_ar_codes": [155023, 154776, ...]}`
 
 - `resident_profile_exclusions.json`
-   - Purpose: Resident profile names excluded from AR and Scheduled source audits.
+   - Purpose: Resident profile names and lease IDs excluded from AR and Scheduled source audits.
    - Env override: `RESIDENT_PROFILE_EXCLUSIONS_PATH`
    - Match behavior: case-insensitive, trimmed, and whitespace-normalized.
    - Scope behavior: when a name is matched, exclusions are expanded to rows sharing `CUSTOMER_ID`, `LEASE_INTERVAL_ID`, or `LEASE_ID` so linked payment rows with blank/non-resident names are also removed.
    - Debug verification: logs `[RESIDENT EXCLUSIONS] Expanded exclusion by identifier columns; ...` with per-column added counts and sample keys.
+   - Lease ID behavior: rows with `LEASE_ID` matching configured exclusions are removed from AR and Scheduled source datasets before reconciliation.
+   - UI management: `/settings` supports append-only additions for names and lease IDs; current exclusion lists are shown read-only to prevent accidental removals.
    - Supported JSON:
       - `["Resident Name A", "Resident Name B"]`
       - `{"excluded_resident_profile_names": ["Resident Name A", "Resident Name B"]}`
+      - `{"excluded_resident_profile_names": ["Resident Name A"], "excluded_lease_ids": [14897278]}`
 
 Default behavior for both configs is safe fallback to empty exclusions when files are missing or invalid.
 

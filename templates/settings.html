@@ -8,41 +8,52 @@
 		<div class="col-12 col-xl-10">
 			<div class="card fade-in">
 				<div class="card-header d-flex justify-content-between align-items-center">
-					<span><i class="fas fa-sliders-h me-2"></i>Settings</span>
-					<span class="badge bg-light text-dark">Exclusions</span>
+					<span><i class="fas fa-sliders-h me-2"></i>Exclusion Configuration</span>
 				</div>
 				<div class="card-body">
-					<p class="text-muted mb-3">
-						Manage exclusion config used by the audit engine. One value per line.
-					</p>
-					<p class="text-muted small mb-4">
-						Config file: {{ config_path }}
-					</p>
-
 					<form method="post" action="{{ url_for('main.settings_view') }}">
-						<div class="mb-4">
-							<label for="excluded_resident_profile_names" class="form-label fw-bold">Excluded Resident Profile Names</label>
+						<details class="mb-3" open>
+							<summary class="fw-bold mb-2">Current Excluded Resident Profile Names</summary>
 							<textarea
 								class="form-control"
 								id="excluded_resident_profile_names"
 								name="excluded_resident_profile_names"
-								rows="14"
-								placeholder="One resident profile name per line"
+								rows="10"
+								disabled
 							>{{ excluded_resident_profile_names }}</textarea>
-							<div class="form-text">Matches are case-insensitive and whitespace-normalized in audit processing.</div>
-						</div>
+						</details>
 
-						<div class="mb-4">
-							<label for="excluded_lease_ids" class="form-label fw-bold">Excluded Lease IDs</label>
+						<details class="mb-3" open>
+							<summary class="fw-bold mb-2">Add Resident Profile Names</summary>
+							<textarea
+								class="form-control"
+								id="add_excluded_resident_profile_names"
+								name="add_excluded_resident_profile_names"
+								rows="3"
+								placeholder="One new name per line, case sensitive"
+							></textarea>
+						</details>
+
+						<details class="mb-3" open>
+							<summary class="fw-bold mb-2">Current Excluded Lease IDs</summary>
 							<textarea
 								class="form-control"
 								id="excluded_lease_ids"
 								name="excluded_lease_ids"
-								rows="8"
-								placeholder="One lease ID per line"
+								rows="3"
+								disabled
 							>{{ excluded_lease_ids }}</textarea>
-							<div class="form-text">Only numeric lease IDs are saved; invalid values are ignored with a warning.</div>
-						</div>
+						</details>
+
+						<details class="mb-4" open>
+							<summary class="fw-bold mb-2">Add Lease IDs</summary>
+							<textarea
+								class="form-control"
+								id="add_excluded_lease_ids"
+								name="add_excluded_lease_ids"
+								rows="3"
+							></textarea>
+						</details>
 
 						<div class="d-flex gap-2">
 							<button type="submit" class="btn btn-primary">

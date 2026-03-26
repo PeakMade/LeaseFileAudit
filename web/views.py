@@ -449,34 +449,45 @@ def _load_exclusions_for_settings() -> tuple[list[str], list[str], Path]:
 @bp.route('/settings', methods=['GET', 'POST'])
 @require_auth
 def settings_view():
-    """Settings page for exclusion configuration management."""
+    """Settings page for exclusion configuration management (append-only)."""
     names, lease_ids, config_path = _load_exclusions_for_settings()
 
     if request.method == 'POST':
-        names_text = request.form.get('excluded_resident_profile_names', '')
-        lease_ids_text = request.form.get('excluded_lease_ids', '')
+        add_names_text = request.form.get('add_excluded_resident_profile_names', '')
+        add_lease_ids_text = request.form.get('add_excluded_lease_ids', '')
 
-        name_lines = [line.strip() for line in names_text.splitlines() if line.strip()]
-        lease_id_lines = [line.strip() for line in lease_ids_text.splitlines() if line.strip()]
+        add_name_lines = [line.strip() for line in add_names_text.splitlines() if line.strip()]
+        add_lease_id_lines = [line.strip() for line in add_lease_ids_text.splitlines() if line.strip()]
 
-        normalized_names = _dedupe_preserve_order(name_lines)
+        existing_names = _dedupe_preserve_order([str(value).strip() for value in names if str(value).strip()])
+        existing_lease_ids = _dedupe_preserve_order([str(value).strip() for value in lease_ids if str(value).strip()])
 
-        normalized_lease_ids: list[int] = []
+        add_names = _dedupe_preserve_order(add_name_lines)
+
+        normalized_lease_additions: list[str] = []
         invalid_lease_ids: list[str] = []
-        for raw_lease_id in _dedupe_preserve_order(lease_id_lines):
+        for raw_lease_id in _dedupe_preserve_order(add_lease_id_lines):
             try:
-                normalized_lease_ids.append(int(float(raw_lease_id)))
+                normalized_lease_additions.append(str(int(float(raw_lease_id))))
             except Exception:
                 invalid_lease_ids.append(raw_lease_id)
 
+        combined_names = _dedupe_preserve_order(existing_names + add_names)
+        combined_lease_id_tokens = _dedupe_preserve_order(existing_lease_ids + normalized_lease_additions)
+
+        normalized_lease_ids = [int(value) for value in combined_lease_id_tokens]
+
+        added_name_count = len(combined_names) - len(existing_names)
+        added_lease_count = len(combined_lease_id_tokens) - len(existing_lease_ids)
+
         payload = {
-            'excluded_resident_profile_names': normalized_names,
+            'excluded_resident_profile_names': combined_names,
             'excluded_lease_ids': normalized_lease_ids,
         }
 
         try:
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+            config_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8')
 
             try:
                 from audit_engine import mappings as mappings_module
@@ -484,26 +495,31 @@ def settings_view():
             except Exception as reload_error:
                 logger.warning(f"[SETTINGS] Exclusion config saved but reload failed: {reload_error}")
 
+            summary_message = (
+                f"Settings saved. Added {added_name_count} resident name(s) and "
+                f"{added_lease_count} lease ID(s). Existing values were preserved."
+            )
+
             if invalid_lease_ids:
                 flash(
-                    f"Settings saved. Ignored {len(invalid_lease_ids)} invalid lease ID value(s): {invalid_lease_ids[:10]}",
+                    f"{summary_message} Ignored {len(invalid_lease_ids)} invalid lease ID value(s): {invalid_lease_ids[:10]}",
                     'warning'
                 )
             else:
-                flash('Settings saved successfully.', 'success')
+                flash(summary_message, 'success')
 
             return redirect(url_for('main.settings_view'))
         except Exception as save_error:
             logger.error(f"[SETTINGS] Failed saving exclusions config: {save_error}")
             flash(f"Failed to save settings: {save_error}", 'danger')
 
-        names = normalized_names
-        lease_ids = [str(value) for value in normalized_lease_ids]
+        names = combined_names
+        lease_ids = combined_lease_id_tokens
 
     return render_template(
         'settings.html',
-        excluded_resident_profile_names='\n'.join(names),
-        excluded_lease_ids='\n'.join(lease_ids),
+        excluded_resident_profile_names='\n'.join(_dedupe_preserve_order(names)),
+        excluded_lease_ids='\n'.join(_dedupe_preserve_order(lease_ids)),
         config_path=str(config_path),
     )
 
