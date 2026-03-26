@@ -3,6 +3,59 @@
 {% block title %}Settings - Lease File Audit{% endblock %}
 
 {% block content %}
-<h1>Settings</h1>
-<p>Application settings will be displayed here.</p>
+<div class="container-fluid mt-4 px-4">
+	<div class="row justify-content-center">
+		<div class="col-12 col-xl-10">
+			<div class="card fade-in">
+				<div class="card-header d-flex justify-content-between align-items-center">
+					<span><i class="fas fa-sliders-h me-2"></i>Settings</span>
+					<span class="badge bg-light text-dark">Exclusions</span>
+				</div>
+				<div class="card-body">
+					<p class="text-muted mb-3">
+						Manage exclusion config used by the audit engine. One value per line.
+					</p>
+					<p class="text-muted small mb-4">
+						Config file: {{ config_path }}
+					</p>
+
+					<form method="post" action="{{ url_for('main.settings_view') }}">
+						<div class="mb-4">
+							<label for="excluded_resident_profile_names" class="form-label fw-bold">Excluded Resident Profile Names</label>
+							<textarea
+								class="form-control"
+								id="excluded_resident_profile_names"
+								name="excluded_resident_profile_names"
+								rows="14"
+								placeholder="One resident profile name per line"
+							>{{ excluded_resident_profile_names }}</textarea>
+							<div class="form-text">Matches are case-insensitive and whitespace-normalized in audit processing.</div>
+						</div>
+
+						<div class="mb-4">
+							<label for="excluded_lease_ids" class="form-label fw-bold">Excluded Lease IDs</label>
+							<textarea
+								class="form-control"
+								id="excluded_lease_ids"
+								name="excluded_lease_ids"
+								rows="8"
+								placeholder="One lease ID per line"
+							>{{ excluded_lease_ids }}</textarea>
+							<div class="form-text">Only numeric lease IDs are saved; invalid values are ignored with a warning.</div>
+						</div>
+
+						<div class="d-flex gap-2">
+							<button type="submit" class="btn btn-primary">
+								<i class="fas fa-save me-2"></i>Save Settings
+							</button>
+							<a href="{{ url_for('main.index') }}" class="btn btn-secondary">
+								<i class="fas fa-arrow-left me-2"></i>Back to Upload
+							</a>
+						</div>
+					</form>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
 {% endblock %}

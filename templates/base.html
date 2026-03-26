@@ -576,6 +576,9 @@
                 <strong>Email</strong>
                 <div class="value">{{ user.email }}</div>
             </div>
+            <a href="{{ url_for('main.settings_view') }}" class="logout-link" style="background: transparent; color: #231f20; border-top: 1px solid #eee;">
+                <i class="fas fa-cog me-2"></i>Settings
+            </a>
             <a href="{{ url_for('main.end_session') }}" class="logout-link">
                 <i class="fas fa-sign-out-alt me-2"></i>End Session
             </a>

@@ -980,6 +980,29 @@ LOCAL_DEV_USER_NAME=Sarah VanOrder
 LOCAL_DEV_USER_EMAIL=svanorder@peakmade.com
 ```
 
+### Audit Exclusion Config Files
+
+The audit mapping layer supports JSON-driven exclusions so updates can be made without editing Python source.
+
+- `api_posted_ar_codes.json`
+   - Purpose: AR code IDs excluded from AR and Scheduled source audits.
+   - Env override: `API_POSTED_AR_CODES_PATH`
+   - Supported JSON:
+      - `[155023, 154776, ...]`
+      - `{"api_posted_ar_codes": [155023, 154776, ...]}`
+
+- `resident_profile_exclusions.json`
+   - Purpose: Resident profile names excluded from AR and Scheduled source audits.
+   - Env override: `RESIDENT_PROFILE_EXCLUSIONS_PATH`
+   - Match behavior: case-insensitive, trimmed, and whitespace-normalized.
+   - Scope behavior: when a name is matched, exclusions are expanded to rows sharing `CUSTOMER_ID`, `LEASE_INTERVAL_ID`, or `LEASE_ID` so linked payment rows with blank/non-resident names are also removed.
+   - Debug verification: logs `[RESIDENT EXCLUSIONS] Expanded exclusion by identifier columns; ...` with per-column added counts and sample keys.
+   - Supported JSON:
+      - `["Resident Name A", "Resident Name B"]`
+      - `{"excluded_resident_profile_names": ["Resident Name A", "Resident Name B"]}`
+
+Default behavior for both configs is safe fallback to empty exclusions when files are missing or invalid.
+
 ### Configuration Classes (config.py)
 
 ```python

@@ -133,14 +133,312 @@ class SourceMapping:
 
 # AR codes posted through API or timed/external charges - exclude from audit to prevent false exceptions
 # These codes should NOT appear in scheduled charges; if they do, they're flagged as "TIMED_OR_EXTERNAL_CHARGE"
-API_POSTED_AR_CODES = [
-    155023, 154776, 155217, 154777, 155018, 
-    155099, 155022, 154785, 155049, 155040, 155015, 
-    155017, 155176, 155203, 155053, 154787, 155073, 155083, 155028, 155202, 154774, 155030, 155037, 154776, 156669, 155026
-]
+
+
+def _load_api_posted_ar_codes() -> List[int]:
+    """
+    Load API-posted AR code list from JSON config file.
+
+    File path resolution order:
+    1) API_POSTED_AR_CODES_PATH environment variable
+    2) <repo_root>/api_posted_ar_codes.json
+
+    Supported JSON formats:
+    - [155023, 154776, ...]
+    - {"api_posted_ar_codes": [155023, 154776, ...]}
+
+    Falls back to an empty list if file is missing/invalid.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    configured_path = os.getenv('API_POSTED_AR_CODES_PATH')
+    codes_path = Path(configured_path) if configured_path else (repo_root / 'api_posted_ar_codes.json')
+
+    if not codes_path.exists():
+        print(
+            f"[API CODE FILTER] Config file not found at {codes_path}; "
+            "using empty API_POSTED_AR_CODES list"
+        )
+        return []
+
+    try:
+        payload = json.loads(codes_path.read_text(encoding='utf-8-sig'))
+    except Exception as exc:
+        print(
+            f"[API CODE FILTER] Failed reading {codes_path}: {exc}; "
+            "using empty API_POSTED_AR_CODES list"
+        )
+        return []
+
+    raw_codes = payload
+    if isinstance(payload, dict):
+        raw_codes = payload.get('api_posted_ar_codes')
+
+    if not isinstance(raw_codes, list):
+        print(
+            f"[API CODE FILTER] Invalid format in {codes_path}; expected list or "
+            "{'api_posted_ar_codes': [...]} - using empty API_POSTED_AR_CODES list"
+        )
+        return []
+
+    normalized_codes: List[int] = []
+    invalid_values: List[Any] = []
+    for raw_code in raw_codes:
+        try:
+            normalized_codes.append(int(float(raw_code)))
+        except Exception:
+            invalid_values.append(raw_code)
+
+    normalized_codes = sorted(set(normalized_codes))
+    if not normalized_codes:
+        print(
+            f"[API CODE FILTER] No valid code values found in {codes_path}; "
+            "using empty API_POSTED_AR_CODES list"
+        )
+        return []
+
+    if invalid_values:
+        print(
+            f"[API CODE FILTER] Ignored {len(invalid_values)} invalid value(s) from {codes_path}: "
+            f"{invalid_values[:10]}"
+        )
+
+    print(f"[API CODE FILTER] Loaded {len(normalized_codes)} API-posted AR code(s) from {codes_path}")
+    return normalized_codes
+
+
+API_POSTED_AR_CODES = _load_api_posted_ar_codes()
 
 API_POSTED_AR_CODES_SET = {int(code) for code in API_POSTED_AR_CODES}
 API_POSTED_AR_CODES_TEXT_SET = {str(code) for code in API_POSTED_AR_CODES_SET}
+
+
+def _normalize_name_token(value: Any) -> str | None:
+    """Normalize resident/profile names for case-insensitive matching."""
+    if value is None or pd.isna(value):
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    return ' '.join(text.split()).casefold()
+
+
+def _load_exclusion_config() -> tuple[set[str], set[int], set[str]]:
+    """
+        Load exclusion config (resident names + lease IDs) from JSON config file.
+
+    File path resolution order:
+    1) RESIDENT_PROFILE_EXCLUSIONS_PATH environment variable
+    2) <repo_root>/resident_profile_exclusions.json
+
+    Supported JSON formats:
+    - ["Name A", "Name B", ...]
+        - {
+                "excluded_resident_profile_names": ["Name A", "Name B", ...],
+                "excluded_lease_ids": [14897278, "14897278", ...]
+            }
+
+        Falls back to empty sets if file is missing/invalid.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    configured_path = os.getenv('RESIDENT_PROFILE_EXCLUSIONS_PATH')
+    config_path = Path(configured_path) if configured_path else (repo_root / 'resident_profile_exclusions.json')
+
+    if not config_path.exists():
+        print(
+            f"[RESIDENT EXCLUSIONS] Config file not found at {config_path}; "
+            "using empty exclusion config"
+        )
+        return set(), set(), set()
+
+    try:
+        payload = json.loads(config_path.read_text(encoding='utf-8-sig'))
+    except Exception as exc:
+        print(
+            f"[RESIDENT EXCLUSIONS] Failed reading {config_path}: {exc}; "
+            "using empty exclusion config"
+        )
+        return set(), set(), set()
+
+    raw_names = payload
+    raw_lease_ids: Any = []
+    if isinstance(payload, dict):
+        raw_names = payload.get('excluded_resident_profile_names')
+        raw_lease_ids = payload.get('excluded_lease_ids', [])
+
+    if not isinstance(raw_names, list):
+        print(
+            f"[RESIDENT EXCLUSIONS] Invalid format in {config_path}; expected list or "
+            "{'excluded_resident_profile_names': [...], 'excluded_lease_ids': [...]} - using empty exclusion config"
+        )
+        return set(), set(), set()
+
+    if not isinstance(raw_lease_ids, list):
+        print(
+            f"[RESIDENT EXCLUSIONS] Invalid excluded_lease_ids in {config_path}; expected list - "
+            "using empty lease ID exclusions"
+        )
+        raw_lease_ids = []
+
+    normalized_names: set[str] = set()
+    invalid_values: list[Any] = []
+
+    for raw_name in raw_names:
+        normalized = _normalize_name_token(raw_name)
+        if normalized:
+            normalized_names.add(normalized)
+        else:
+            invalid_values.append(raw_name)
+
+    if invalid_values:
+        print(
+            f"[RESIDENT EXCLUSIONS] Ignored {len(invalid_values)} invalid name value(s) from {config_path}: "
+            f"{invalid_values[:10]}"
+        )
+
+    normalized_lease_ids: set[int] = set()
+    lease_id_tokens: set[str] = set()
+    invalid_lease_values: list[Any] = []
+
+    for raw_lease_id in raw_lease_ids:
+        if raw_lease_id is None:
+            invalid_lease_values.append(raw_lease_id)
+            continue
+
+        text = str(raw_lease_id).strip()
+        if not text:
+            invalid_lease_values.append(raw_lease_id)
+            continue
+
+        try:
+            normalized_int = int(float(text))
+            normalized_lease_ids.add(normalized_int)
+            lease_id_tokens.add(str(normalized_int))
+        except Exception:
+            invalid_lease_values.append(raw_lease_id)
+
+    if invalid_lease_values:
+        print(
+            f"[RESIDENT EXCLUSIONS] Ignored {len(invalid_lease_values)} invalid lease ID value(s) from {config_path}: "
+            f"{invalid_lease_values[:10]}"
+        )
+
+    print(
+        f"[RESIDENT EXCLUSIONS] Loaded {len(normalized_names)} excluded resident profile name(s) and "
+        f"{len(normalized_lease_ids)} excluded lease ID(s) from {config_path}"
+    )
+    return normalized_names, normalized_lease_ids, lease_id_tokens
+
+
+def reload_exclusion_config() -> None:
+    """Reload resident-name and lease-ID exclusion config into module-level caches."""
+    global EXCLUDED_RESIDENT_PROFILE_NAMES, EXCLUDED_LEASE_IDS, EXCLUDED_LEASE_ID_TOKENS
+    EXCLUDED_RESIDENT_PROFILE_NAMES, EXCLUDED_LEASE_IDS, EXCLUDED_LEASE_ID_TOKENS = _load_exclusion_config()
+
+
+EXCLUDED_RESIDENT_PROFILE_NAMES: set[str] = set()
+EXCLUDED_LEASE_IDS: set[int] = set()
+EXCLUDED_LEASE_ID_TOKENS: set[str] = set()
+reload_exclusion_config()
+
+
+def _build_excluded_resident_name_mask(df: pd.DataFrame, candidate_columns: list[str]) -> pd.Series:
+    """Return True for rows where any resident-name column matches exclusion config."""
+    mask = pd.Series(False, index=df.index)
+    if not EXCLUDED_RESIDENT_PROFILE_NAMES:
+        return mask
+
+    for column_name in candidate_columns:
+        if column_name not in df.columns:
+            continue
+
+        normalized_series = (
+            df[column_name]
+            .astype(str)
+            .str.strip()
+            .str.replace(r'\s+', ' ', regex=True)
+            .str.casefold()
+        )
+        mask = mask | normalized_series.isin(EXCLUDED_RESIDENT_PROFILE_NAMES)
+
+    return mask
+
+
+def _build_excluded_lease_id_mask(df: pd.DataFrame, candidate_columns: list[str]) -> pd.Series:
+    """Return True for rows where any lease-id column matches lease ID exclusions."""
+    mask = pd.Series(False, index=df.index)
+    if not EXCLUDED_LEASE_ID_TOKENS:
+        return mask
+
+    for column_name in candidate_columns:
+        if column_name not in df.columns:
+            continue
+
+        normalized_series = (
+            df[column_name]
+            .astype(str)
+            .str.strip()
+        )
+
+        numeric_values = pd.to_numeric(df[column_name], errors='coerce')
+        numeric_mask = numeric_values.notna()
+        if numeric_mask.any():
+            normalized_series.loc[numeric_mask] = numeric_values.loc[numeric_mask].astype(float).astype(int).astype(str)
+
+        normalized_series = normalized_series.replace({'': pd.NA, 'nan': pd.NA, 'None': pd.NA, '<NA>': pd.NA})
+        mask = mask | normalized_series.isin(EXCLUDED_LEASE_ID_TOKENS)
+
+    return mask
+
+
+def _expand_exclusion_mask_by_identifier_columns(
+    df: pd.DataFrame,
+    base_mask: pd.Series,
+    identifier_columns: list[str]
+) -> pd.Series:
+    """Expand exclusion to all rows sharing customer/lease identifiers with excluded-name rows."""
+    expanded_mask = base_mask.copy()
+    if not expanded_mask.any():
+        return expanded_mask
+
+    base_count = int(expanded_mask.sum())
+    expansion_summary: dict[str, int] = {}
+    expansion_samples: dict[str, list[str]] = {}
+
+    for column_name in identifier_columns:
+        if column_name not in df.columns:
+            continue
+
+        normalized_identifiers = (
+            df[column_name]
+            .astype(str)
+            .str.strip()
+            .replace({'': pd.NA, 'nan': pd.NA, 'None': pd.NA, '<NA>': pd.NA})
+        )
+
+        excluded_identifiers = set(normalized_identifiers[expanded_mask].dropna().tolist())
+        if not excluded_identifiers:
+            continue
+
+        before_count = int(expanded_mask.sum())
+        expanded_mask = expanded_mask | normalized_identifiers.isin(excluded_identifiers)
+        after_count = int(expanded_mask.sum())
+        added_count = after_count - before_count
+
+        if added_count > 0:
+            expansion_summary[column_name] = added_count
+            expansion_samples[column_name] = sorted(str(value) for value in excluded_identifiers)[:5]
+
+    total_added = int(expanded_mask.sum()) - base_count
+    if total_added > 0:
+        print(
+            f"[RESIDENT EXCLUSIONS] Expanded exclusion by identifier columns; "
+            f"base={base_count}, added={total_added}, by_column={expansion_summary}, "
+            f"sample_keys={expansion_samples}"
+        )
+
+    return expanded_mask
 
 
 def _normalize_ar_code_token(value: Any) -> str | None:
@@ -307,6 +605,30 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
         if filtered_api_codes > 0:
             print(f"[FILTER] Excluding {filtered_api_codes} AR transactions with API-posted AR codes: {API_POSTED_AR_CODES}")
         mask = mask & ~api_posted_mask
+
+    # Exclude configured resident profile names
+    excluded_resident_mask = _build_excluded_resident_name_mask(
+        df,
+        [ARSourceColumns.CUSTOMER_NAME, ARSourceColumns.GUARANTOR_NAME]
+    )
+    excluded_resident_mask = _expand_exclusion_mask_by_identifier_columns(
+        df,
+        excluded_resident_mask,
+        [ARSourceColumns.CUSTOMER_ID, ARSourceColumns.LEASE_INTERVAL_ID, ARSourceColumns.LEASE_ID]
+    )
+    excluded_resident_count = int(excluded_resident_mask.sum())
+    if excluded_resident_count > 0:
+        print(f"[FILTER] Excluding {excluded_resident_count} AR transactions for configured resident profile exclusions")
+    mask = mask & ~excluded_resident_mask
+
+    excluded_lease_mask = _build_excluded_lease_id_mask(
+        df,
+        [ARSourceColumns.LEASE_INTERVAL_ID, ARSourceColumns.LEASE_ID]
+    )
+    excluded_lease_count = int(excluded_lease_mask.sum())
+    if excluded_lease_count > 0:
+        print(f"[FILTER] Excluding {excluded_lease_count} AR transactions for configured lease ID exclusions")
+    mask = mask & ~excluded_lease_mask
     
     # Inactive lease interval filter temporarily disabled.
     if ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL in df.columns:
@@ -433,6 +755,30 @@ def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
         if filtered_api_codes > 0:
             print(f"[FILTER] Excluding {filtered_api_codes} scheduled charges with API-posted AR codes: {API_POSTED_AR_CODES}")
         mask = mask & ~api_posted_mask
+
+    # Exclude configured resident profile names
+    excluded_resident_mask = _build_excluded_resident_name_mask(
+        df,
+        [ScheduledSourceColumns.CUSTOMER_NAME, ScheduledSourceColumns.GUARANTOR_NAME]
+    )
+    excluded_resident_mask = _expand_exclusion_mask_by_identifier_columns(
+        df,
+        excluded_resident_mask,
+        [ScheduledSourceColumns.CUSTOMER_ID, ScheduledSourceColumns.LEASE_INTERVAL_ID, ScheduledSourceColumns.LEASE_ID]
+    )
+    excluded_resident_count = int(excluded_resident_mask.sum())
+    if excluded_resident_count > 0:
+        print(f"[FILTER] Excluding {excluded_resident_count} scheduled charges for configured resident profile exclusions")
+    mask = mask & ~excluded_resident_mask
+
+    excluded_lease_mask = _build_excluded_lease_id_mask(
+        df,
+        [ScheduledSourceColumns.LEASE_INTERVAL_ID, ScheduledSourceColumns.LEASE_ID]
+    )
+    excluded_lease_count = int(excluded_lease_mask.sum())
+    if excluded_lease_count > 0:
+        print(f"[FILTER] Excluding {excluded_lease_count} scheduled charges for configured lease ID exclusions")
+    mask = mask & ~excluded_lease_mask
     
     # CRITICAL: Exclude unselected quotes (IS_UNSELECTED_QUOTE = 1)
     # These are from quotes the tenant didn't select, so they should never appear in AR

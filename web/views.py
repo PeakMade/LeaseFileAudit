@@ -399,6 +399,115 @@ def _clear_run_scoped_caches(run_id: str, property_id=None, lease_interval_id=No
     _safe_delete(calculate_cumulative_metrics)
 
 
+def _resident_exclusions_config_path() -> Path:
+    """Resolve exclusion config path used by audit mappings."""
+    configured_path = os.getenv('RESIDENT_PROFILE_EXCLUSIONS_PATH')
+    if configured_path:
+        return Path(configured_path)
+    return Path(__file__).resolve().parent.parent / 'resident_profile_exclusions.json'
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+def _load_exclusions_for_settings() -> tuple[list[str], list[str], Path]:
+    """Load exclusion names and lease IDs for settings UI."""
+    config_path = _resident_exclusions_config_path()
+    if not config_path.exists():
+        return [], [], config_path
+
+    try:
+        payload = json.loads(config_path.read_text(encoding='utf-8-sig'))
+    except Exception as exc:
+        logger.warning(f"[SETTINGS] Failed to read exclusions config at {config_path}: {exc}")
+        return [], [], config_path
+
+    if isinstance(payload, list):
+        names = [str(item).strip() for item in payload if str(item).strip()]
+        return _dedupe_preserve_order(names), [], config_path
+
+    if not isinstance(payload, dict):
+        return [], [], config_path
+
+    raw_names = payload.get('excluded_resident_profile_names') or []
+    raw_lease_ids = payload.get('excluded_lease_ids') or []
+
+    names = [str(item).strip() for item in raw_names if str(item).strip()] if isinstance(raw_names, list) else []
+    lease_ids = [str(item).strip() for item in raw_lease_ids if str(item).strip()] if isinstance(raw_lease_ids, list) else []
+
+    return _dedupe_preserve_order(names), _dedupe_preserve_order(lease_ids), config_path
+
+
+@bp.route('/settings', methods=['GET', 'POST'])
+@require_auth
+def settings_view():
+    """Settings page for exclusion configuration management."""
+    names, lease_ids, config_path = _load_exclusions_for_settings()
+
+    if request.method == 'POST':
+        names_text = request.form.get('excluded_resident_profile_names', '')
+        lease_ids_text = request.form.get('excluded_lease_ids', '')
+
+        name_lines = [line.strip() for line in names_text.splitlines() if line.strip()]
+        lease_id_lines = [line.strip() for line in lease_ids_text.splitlines() if line.strip()]
+
+        normalized_names = _dedupe_preserve_order(name_lines)
+
+        normalized_lease_ids: list[int] = []
+        invalid_lease_ids: list[str] = []
+        for raw_lease_id in _dedupe_preserve_order(lease_id_lines):
+            try:
+                normalized_lease_ids.append(int(float(raw_lease_id)))
+            except Exception:
+                invalid_lease_ids.append(raw_lease_id)
+
+        payload = {
+            'excluded_resident_profile_names': normalized_names,
+            'excluded_lease_ids': normalized_lease_ids,
+        }
+
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+
+            try:
+                from audit_engine import mappings as mappings_module
+                mappings_module.reload_exclusion_config()
+            except Exception as reload_error:
+                logger.warning(f"[SETTINGS] Exclusion config saved but reload failed: {reload_error}")
+
+            if invalid_lease_ids:
+                flash(
+                    f"Settings saved. Ignored {len(invalid_lease_ids)} invalid lease ID value(s): {invalid_lease_ids[:10]}",
+                    'warning'
+                )
+            else:
+                flash('Settings saved successfully.', 'success')
+
+            return redirect(url_for('main.settings_view'))
+        except Exception as save_error:
+            logger.error(f"[SETTINGS] Failed saving exclusions config: {save_error}")
+            flash(f"Failed to save settings: {save_error}", 'danger')
+
+        names = normalized_names
+        lease_ids = [str(value) for value in normalized_lease_ids]
+
+    return render_template(
+        'settings.html',
+        excluded_resident_profile_names='\n'.join(names),
+        excluded_lease_ids='\n'.join(lease_ids),
+        config_path=str(config_path),
+    )
+
+
 def _normalize_key_value(value, cast_type=str):
     """Normalize key values for consistent tuple matching across CSV and SharePoint sources."""
     if value is None:
