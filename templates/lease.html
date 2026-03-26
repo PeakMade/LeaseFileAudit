@@ -278,21 +278,21 @@
         content += '</div>';
         
         // Monthly details table
-        content += '<table class="table table-sm table-bordered">';
+        content += '<table class="table table-sm table-bordered drawer-monthly-table">';
         content += '<thead class="table-secondary">';
         content += '<tr>';
-        content += '<th style="width: 30px;"></th>';
-        content += '<th class="align-middle">Month</th>';
-        content += '<th colspan="2" class="text-center text-dark">Expected</th>';
-        content += '<th colspan="2" class="text-center text-dark">Actual</th>';
+        content += '<th class="month-group-header" style="width: 30px;"></th>';
+        content += '<th class="align-middle month-group-header">Month</th>';
+        content += '<th colspan="2" class="text-center text-dark expected-group-header">Expected</th>';
+        content += '<th colspan="2" class="text-center text-dark actual-group-header">Actual</th>';
         content += '</tr>';
         content += '<tr>';
-        content += '<th></th>';
-        content += '<th></th>';
-        content += '<th class="text-dark">Period</th>';
-        content += '<th class="text-end text-dark">Amount</th>';
-        content += '<th class="text-dark">Post Date</th>';
-        content += '<th class="text-end text-dark">Amount</th>';
+        content += '<th class="month-subheader"></th>';
+        content += '<th class="month-subheader"></th>';
+        content += '<th class="text-center text-dark expected-col">Period</th>';
+        content += '<th class="text-center text-dark expected-amount-col">Amount</th>';
+        content += '<th class="text-center text-dark actual-col">Post Date</th>';
+        content += '<th class="text-center text-dark actual-amount-col">Amount</th>';
         content += '</tr>';
         content += '</thead>';
         content += '<tbody>';
@@ -349,40 +349,40 @@
                     // Expected columns
                     if (i < expTrans.length) {
                         const exp = expTrans[i];
-                        content += `<td><small>${formatDate(exp.period_start, 'MM/DD/YYYY')} - ${formatDate(exp.period_end, 'MM/DD/YYYY')}</small></td>`;
-                        content += `<td class="text-end">$${formatNumber(exp.amount)}</td>`;
+                        content += `<td class="expected-col text-center"><small>${formatDate(exp.period_start, 'MM/DD/YYYY')} - ${formatDate(exp.period_end, 'MM/DD/YYYY')}</small></td>`;
+                        content += `<td class="text-center expected-amount-col">$${formatNumber(exp.amount)}</td>`;
                     } else {
                         // No scheduled charges at all for the month: use one rowspan cell on first row.
                         if (expTrans.length === 0) {
                             if (i === 0 && isException && month.status === 'BILLED_NOT_SCHEDULED') {
-                                content += `<td rowspan="${maxRows}" colspan="2" class="text-center align-middle expected-fix-cell" id="expectedFix-${monthIndex}"><em class="text-muted">No scheduled charges</em></td>`;
+                                content += `<td rowspan="${maxRows}" colspan="2" class="text-center align-middle expected-fix-cell expected-col-span" id="expectedFix-${monthIndex}"><em class="text-muted">No scheduled charges</em></td>`;
                             } else if (i === 0) {
-                                content += `<td rowspan="${maxRows}" colspan="2" class="text-muted text-center align-middle"><em>No scheduled charges</em></td>`;
+                                content += `<td rowspan="${maxRows}" colspan="2" class="text-muted text-center align-middle expected-col-span"><em>No scheduled charges</em></td>`;
                             }
                         } else {
                             // Expected has fewer rows than actual for this month: emit blanks to preserve alignment.
-                            content += '<td class="text-muted"></td>';
-                            content += '<td class="text-end text-muted"></td>';
+                            content += '<td class="text-muted text-center expected-col"></td>';
+                            content += '<td class="text-center text-muted expected-amount-col"></td>';
                         }
                     }
                     
                     // Actual columns
                     if (i < actTrans.length) {
                         const act = actTrans[i];
-                        content += `<td>${formatDate(act.post_date, 'MM/DD/YYYY')}</td>`;
-                        content += `<td class="text-end">$${formatNumber(act.amount)}</td>`;
+                        content += `<td class="actual-col text-center">${formatDate(act.post_date, 'MM/DD/YYYY')}</td>`;
+                        content += `<td class="text-center actual-amount-col">$${formatNumber(act.amount)}</td>`;
                     } else {
                         // No actual transactions at all for the month: use one rowspan cell on first row.
                         if (actTrans.length === 0) {
                             if (i === 0 && isException && month.status === 'SCHEDULED_NOT_BILLED') {
-                                content += `<td rowspan="${maxRows}" colspan="2" class="text-center align-middle actual-fix-cell" id="actualFix-${monthIndex}"><em class="text-muted">No actual transactions</em></td>`;
+                                content += `<td rowspan="${maxRows}" colspan="2" class="text-center align-middle actual-fix-cell actual-col-span" id="actualFix-${monthIndex}"><em class="text-muted">No actual transactions</em></td>`;
                             } else if (i === 0) {
-                                content += `<td rowspan="${maxRows}" colspan="2" class="text-muted text-center align-middle"><em>No actual transactions</em></td>`;
+                                content += `<td rowspan="${maxRows}" colspan="2" class="text-muted text-center align-middle actual-col-span"><em>No actual transactions</em></td>`;
                             }
                         } else {
                             // Actual has fewer rows than expected for this month: emit blanks to preserve alignment.
-                            content += '<td class="text-muted"></td>';
-                            content += '<td class="text-end text-muted"></td>';
+                            content += '<td class="text-muted text-center actual-col"></td>';
+                            content += '<td class="text-center text-muted actual-amount-col"></td>';
                         }
                     }
                     
@@ -1052,6 +1052,97 @@
         padding: 1.5rem;
         flex: 1;
         overflow-y: auto;
+    }
+
+    .drawer-monthly-table .expected-group-header,
+    .drawer-monthly-table .expected-col,
+    .drawer-monthly-table .expected-amount-col,
+    .drawer-monthly-table .expected-col-span {
+        border-left: 2px solid #6c757d !important;
+    }
+
+    .drawer-monthly-table .expected-group-header,
+    .drawer-monthly-table .expected-amount-col,
+    .drawer-monthly-table .expected-col-span {
+        border-right: 2px solid #6c757d !important;
+    }
+
+    .drawer-monthly-table .actual-group-header,
+    .drawer-monthly-table .actual-col,
+    .drawer-monthly-table .actual-amount-col,
+    .drawer-monthly-table .actual-col-span {
+        border-left: 3px solid #495057 !important;
+    }
+
+    .drawer-monthly-table .actual-group-header,
+    .drawer-monthly-table .actual-amount-col,
+    .drawer-monthly-table .actual-col-span {
+        border-right: 2px solid #198754 !important;
+    }
+
+    .drawer-monthly-table thead .expected-group-header,
+    .drawer-monthly-table thead .actual-group-header,
+    .drawer-monthly-table thead .month-group-header,
+    .drawer-monthly-table thead .month-subheader,
+    .drawer-monthly-table thead .expected-col,
+    .drawer-monthly-table thead .expected-amount-col,
+    .drawer-monthly-table thead .actual-col,
+    .drawer-monthly-table thead .actual-amount-col {
+        background-color: #c6c8ca;
+    }
+
+    .drawer-monthly-table tbody .expected-col,
+    .drawer-monthly-table tbody .expected-amount-col,
+    .drawer-monthly-table tbody .expected-col-span,
+    .drawer-monthly-table tbody .actual-col,
+    .drawer-monthly-table tbody .actual-amount-col,
+    .drawer-monthly-table tbody .actual-col-span {
+        background-color: #ffffff;
+    }
+
+    .drawer-monthly-table .expected-amount-col,
+    .drawer-monthly-table .actual-amount-col {
+        text-align: center !important;
+        white-space: nowrap;
+    }
+
+    .drawer-monthly-table {
+        border: 3px solid #495057 !important;
+    }
+
+    .drawer-monthly-table thead th,
+    .drawer-monthly-table tbody td {
+        border-top-width: 1px !important;
+        border-bottom-width: 1px !important;
+    }
+
+    .drawer-monthly-table .expected-amount-col {
+        border-left-width: 1px !important;
+    }
+
+    .drawer-monthly-table .actual-amount-col {
+        border-left-width: 1px !important;
+    }
+
+    .drawer-monthly-table tr > *:first-child {
+        border-left: 3px solid #495057 !important;
+    }
+
+    .drawer-monthly-table tr > *:last-child {
+        border-right: 3px solid #495057 !important;
+    }
+
+    .drawer-monthly-table thead tr:first-child > * {
+        border-top: 3px solid #495057 !important;
+    }
+
+    .drawer-monthly-table tbody tr:last-child > * {
+        border-bottom: 3px solid #495057 !important;
+    }
+
+    .drawer-monthly-table tr.table-danger > td,
+    .drawer-monthly-table tr.table-danger > th {
+        background-color: #f8d7da !important;
     }
     
     
