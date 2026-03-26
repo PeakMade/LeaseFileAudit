@@ -139,10 +139,13 @@ LeaseFileAudit/
 ### High-Level Flow
 
 ```
-1. User uploads Excel file (AR Transactions + Scheduled Charges)
+1. User provides input data (Excel upload OR API fetch)
+   - Excel path: `/upload` with AR Transactions + Scheduled Charges workbook (Lease File Audit - Input folder - Scheduled vs AR Transactions Input v2)
+   - API property path: `/upload-api-property` fetches Entrata property data
+   - API lease path: `/upload-api-lease` fetches Entrata single-lease data
    ↓
-2. Data Loading & Mapping (mappings.py)
-   - Load raw Excel sheets
+2. Data Loading & Mapping (mappings.py + api_ingest.py)
+   - Load raw Excel sheets OR fetch API datasets and stage equivalent raw DataFrames
    - Map source columns to canonical field names
    - Apply source-specific transformations
    ↓
@@ -178,12 +181,21 @@ LeaseFileAudit/
 
 ### Detailed Step Breakdown
 
-#### Step 1: Upload & Sheet Detection
-- User selects Excel file via `/upload` route
-- `io.load_excel_sources()` auto-detects sheets by keywords:
-  - AR Transactions: "AR", "transactions", "posted"
-  - Scheduled Charges: "scheduled", "charges"
-- Loads raw DataFrames
+#### Step 1: Input Acquisition (Excel or API)
+- **Excel upload path** (`/upload`):
+   - User selects workbook with AR Transactions + Scheduled Charges
+   - `io.load_excel_sources()` auto-detects sheets by keywords:
+      - AR Transactions: "AR", "transactions", "posted"
+      - Scheduled Charges: "scheduled", "charges"
+   - Loads raw DataFrames from workbook sheets
+- **API property path** (`/upload-api-property`):
+   - User selects property and optional date window
+   - `audit_engine/api_ingest.py` fetches Entrata API sources (`getLeaseDetails`, `getLeaseArTransactions`)
+   - Builds AR and Scheduled raw DataFrames aligned to the same pipeline contract
+- **API lease path** (`/upload-api-lease`):
+   - User submits a single lease (and optional property/date scope)
+   - `audit_engine/api_ingest.py` fetches lease-scoped Entrata data
+   - Builds lease-scoped raw DataFrames for the same downstream audit pipeline
 
 #### Step 2: Source Mapping
 - **Purpose**: Convert proprietary column names to standard canonical fields
@@ -201,6 +213,8 @@ LeaseFileAudit/
     - CHARGE_START_DATE → PERIOD_START
     - CHARGE_END_DATE → PERIOD_END
   ```
+- **API note**:
+   - API ingestion (`audit_engine/api_ingest.py`) stages Entrata payloads into AR/scheduled DataFrames compatible with the same canonical mapping/normalization path used by Excel uploads.
 - **Row Filters Applied**:
   - AR: Only `IS_POSTED=1`, active leases, exclude API-posted codes
   - Scheduled: Only cached to lease, not deleted, not unselected quotes
@@ -266,6 +280,92 @@ LeaseFileAudit/
   - Load all run CSV files
   - Deduplicate exceptions across runs
   - Calculate totals
+
+### Audit Field Mapping & Normalization Requirements
+
+This section summarizes the audit field contract used between mapping and normalization.
+
+#### AR Transactions: Mapping Output Contract
+
+| Canonical Field | Source Column | Expected Data Type | Normalization Required? |
+|---|---|---|---|
+| `PROPERTY_ID` | `PROPERTY_ID` | Integer / numeric ID | Yes |
+| `PROPERTY_NAME` | `PROPERTY_NAME` | String | Yes |
+| `LEASE_INTERVAL_ID` | `LEASE_INTERVAL_ID` | Integer / numeric ID | Yes |
+| `AR_CODE_ID` | `AR_CODE_ID` | String or numeric code | Yes |
+| `AR_CODE_NAME` | `AR_CODE_NAME` | String | Yes |
+| `actual_amount` | `TRANSACTION_AMOUNT` | Float | Yes |
+| `POST_DATE` | `POST_DATE` | Datetime (parsed from `YYYYMMDD`) | Yes |
+| `AUDIT_MONTH` | Derived from `POST_DATE` | Datetime (month start) | Yes |
+| `AR_TRANSACTION_ID` | `ID` | String / ID | Yes |
+| `IS_REVERSAL` | `IS_REVERSAL` | Numeric flag (0/1) | Yes |
+| `CUSTOMER_NAME` | `CUSTOMER_NAME` | String | Yes |
+| `GUARANTOR_NAME` | `GUARANTOR_NAME` | String | Yes |
+| `LEASE_ID` | `LEASE_ID` | String / ID | Optional passthrough |
+| `CUSTOMER_ID` | `CUSTOMER_ID` | String / ID | Optional passthrough |
+| `SCHEDULED_CHARGE_ID_LINK` | `SCHEDULED_CHARGE_ID` | String / ID | Optional passthrough |
+
+#### Scheduled Charges: Mapping Output Contract
+
+| Canonical Field | Source Column | Expected Data Type | Normalization Required? |
+|---|---|---|---|
+| `SCHEDULED_CHARGES_ID` | `ID` | String / ID | Yes |
+| `PROPERTY_ID` | `PROPERTY_ID` | Integer / numeric ID | Yes |
+| `LEASE_ID` | `LEASE_ID` | String / ID | Yes |
+| `LEASE_INTERVAL_ID` | `LEASE_INTERVAL_ID` | Integer / numeric ID | Yes |
+| `AR_CODE_ID` | `AR_CODE_ID` | String or numeric code | Yes |
+| `AR_CODE_NAME` | `AR_CODE_NAME` | String | Yes |
+| `expected_amount` | `CHARGE_AMOUNT` | Float | Yes |
+| `PERIOD_START` | Derived from `CHARGE_START_DATE` | Datetime | Yes |
+| `PERIOD_END` | Derived from `CHARGE_END_DATE` | Datetime (`NaT` allowed for one-time) | Yes |
+| `CUSTOMER_NAME` | `CUSTOMER_NAME` | String | Yes |
+| `CUSTOMER_ID` | `CUSTOMER_ID` | String / ID | Yes |
+| `GUARANTOR_NAME` | `GUARANTOR_NAME` | String | Yes |
+| `SCHEDULED_CHARGE_ID` | `SCHEDULED_CHARGE_ID` | String / ID | Optional passthrough |
+| `IS_UNSELECTED_QUOTE` | `IS_UNSELECTED_QUOTE` | Numeric flag (0/1) | Filter/support field |
+| `IS_CACHED_TO_LEASE` | `IS_CACHED_TO_LEASE` | Numeric flag (0/1) | Filter/support field |
+| `POSTED_THROUGH_DATE` | `POSTED_THROUGH_DATE` | Date-like string | Filter/support field |
+| `LAST_POSTED_ON` | `LAST_POSTED_ON` | Date-like string | Filter/support field |
+| `AR_CASCADE_ID` | `AR_CASCADE_ID` | Integer / numeric ID | Filter/support field |
+| `AR_TRIGGER_ID` | `AR_TRIGGER_ID` | Integer / numeric ID | Filter/support field |
+| `SCHEDULED_CHARGE_TYPE_ID` | `SCHEDULED_CHARGE_TYPE_ID` | Integer / numeric ID | Filter/support field |
+
+#### Required Columns During Normalization
+
+Normalization enforces these required canonical columns and raises if missing.
+
+**AR normalization required columns** (`normalize_ar_transactions`):
+- `PROPERTY_ID`
+- `PROPERTY_NAME`
+- `LEASE_INTERVAL_ID`
+- `AR_CODE_ID`
+- `AUDIT_MONTH`
+- `actual_amount`
+- `AR_TRANSACTION_ID`
+- `IS_REVERSAL`
+- `POST_DATE`
+- `AR_CODE_NAME`
+- `CUSTOMER_NAME`
+- `GUARANTOR_NAME`
+
+**Scheduled normalization required columns** (`normalize_scheduled_charges`):
+- `SCHEDULED_CHARGES_ID`
+- `PROPERTY_ID`
+- `LEASE_ID`
+- `LEASE_INTERVAL_ID`
+- `AR_CODE_ID`
+- `expected_amount`
+- `PERIOD_START`
+- `PERIOD_END`
+- `AR_CODE_NAME`
+- `CUSTOMER_NAME`
+- `CUSTOMER_ID`
+- `GUARANTOR_NAME`
+
+**Normalization drop rules**:
+- AR: rows with invalid `AUDIT_MONTH` (`NaT`) are dropped.
+- Scheduled: rows with invalid `PERIOD_START` (`NaT`) are dropped.
+- Scheduled `PERIOD_END` may be `NaT` for one-time charges.
 
 ---
 
@@ -1254,6 +1354,10 @@ def calculate_cumulative_metrics(run_id):
    - Keep async writes enabled for faster responses and lower timeout risk.
    - `load_bucket_results()` and `load_findings()` now automatically fall back to CSV when list row counts are lower than CSV row counts.
    - Property view lease status now falls back to unresolved bucket counts when lease snapshots are not yet available.
+   - Read-path source logging now emits explicit tags so fallback usage is visible in terminal/log stream:
+     - `[READ SOURCE][bucket_results] source=sharepoint_list|csv|none ...`
+     - `[READ SOURCE][findings] source=sharepoint_list|csv|none ...`
+     - `[CSV FALLBACK][bucket_results|findings] ...` when CSV is selected due to partial list data or list read unavailability.
    - Optional fallback mode: set `ASYNC_AUDIT_RESULTS_WRITE=false` and/or `ASYNC_RUN_DISPLAY_SNAPSHOTS=false` if you need fully blocking writes.
 - Prevention:
   - Ensure AuditRuns list has proper indexes on RunId, ResultType, PropertyId
@@ -1397,6 +1501,10 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-03-24**: Added explicit SharePoint batch-configuration diagnostics in `storage/service.py`: startup log prints configured `SHAREPOINT_BATCH_SIZE_AUDITRUNS`/`SHAREPOINT_BATCH_SIZE_SNAPSHOTS`/`SHAREPOINT_BATCH_SIZE`, and each batched list write now logs `[STORAGE][BATCH CONFIG]` with context, row count, effective batch size, and source (`env` vs default)
+- **2026-03-23**: Added portfolio route read-source summary logging in `web/views.py` so each portfolio request emits `[READ SUMMARY][PORTFOLIO_VIEW] ... snapshot_source=latest_property_snapshots_across_runs|run_scoped_snapshots ...` for quick source-path visibility alongside property/lease summaries
+- **2026-03-23**: Added route-level read-source summary logging in `web/views.py` so each property/lease page request emits one compact line indicating data source usage for display loads: `[READ SUMMARY][PROPERTY_VIEW] ... bucket_source=... findings_source=...` and `[READ SUMMARY][LEASE_VIEW] ... bucket_source=...`; also preserved DataFrame source metadata through bucket normalization helper for reliable summaries
+- **2026-03-23**: Added explicit read-path diagnostics in `storage/service.py` for `load_bucket_results()` and `load_findings()` to make CSV fallback visibility obvious in terminal/log stream: `[READ SOURCE][bucket_results|findings] source=sharepoint_list|csv|none` plus `[CSV FALLBACK][...]` reason logging for partial-list and list-unavailable fallback cases
 - **2026-03-23**: Reduced upload timeout risk by moving RunDisplaySnapshots writes to async by default in `storage/service.py` via `ASYNC_RUN_DISPLAY_SNAPSHOTS` (default `true`); added background wrapper `_write_run_display_snapshots_async()` with post-write validation support; retained UI correctness during async lag by adding CSV completeness fallback when list rows are partial in `load_bucket_results()` and `load_findings()` and by updating `property_view` lease status fallback to use unresolved bucket counts when lease snapshots are not yet available
 - **2026-03-20**: Switched Entrata lease-term document handling to memory-first extraction in `audit_engine/entrata_lease_terms.py`: selected resident packet/addenda are parsed from in-memory PDF bytes (no required local file path dependency), merged packet+addenda is built in-memory via PyMuPDF, and documents are uploaded to SharePoint Document Library path `Entrata leases/<property_id>/...`; added optional debug/local persistence flag `SAVE_LOCAL_ENTRATA_PDFS` (default `false`) while keeping local path parsing fallback compatibility for explicit path inputs
 - **2026-03-16**: Added status badge column to property view lease table showing per-lease status (Passed/Open/Resolved) with color-coded Bootstrap badges; status calculation logic in `web/views.py` compares static exception count from snapshots with unresolved exception count from filtered lease groups to determine resolution progress; status label shows "Open (X/Y resolved)" format for partially resolved leases
@@ -1489,6 +1597,6 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 
 ---
 
-**Last Updated**: March 10, 2026  
+**Last Updated**: March 23, 2026  
 **Version**: 1.0  
 **Maintained By**: PeakMade Development Team

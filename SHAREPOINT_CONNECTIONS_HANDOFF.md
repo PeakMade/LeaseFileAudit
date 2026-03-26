@@ -46,9 +46,13 @@ Used in:
 ## 3.1 `AuditRuns` (legacy fallback: `Audit Run Results`)
 
 - Purpose:
-  - List-backed persistence of detailed reconciliation rows
-  - Stores both `bucket_result` and `finding` row types per run
-  - Used as read path for run detail loading (with CSV fallback)
+  - This is the app’s detailed, queryable "result table" for each run.
+  - Stores one row per detailed output record with `ResultType`:
+    - `bucket_result`: aggregated expected vs actual at audit grain (property + lease interval + AR code + month)
+    - `finding`: rule-generated issue records with severity/title/description and impact
+  - Enables routes to load scoped slices quickly (property/lease/run) without downloading full run artifacts.
+  - Acts as the primary list-backed read source; CSV files are the fallback when rows are missing/partial.
+  - Operationally, this list is where you look first when UI counts look incomplete or mismatched during async writes.
 
 Used in:
 - Preferred/legacy resolver: [storage/service.py](storage/service.py#L277-L287)
@@ -59,8 +63,15 @@ Used in:
 ## 3.2 `RunDisplaySnapshots` (legacy fallback: `Run Display Snapshots`)
 
 - Purpose:
-  - Fast UI snapshots for portfolio/property/lease views
-  - Stores static summary rows so UI does not always recompute from full detail data
+  - Precomputed summary rows used to render headers/cards fast for portfolio, property, and lease views.
+  - Stores static totals/counts by scope (`portfolio`, `property`, `lease`), such as:
+    - exception counts
+    - undercharge/overcharge
+    - match rate
+    - total/matched bucket counts
+  - Reduces expensive recomputation from detail rows on every page load.
+  - Snapshot values are point-in-time at write and are not continuously recomputed after month-resolution edits.
+  - If missing or stale, UI falls back to recalculation paths where available (slower, more variable latency).
 
 Used in:
 - Preferred/legacy resolver: [storage/service.py](storage/service.py#L288-L299)
@@ -70,8 +81,10 @@ Used in:
 ## 3.3 `Audit Run Metrics`
 
 - Purpose:
-  - Aggregated run-level metrics for fast portfolio/dashboard loading
-  - Stores totals and summary counts by run
+  - Lightweight run-level KPI index used for quick dashboard/run-list style reads.
+  - Stores one metrics record per run (totals and severity counts) instead of full detail.
+  - Used when the app needs "run summary" speed, not row-level exception detail.
+  - Operationally helpful for validating whether a run completed and what its top-line numbers should be.
 
 Used in:
 - Metrics write: [storage/service.py](storage/service.py#L2964-L3078)
@@ -81,8 +94,12 @@ Used in:
 ## 3.4 `ExceptionMonths`
 
 - Purpose:
-  - Per-month exception resolution persistence (core resolution state)
-  - Enables cross-run historical resolution matching and auto-apply behavior
+  - Core human-workflow state table for resolution tracking at month granularity.
+  - Each row represents resolution status for a specific key:
+    - run + property + lease interval + AR code + audit month
+  - Stores user workflow metadata (status, fix label/action, resolved by/at, expected/actual/variance context).
+  - Drives what appears as currently open vs resolved in property/lease views and KPI filtering.
+  - Enables historical resolution carry-forward patterns and prevents resolved issues from inflating current exposure.
 
 Used in:
 - Load by lease/ar-code and bulk by property: [storage/service.py](storage/service.py#L2390-L2655)
@@ -92,7 +109,9 @@ Used in:
 ## 3.5 `ExceptionStates`
 
 - Purpose:
-  - Exception workflow state tracking at exception-level (distinct from month-level records)
+  - Legacy/parallel workflow state store at exception-level (coarser than month-level records).
+  - Captures status for exception entities where month-level detail may not be the primary workflow.
+  - Still present for compatibility and some API paths, but month-level state in `ExceptionMonths` is the primary operational truth for resolution UX.
 
 Used in:
 - Load/upsert methods: [storage/service.py](storage/service.py#L1937-L2078)
@@ -101,8 +120,14 @@ Used in:
 ## 3.6 `LeaseTermSet` (legacy fallback: `Lease Term Set`)
 
 - Purpose:
-  - One row per lease key for lease-term refresh/version/fingerprint control
-  - Tracks doc list fingerprint, selected docs, status, and refresh metadata
+  - Control-plane row for each lease key (`PROPERTY_ID:LEASE_INTERVAL_ID`) in lease-term extraction.
+  - Tracks refresh state and change detection metadata:
+    - full document list fingerprint
+    - selected document fingerprint
+    - version/status/last checked/refreshed timestamps
+    - last error details
+  - Prevents unnecessary document downloads/parsing when source docs have not changed.
+  - This is the first place to inspect when lease-term refresh appears skipped or repeatedly stale.
 
 Used in:
 - Resolver + env override (`LEASE_TERM_SET_LIST_ID` / `LEASE_TERM_SET_LIST_URL`): [storage/service.py](storage/service.py#L301-L315)
@@ -112,7 +137,10 @@ Used in:
 ## 3.7 `LeaseTerms` (legacy fallback: `Lease Terms`)
 
 - Purpose:
-  - Active normalized extracted lease term rows by lease key
+  - Materialized normalized lease-term outputs (the actual extracted term records).
+  - Stores active term rows mapped to lease keys and AR mapping context (type, amount, frequency, dates, mapped AR code, confidence).
+  - These rows feed lease-page expectation overlays and lease-only expectation alerts.
+  - Replaced atomically per lease key during refresh so UI sees coherent term sets.
 
 Used in:
 - Resolver + env override (`LEASE_TERMS_LIST_ID` / `LEASE_TERMS_LIST_URL`): [storage/service.py](storage/service.py#L316-L330)
@@ -122,7 +150,9 @@ Used in:
 ## 3.8 `LeaseTermEvidence` (legacy fallback: `Lease Term Evidence`)
 
 - Purpose:
-  - Evidence snippets/pages associated with extracted lease terms
+  - Traceability/evidence table for extracted terms.
+  - Stores page-level snippets and metadata that justify each extracted term (doc id/name, page number, excerpt text, confidence).
+  - Supports auditability and troubleshooting when users ask "where did this lease expectation come from?"
 
 Used in:
 - Resolver + env override (`LEASE_TERM_EVIDENCE_LIST_ID` / `LEASE_TERM_EVIDENCE_LIST_URL`): [storage/service.py](storage/service.py#L331-L345)
@@ -131,7 +161,10 @@ Used in:
 ## 3.9 Property picklist list (default: `Properties_0`)
 
 - Purpose:
-  - Authoritative property id/name source for API upload property picklist
+  - Authoritative property identity source for API upload UX and naming consistency.
+  - Provides property id/name pairs used to populate the upload form selector.
+  - Also improves naming quality in downstream metadata/snapshots by preferring picklist names over fallbacks.
+  - If unavailable, upload still supports manual property-id entry, but naming quality and operator convenience degrade.
 - Env override: `LEASE_API_PROPERTIES_SHAREPOINT_LIST`
 - Default list name: `Properties_0`
 
@@ -142,7 +175,10 @@ Used in:
 ## 3.10 Activity log list (config-driven; default: `Innovation Use Log`)
 
 - Purpose:
-  - User/session activity log (start session, end session, audit success/failure, etc.)
+  - Operational telemetry and adoption/compliance trail.
+  - Captures user/session lifecycle events (start/end session, successful/failed audit) and context metadata.
+  - Used for support triage, usage reporting, and reconstructing user actions during incidents.
+  - Not part of reconciliation correctness, but critical for observability and ownership reporting.
 - Env var: `SHAREPOINT_LIST_NAME`
 - Default from config: `Innovation Use Log`
 - Note: `SharePointLogger` class default constructor list name is `AuditLog`, but app wiring typically passes configured list name.

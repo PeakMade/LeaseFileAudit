@@ -9,12 +9,14 @@ import logging
 import os
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import math
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
 from time import perf_counter, sleep
 from urllib.parse import unquote
 from activity_logging.sharepoint import _get_app_only_token
@@ -262,17 +264,17 @@ class StorageService:
             return normalized[:10]
         return str(normalized)[:10]
 
-    def _build_result_composite_key(self, run_id: str, result_type: str, row: Dict[str, Any], row_index: int) -> str:
-        """Build deterministic composite key for result rows persisted to SharePoint list."""
-        property_id = self._normalize_for_json(row.get('PROPERTY_ID', row.get('property_id')))
-        lease_interval_id = self._normalize_for_json(row.get('LEASE_INTERVAL_ID', row.get('lease_interval_id')))
-        ar_code_id = self._normalize_for_json(row.get('AR_CODE_ID', row.get('ar_code_id')))
-        audit_month = self._normalize_audit_month_value(row.get('AUDIT_MONTH', row.get('audit_month')))
+    # def _build_result_composite_key(self, run_id: str, result_type: str, row: Dict[str, Any], row_index: int) -> str:
+    #     """Build deterministic composite key for result rows persisted to SharePoint list."""
+    #     property_id = self._normalize_for_json(row.get('PROPERTY_ID', row.get('property_id')))
+    #     lease_interval_id = self._normalize_for_json(row.get('LEASE_INTERVAL_ID', row.get('lease_interval_id')))
+    #     ar_code_id = self._normalize_for_json(row.get('AR_CODE_ID', row.get('ar_code_id')))
+    #     audit_month = self._normalize_audit_month_value(row.get('AUDIT_MONTH', row.get('audit_month')))
 
-        if property_id is not None and lease_interval_id is not None and ar_code_id is not None and audit_month:
-            return f"{run_id}:{result_type}:{property_id}:{lease_interval_id}:{ar_code_id}:{audit_month}"
+    #     if property_id is not None and lease_interval_id is not None and ar_code_id is not None and audit_month:
+    #         return f"{run_id}:{result_type}:{property_id}:{lease_interval_id}:{ar_code_id}:{audit_month}"
 
-        return f"{run_id}:{result_type}:row:{row_index}"
+    #     return f"{run_id}:{result_type}:row:{row_index}"
 
     def _get_audit_results_list_id(self) -> Optional[str]:
         """Resolve audit results list id with preferred name first and legacy fallback."""
@@ -839,6 +841,9 @@ class StorageService:
         # - SHAREPOINT_BATCH_SIZE_SNAPSHOTS
         # Global fallback:
         # - SHAREPOINT_BATCH_SIZE
+        env_key = None
+        env_value = None
+        batch_size_source = 'argument_or_default'
         try:
             env_key = None
             context_lower = str(context_label or '').lower()
@@ -850,15 +855,72 @@ class StorageService:
             env_value = os.getenv(env_key) if env_key else None
             if not env_value:
                 env_value = os.getenv('SHAREPOINT_BATCH_SIZE')
+                if env_value:
+                    env_key = 'SHAREPOINT_BATCH_SIZE'
 
             if env_value:
                 batch_size = int(env_value)
+                batch_size_source = f"env:{env_key}"
         except Exception:
-            pass
+            logger.warning(
+                f"[STORAGE][BATCH CONFIG] Invalid batch size env value for context={context_label}; "
+                "falling back to context defaults"
+            )
 
-        # Default to smaller batch size (10) for AuditRuns to avoid 504 timeouts
-        default_size = 10 if 'auditruns' in context_lower else 20
+        # Default batch size
+        default_size = 20
         batch_size = max(1, min(20, int(batch_size or default_size)))
+        if batch_size_source == 'argument_or_default':
+            batch_size_source = f"default:{default_size}"
+
+        logger.info(
+            f"[STORAGE][BATCH CONFIG] context={context_label} rows={len(row_payloads)} "
+            f"effective_batch_size={batch_size} source={batch_size_source}"
+        )
+
+        batch_concurrency = 2
+        batch_concurrency_source = 'default:2'
+        try:
+            concurrency_env_key = None
+            if 'auditruns' in context_lower:
+                concurrency_env_key = 'SHAREPOINT_BATCH_CONCURRENCY_AUDITRUNS'
+            elif 'rundisplaysnapshots' in context_lower:
+                concurrency_env_key = 'SHAREPOINT_BATCH_CONCURRENCY_SNAPSHOTS'
+
+            concurrency_env_value = os.getenv(concurrency_env_key) if concurrency_env_key else None
+            if not concurrency_env_value:
+                concurrency_env_value = os.getenv('SHAREPOINT_BATCH_CONCURRENCY')
+                if concurrency_env_value:
+                    concurrency_env_key = 'SHAREPOINT_BATCH_CONCURRENCY'
+
+            if concurrency_env_value:
+                batch_concurrency = int(concurrency_env_value)
+                batch_concurrency_source = f"env:{concurrency_env_key}"
+        except Exception:
+            logger.warning(
+                f"[STORAGE][BATCH CONFIG] Invalid batch concurrency env value for context={context_label}; "
+                "falling back to default concurrency=2"
+            )
+
+        batch_concurrency = max(1, min(4, int(batch_concurrency)))
+        logger.info(
+            f"[STORAGE][BATCH CONFIG] context={context_label} "
+            f"effective_batch_concurrency={batch_concurrency} source={batch_concurrency_source}"
+        )
+
+        batch_http_requests = 0
+        single_http_requests = 0
+        batch_retry_count = 0
+        single_retry_count = 0
+        throttled_batch_count = 0
+        batch_durations_seconds: List[float] = []
+
+        token_acquire_started = perf_counter()
+        token_acquired = False
+        if not self.access_token:
+            self.access_token = _get_app_only_token()
+            token_acquired = bool(self.access_token)
+        token_acquisition_seconds = float(perf_counter() - token_acquire_started)
 
         batch_url = "https://graph.microsoft.com/v1.0/$batch"
         batch_headers = {
@@ -872,16 +934,25 @@ class StorageService:
             'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly',
         }
 
+        http_session = requests.Session()
+        session_pool_size = max(10, batch_concurrency * batch_size)
+        session_adapter = HTTPAdapter(pool_connections=session_pool_size, pool_maxsize=session_pool_size)
+        http_session.mount('https://', session_adapter)
+        http_session.mount('http://', session_adapter)
+
         def _post_single(payload: Dict[str, Any], row_idx: int, max_retries: int = 3) -> bool:
             """Post single item with retry logic for throttling errors."""
+            nonlocal single_http_requests, single_retry_count
             for attempt in range(max_retries):
                 try:
-                    create_response = requests.post(items_url, headers=item_headers, json=payload, timeout=60)
+                    single_http_requests += 1
+                    create_response = http_session.post(items_url, headers=item_headers, json=payload, timeout=60)
                     if create_response.status_code in [200, 201]:
                         return True
                     
                     # Retry on throttling errors
                     if create_response.status_code in [429, 503, 504] and attempt < max_retries - 1:
+                        single_retry_count += 1
                         wait_time = (2 ** attempt) * 0.5  # Exponential backoff: 0.5s, 1s, 2s
                         logger.warning(
                             f"[STORAGE] Throttled creating {context_label} row {row_idx} "
@@ -897,6 +968,7 @@ class StorageService:
                     return False
                 except Exception as e:
                     if attempt < max_retries - 1:
+                        single_retry_count += 1
                         wait_time = (2 ** attempt) * 0.5
                         logger.warning(
                             f"[STORAGE] Exception creating {context_label} row {row_idx}, "
@@ -908,19 +980,60 @@ class StorageService:
                     return False
             return False
 
-        created = 0
-        batch_count = 0
-        total_batches = (len(row_payloads) + batch_size - 1) // batch_size
-        
-        for start in range(0, len(row_payloads), batch_size):
-            batch_count += 1
-            chunk = row_payloads[start:start + batch_size]
+        def _process_batch(batch_index: int, start: int, chunk: List[Dict[str, Any]]) -> Dict[str, Any]:
+            created_local = 0
+            batch_http_requests_local = 0
+            single_http_requests_local = 0
+            batch_retry_count_local = 0
+            single_retry_count_local = 0
+            throttled_batch_count_local = 0
+
+            batch_started = perf_counter()
+            payload_build_started = perf_counter()
             batch_requests = []
-            row_ids = []
+            batch_http_wait_seconds = 0.0
+            batch_response_parse_seconds = 0.0
+
+            def _post_single_local(payload: Dict[str, Any], row_idx: int, max_retries: int = 3) -> bool:
+                nonlocal single_http_requests_local, single_retry_count_local
+                for attempt in range(max_retries):
+                    try:
+                        single_http_requests_local += 1
+                        create_response = http_session.post(items_url, headers=item_headers, json=payload, timeout=60)
+                        if create_response.status_code in [200, 201]:
+                            return True
+
+                        if create_response.status_code in [429, 503, 504] and attempt < max_retries - 1:
+                            single_retry_count_local += 1
+                            wait_time = (2 ** attempt) * 0.5
+                            logger.warning(
+                                f"[STORAGE] Throttled creating {context_label} row {row_idx} "
+                                f"({create_response.status_code}), retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})"
+                            )
+                            sleep(wait_time)
+                            continue
+
+                        logger.warning(
+                            f"[STORAGE] Failed creating {context_label} row {row_idx}: "
+                            f"{create_response.status_code} - {create_response.text}"
+                        )
+                        return False
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            single_retry_count_local += 1
+                            wait_time = (2 ** attempt) * 0.5
+                            logger.warning(
+                                f"[STORAGE] Exception creating {context_label} row {row_idx}, "
+                                f"retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries}): {e}"
+                            )
+                            sleep(wait_time)
+                            continue
+                        logger.warning(f"[STORAGE] Failed creating {context_label} row {row_idx}: {e}")
+                        return False
+                return False
 
             for offset, payload in enumerate(chunk):
                 row_idx = start + offset
-                row_ids.append(row_idx)
                 batch_requests.append({
                     'id': str(row_idx),
                     'method': 'POST',
@@ -929,57 +1042,64 @@ class StorageService:
                     'body': payload,
                 })
 
-            # Retry logic for batch request
+            payload_build_seconds = float(perf_counter() - payload_build_started)
+
             batch_success = False
-            for attempt in range(3):  # Max 3 retries per batch
+            batch_response = None
+            total_batches_local = (len(row_payloads) + batch_size - 1) // batch_size
+            for attempt in range(3):
                 try:
-                    batch_response = requests.post(
+                    batch_http_requests_local += 1
+                    http_wait_started = perf_counter()
+                    batch_response = http_session.post(
                         batch_url,
                         headers=batch_headers,
                         json={'requests': batch_requests},
                         timeout=120,
                     )
-                    
-                    # Handle batch-level throttling
+                    batch_http_wait_seconds += float(perf_counter() - http_wait_started)
+
                     if batch_response.status_code in [429, 503, 504] and attempt < 2:
-                        wait_time = (2 ** attempt) * 1.0  # Exponential backoff: 1s, 2s
+                        throttled_batch_count_local += 1
+                        batch_retry_count_local += 1
+                        wait_time = (2 ** attempt) * 1.0
                         logger.warning(
-                            f"[STORAGE] Batch {batch_count}/{total_batches} throttled for {context_label} "
+                            f"[STORAGE] Batch {batch_index}/{total_batches_local} throttled for {context_label} "
                             f"({batch_response.status_code}), retrying in {wait_time}s... (attempt {attempt + 1}/3)"
                         )
                         sleep(wait_time)
                         continue
-                    
+
                     if batch_response.status_code == 200:
                         batch_success = True
                         break
-                    
-                    # Non-retryable error
+
                     logger.warning(
-                        f"[STORAGE] Batch {batch_count}/{total_batches} failed for {context_label} "
+                        f"[STORAGE] Batch {batch_index}/{total_batches_local} failed for {context_label} "
                         f"(HTTP {batch_response.status_code}); falling back to single posts"
                     )
                     break
-                    
                 except Exception as e:
                     if attempt < 2:
+                        batch_retry_count_local += 1
                         wait_time = (2 ** attempt) * 1.0
                         logger.warning(
-                            f"[STORAGE] Batch {batch_count}/{total_batches} request exception for {context_label}, "
+                            f"[STORAGE] Batch {batch_index}/{total_batches_local} request exception for {context_label}, "
                             f"retrying in {wait_time}s... (attempt {attempt + 1}/3): {e}"
                         )
                         sleep(wait_time)
                         continue
-                    
+
                     logger.warning(
-                        f"[STORAGE] Batch {batch_count}/{total_batches} request failed for {context_label}; "
+                        f"[STORAGE] Batch {batch_index}/{total_batches_local} request failed for {context_label}; "
                         f"falling back to single posts: {e}"
                     )
                     break
 
-            # Process batch response or fall back to single posts
-            if batch_success:
+            if batch_success and batch_response is not None:
+                response_parse_started = perf_counter()
                 response_items = batch_response.json().get('responses', [])
+                batch_response_parse_seconds += float(perf_counter() - response_parse_started)
                 response_map = {item.get('id'): item for item in response_items}
 
                 for offset, payload in enumerate(chunk):
@@ -990,32 +1110,126 @@ class StorageService:
                             f"[STORAGE] Missing batch response for {context_label} row {row_idx}; "
                             "falling back to single post"
                         )
-                        if _post_single(payload, row_idx):
-                            created += 1
+                        if _post_single_local(payload, row_idx):
+                            created_local += 1
                         continue
 
                     status_code = response_item.get('status')
                     if status_code in [200, 201]:
-                        created += 1
+                        created_local += 1
                         continue
 
-                    # Retry individual item failures (especially 504s within batch)
                     logger.warning(
                         f"[STORAGE] Batch item failed for {context_label} row {row_idx}: "
                         f"{status_code} - {response_item.get('body')}; retrying individually"
                     )
-                    if _post_single(payload, row_idx):
-                        created += 1
+                    if _post_single_local(payload, row_idx):
+                        created_local += 1
             else:
-                # Batch failed, post items individually with retry
                 for offset, payload in enumerate(chunk):
-                    if _post_single(payload, start + offset):
-                        created += 1
-            
-            # Delay between batches to reduce API pressure (skip on last batch)
-            if batch_count < total_batches:
-                sleep(0.5)
+                    if _post_single_local(payload, start + offset):
+                        created_local += 1
 
+            batch_duration_seconds = float(perf_counter() - batch_started)
+            return {
+                'batch_index': batch_index,
+                'created': created_local,
+                'batch_http_requests': batch_http_requests_local,
+                'single_http_requests': single_http_requests_local,
+                'batch_retry_count': batch_retry_count_local,
+                'single_retry_count': single_retry_count_local,
+                'throttled_batch_count': throttled_batch_count_local,
+                'batch_duration_seconds': batch_duration_seconds,
+                'payload_build_seconds': payload_build_seconds,
+                'http_wait_seconds': batch_http_wait_seconds,
+                'response_parse_seconds': batch_response_parse_seconds,
+                'rows_in_batch': len(chunk),
+            }
+
+        created = 0
+        total_batches = (len(row_payloads) + batch_size - 1) // batch_size
+        chunks: List[tuple[int, int, List[Dict[str, Any]]]] = []
+        batch_index = 0
+        for start in range(0, len(row_payloads), batch_size):
+            batch_index += 1
+            chunks.append((batch_index, start, row_payloads[start:start + batch_size]))
+
+        batch_profile_logged = False
+        if batch_concurrency == 1:
+            for chunk_batch_index, chunk_start, chunk in chunks:
+                result = _process_batch(chunk_batch_index, chunk_start, chunk)
+                created += int(result['created'])
+                batch_http_requests += int(result['batch_http_requests'])
+                single_http_requests += int(result['single_http_requests'])
+                batch_retry_count += int(result['batch_retry_count'])
+                single_retry_count += int(result['single_retry_count'])
+                throttled_batch_count += int(result['throttled_batch_count'])
+                batch_durations_seconds.append(float(result['batch_duration_seconds']))
+
+                if not batch_profile_logged and int(result['batch_index']) == 1:
+                    logger.info(
+                        f"[STORAGE][BATCH PROFILE] context={context_label} batch=1/{total_batches} "
+                        f"rows_in_batch={int(result['rows_in_batch'])} "
+                        f"payload_build_seconds={float(result['payload_build_seconds']):.3f} "
+                        f"token_acquisition_seconds={token_acquisition_seconds:.3f} "
+                        f"token_acquired={token_acquired} "
+                        f"http_wait_seconds={float(result['http_wait_seconds']):.3f} "
+                        f"response_parse_seconds={float(result['response_parse_seconds']):.3f}"
+                    )
+                    batch_profile_logged = True
+
+                if chunk_batch_index < total_batches:
+                    sleep(0.5)
+        else:
+            with ThreadPoolExecutor(max_workers=batch_concurrency) as executor:
+                future_to_batch_index = {
+                    executor.submit(_process_batch, chunk_batch_index, chunk_start, chunk): chunk_batch_index
+                    for chunk_batch_index, chunk_start, chunk in chunks
+                }
+
+                for future in as_completed(future_to_batch_index):
+                    result = future.result()
+                    created += int(result['created'])
+                    batch_http_requests += int(result['batch_http_requests'])
+                    single_http_requests += int(result['single_http_requests'])
+                    batch_retry_count += int(result['batch_retry_count'])
+                    single_retry_count += int(result['single_retry_count'])
+                    throttled_batch_count += int(result['throttled_batch_count'])
+                    batch_durations_seconds.append(float(result['batch_duration_seconds']))
+
+                    if not batch_profile_logged and int(result['batch_index']) == 1:
+                        logger.info(
+                            f"[STORAGE][BATCH PROFILE] context={context_label} batch=1/{total_batches} "
+                            f"rows_in_batch={int(result['rows_in_batch'])} "
+                            f"payload_build_seconds={float(result['payload_build_seconds']):.3f} "
+                            f"token_acquisition_seconds={token_acquisition_seconds:.3f} "
+                            f"token_acquired={token_acquired} "
+                            f"http_wait_seconds={float(result['http_wait_seconds']):.3f} "
+                            f"response_parse_seconds={float(result['response_parse_seconds']):.3f}"
+                        )
+                        batch_profile_logged = True
+
+        retry_count = batch_retry_count + single_retry_count
+        total_http_requests = batch_http_requests + single_http_requests
+        average_batch_duration_seconds = (
+            sum(batch_durations_seconds) / len(batch_durations_seconds)
+            if batch_durations_seconds else 0.0
+        )
+
+        logger.info(
+            f"[STORAGE][BATCH SUMMARY] context={context_label} "
+            f"total_rows={len(row_payloads)} total_batches={total_batches} "
+            f"batch_concurrency={batch_concurrency} "
+            f"session_pool_size={session_pool_size} "
+            f"total_http_requests={total_http_requests} "
+            f"average_batch_duration_seconds={average_batch_duration_seconds:.3f} "
+            f"retry_count={retry_count} throttled_batch_count={throttled_batch_count} "
+            f"final_rows_written={created} batch_http_requests={batch_http_requests} "
+            f"single_http_requests={single_http_requests} batch_retry_count={batch_retry_count} "
+            f"single_retry_count={single_retry_count}"
+        )
+
+        http_session.close()
         return created
 
     def _write_results_to_sharepoint_list_async(
@@ -1686,7 +1900,6 @@ class StorageService:
 
                 for idx, (_, row) in enumerate(df.iterrows()):
                     row_dict = {col: self._normalize_for_json(value) for col, value in row.to_dict().items()}
-                    composite_key = self._build_result_composite_key(run_id, result_type, row_dict, idx)
 
                     property_id_val = row_dict.get('PROPERTY_ID', row_dict.get('property_id'))
                     lease_interval_id_val = row_dict.get('LEASE_INTERVAL_ID', row_dict.get('lease_interval_id'))
@@ -1706,7 +1919,6 @@ class StorageService:
 
                     fields_payload = {
                         'Title': f"{result_type}:{idx}",
-                        'CompositeKey': composite_key,
                         'RunId': run_id,
                         'ResultType': result_type,
                         'PropertyId': property_id_int,
@@ -1740,8 +1952,26 @@ class StorageService:
 
                 return rows_written
 
-            bucket_rows_written = _write_dataframe_rows(bucket_results, 'bucket_result')
-            finding_rows_written = _write_dataframe_rows(findings, 'finding')
+            rows_written_by_type = {
+                'bucket_result': 0,
+                'finding': 0,
+            }
+
+            write_targets = [
+                ('bucket_result', bucket_results),
+                ('finding', findings),
+            ]
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_to_result_type = {
+                    executor.submit(_write_dataframe_rows, dataframe, result_type): result_type
+                    for result_type, dataframe in write_targets
+                }
+                for future, result_type in future_to_result_type.items():
+                    rows_written_by_type[result_type] = future.result()
+
+            bucket_rows_written = rows_written_by_type['bucket_result']
+            finding_rows_written = rows_written_by_type['finding']
             logger.info(
                 f"[STORAGE] ✅ Wrote AuditRuns rows for {run_id}: "
                 f"bucket_result={bucket_rows_written}, finding={finding_rows_written}"
@@ -1881,6 +2111,7 @@ class StorageService:
         lease_interval_id: Optional[int] = None,
     ) -> pd.DataFrame:
         """Load bucket results from SharePoint list (preferred) with CSV fallback."""
+        scope = f"run={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}"
         bucket_results = self._load_results_from_sharepoint_list(
             run_id,
             'bucket_result',
@@ -1900,22 +2131,57 @@ class StorageService:
                 csv_results = self._normalize_loaded_dataframe(csv_results.copy())
                 if len(list_results) < len(csv_results):
                     logger.warning(
-                        f"[STORAGE] Partial list-backed bucket_results for run={run_id} "
+                        f"[CSV FALLBACK][bucket_results] Partial list-backed bucket_results for run={run_id} "
                         f"(list_rows={len(list_results)}, csv_rows={len(csv_results)}); "
                         "falling back to CSV for complete view"
                     )
+                    csv_results.attrs['read_source'] = 'csv'
+                    csv_results.attrs['read_reason'] = 'partial_list'
+                    csv_results.attrs['read_scope'] = scope
+                    csv_results.attrs['list_rows'] = len(list_results)
+                    csv_results.attrs['csv_rows'] = len(csv_results)
+                    logger.info(
+                        f"[READ SOURCE][bucket_results] source=csv reason=partial_list scope=({scope}) "
+                        f"list_rows={len(list_results)} csv_rows={len(csv_results)}"
+                    )
                     return csv_results
+
+            list_results.attrs['read_source'] = 'sharepoint_list'
+            list_results.attrs['read_reason'] = 'preferred'
+            list_results.attrs['read_scope'] = scope
+            list_results.attrs['list_rows'] = len(list_results)
+            logger.info(
+                f"[READ SOURCE][bucket_results] source=sharepoint_list reason=preferred scope=({scope}) "
+                f"rows={len(list_results)}"
+            )
 
             return list_results
 
         bucket_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
         if bucket_results is None:
-            return pd.DataFrame()
+            empty_results = pd.DataFrame()
+            empty_results.attrs['read_source'] = 'none'
+            empty_results.attrs['read_reason'] = 'no_list_and_no_csv'
+            empty_results.attrs['read_scope'] = scope
+            logger.warning(
+                f"[READ SOURCE][bucket_results] source=none reason=no_list_and_no_csv scope=({scope})"
+            )
+            return empty_results
 
         if property_id is not None and 'PROPERTY_ID' in bucket_results.columns:
             bucket_results = bucket_results[bucket_results['PROPERTY_ID'] == float(property_id)]
         if lease_interval_id is not None and 'LEASE_INTERVAL_ID' in bucket_results.columns:
             bucket_results = bucket_results[bucket_results['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
+        bucket_results.attrs['read_source'] = 'csv'
+        bucket_results.attrs['read_reason'] = 'list_unavailable_or_error'
+        bucket_results.attrs['read_scope'] = scope
+        bucket_results.attrs['csv_rows'] = len(bucket_results)
+        logger.info(
+            f"[CSV FALLBACK][bucket_results] list_unavailable_or_error; using CSV scope=({scope}) rows={len(bucket_results)}"
+        )
+        logger.info(
+            f"[READ SOURCE][bucket_results] source=csv reason=list_unavailable_or_error scope=({scope}) rows={len(bucket_results)}"
+        )
         return self._normalize_loaded_dataframe(bucket_results.copy())
 
     def load_findings(
@@ -1925,6 +2191,7 @@ class StorageService:
         lease_interval_id: Optional[int] = None,
     ) -> pd.DataFrame:
         """Load findings from SharePoint list (preferred) with CSV fallback."""
+        scope = f"run={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}"
         findings = self._load_results_from_sharepoint_list(
             run_id,
             'finding',
@@ -1951,17 +2218,41 @@ class StorageService:
                 csv_findings = self._normalize_loaded_dataframe(csv_findings.copy())
                 if len(list_findings) < len(csv_findings):
                     logger.warning(
-                        f"[STORAGE] Partial list-backed findings for run={run_id} "
+                        f"[CSV FALLBACK][findings] Partial list-backed findings for run={run_id} "
                         f"(list_rows={len(list_findings)}, csv_rows={len(csv_findings)}); "
                         "falling back to CSV for complete view"
                     )
+                    csv_findings.attrs['read_source'] = 'csv'
+                    csv_findings.attrs['read_reason'] = 'partial_list'
+                    csv_findings.attrs['read_scope'] = scope
+                    csv_findings.attrs['list_rows'] = len(list_findings)
+                    csv_findings.attrs['csv_rows'] = len(csv_findings)
+                    logger.info(
+                        f"[READ SOURCE][findings] source=csv reason=partial_list scope=({scope}) "
+                        f"list_rows={len(list_findings)} csv_rows={len(csv_findings)}"
+                    )
                     return csv_findings
+
+            list_findings.attrs['read_source'] = 'sharepoint_list'
+            list_findings.attrs['read_reason'] = 'preferred'
+            list_findings.attrs['read_scope'] = scope
+            list_findings.attrs['list_rows'] = len(list_findings)
+            logger.info(
+                f"[READ SOURCE][findings] source=sharepoint_list reason=preferred scope=({scope}) rows={len(list_findings)}"
+            )
 
             return list_findings
 
         findings = self._load_dataframe(run_id, "outputs/findings.csv")
         if findings is None:
-            return pd.DataFrame()
+            empty_results = pd.DataFrame()
+            empty_results.attrs['read_source'] = 'none'
+            empty_results.attrs['read_reason'] = 'no_list_and_no_csv'
+            empty_results.attrs['read_scope'] = scope
+            logger.warning(
+                f"[READ SOURCE][findings] source=none reason=no_list_and_no_csv scope=({scope})"
+            )
+            return empty_results
 
         if property_id is not None:
             if 'property_id' in findings.columns:
@@ -1974,6 +2265,16 @@ class StorageService:
                 findings = findings[findings['lease_interval_id'] == float(lease_interval_id)]
             elif 'LEASE_INTERVAL_ID' in findings.columns:
                 findings = findings[findings['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
+        findings.attrs['read_source'] = 'csv'
+        findings.attrs['read_reason'] = 'list_unavailable_or_error'
+        findings.attrs['read_scope'] = scope
+        findings.attrs['csv_rows'] = len(findings)
+        logger.info(
+            f"[CSV FALLBACK][findings] list_unavailable_or_error; using CSV scope=({scope}) rows={len(findings)}"
+        )
+        logger.info(
+            f"[READ SOURCE][findings] source=csv reason=list_unavailable_or_error scope=({scope}) rows={len(findings)}"
+        )
         return self._normalize_loaded_dataframe(findings.copy())
 
     def load_expected_detail(self, run_id: str) -> pd.DataFrame:
@@ -3300,6 +3601,7 @@ class StorageService:
         variance_detail: Optional[pd.DataFrame] = None,
         original_file_path: Optional[Path] = None,
         property_name_map: Optional[Dict[int, str]] = None,
+        write_display_snapshots: bool = True,
     ):
         """Save complete audit run to storage."""
         print(f"\n{'='*80}")
@@ -3316,7 +3618,7 @@ class StorageService:
             print(f"  - Variance detail: {variance_detail.shape}")
         self.create_run_dir(run_id)
 
-        write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'true').lower() == 'true'
+        write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'false').lower() == 'true'
         write_metrics_async = os.getenv('ASYNC_METRICS_WRITE', 'true').lower() == 'true'
         write_snapshots_async = os.getenv('ASYNC_RUN_DISPLAY_SNAPSHOTS', 'true').lower() == 'true'
         snapshot_validation_async = os.getenv('ASYNC_SNAPSHOT_VALIDATION', 'true').lower() == 'true'
@@ -3405,71 +3707,74 @@ class StorageService:
         # Write static display snapshots (portfolio/property/lease) for fast UI loads.
         print(f"\n[STORAGE] Step 6/7: Writing display snapshots (portfolio/property/lease views)...")
         try:
-            can_write_sharepoint_lists = self._can_use_sharepoint_lists()
-            if write_snapshots_async and can_write_sharepoint_lists:
-                snapshot_dispatch_started = perf_counter()
-                print(f"[STORAGE] 🚀 Dispatching async display snapshot write...")
-                snapshot_thread = threading.Thread(
-                    target=self._write_run_display_snapshots_async,
-                    args=(run_id, bucket_results),
-                    kwargs={
-                        'actual_detail': actual_detail,
-                        'expected_detail': expected_detail,
-                        'property_name_map': property_name_map,
-                        'snapshot_validation_async': snapshot_validation_async,
-                    },
-                    daemon=True,
-                    name=f"snapshot-write-{run_id}",
-                )
-                snapshot_thread.start()
-                stage_timers['snapshot_write_seconds'] = float(perf_counter() - snapshot_dispatch_started)
-                print(f"[STORAGE] ✓ Display snapshot write dispatched (async mode)")
+            if not write_display_snapshots:
+                print("[STORAGE] ↩️  Display snapshot write skipped for run scope")
             else:
-                snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
-                    run_id,
-                    bucket_results,
-                    actual_detail=actual_detail,
-                    expected_detail=expected_detail,
-                    property_name_map=property_name_map,
-                    stage_timers=stage_timers,
-                )
-                if snapshot_write_ok:
-                    print(f"[STORAGE] ✓ Display snapshots written successfully")
-                    if snapshot_validation_async and self._can_use_sharepoint_lists():
-                        validate_started = perf_counter()
-                        print(f"[STORAGE] 🚀 Dispatching async snapshot validation...")
-                        validate_thread = threading.Thread(
-                            target=self._validate_run_display_snapshots_async,
-                            args=(run_id, bucket_results),
-                            daemon=True,
-                            name=f"snapshot-validate-{run_id}",
-                        )
-                        validate_thread.start()
-                        stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
-                        print(f"[STORAGE] ✓ Snapshot validation dispatched (async mode)")
-                    else:
-                        validate_started = perf_counter()
-                        print(f"[STORAGE] Validating snapshots synchronously...")
-                        validation = self.validate_run_display_snapshots(run_id, bucket_results)
-                        stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
-                        if validation.get('ok'):
-                            print(
-                                f"[STORAGE] ✓ Snapshot validation passed: "
-                                f"portfolio={validation['actual']['portfolio']}, "
-                                f"property={validation['actual']['property']}, "
-                                f"lease={validation['actual']['lease']}"
+                can_write_sharepoint_lists = self._can_use_sharepoint_lists()
+                if write_snapshots_async and can_write_sharepoint_lists:
+                    snapshot_dispatch_started = perf_counter()
+                    print(f"[STORAGE] 🚀 Dispatching async display snapshot write...")
+                    snapshot_thread = threading.Thread(
+                        target=self._write_run_display_snapshots_async,
+                        args=(run_id, bucket_results),
+                        kwargs={
+                            'actual_detail': actual_detail,
+                            'expected_detail': expected_detail,
+                            'property_name_map': property_name_map,
+                            'snapshot_validation_async': snapshot_validation_async,
+                        },
+                        daemon=True,
+                        name=f"snapshot-write-{run_id}",
+                    )
+                    snapshot_thread.start()
+                    stage_timers['snapshot_write_seconds'] = float(perf_counter() - snapshot_dispatch_started)
+                    print(f"[STORAGE] ✓ Display snapshot write dispatched (async mode)")
+                else:
+                    snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
+                        run_id,
+                        bucket_results,
+                        actual_detail=actual_detail,
+                        expected_detail=expected_detail,
+                        property_name_map=property_name_map,
+                        stage_timers=stage_timers,
+                    )
+                    if snapshot_write_ok:
+                        print(f"[STORAGE] ✓ Display snapshots written successfully")
+                        if snapshot_validation_async and self._can_use_sharepoint_lists():
+                            validate_started = perf_counter()
+                            print(f"[STORAGE] 🚀 Dispatching async snapshot validation...")
+                            validate_thread = threading.Thread(
+                                target=self._validate_run_display_snapshots_async,
+                                args=(run_id, bucket_results),
+                                daemon=True,
+                                name=f"snapshot-validate-{run_id}",
                             )
-                            logger.info(
-                                f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
-                                f"portfolio={validation['actual']['portfolio']}, "
-                                f"property={validation['actual']['property']}, "
-                                f"lease={validation['actual']['lease']}"
-                            )
+                            validate_thread.start()
+                            stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
+                            print(f"[STORAGE] ✓ Snapshot validation dispatched (async mode)")
                         else:
-                            print(f"[STORAGE] ⚠️  Snapshot validation warnings: {validation.get('errors', [])}")
-                            logger.warning(
-                                f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
-                            )
+                            validate_started = perf_counter()
+                            print(f"[STORAGE] Validating snapshots synchronously...")
+                            validation = self.validate_run_display_snapshots(run_id, bucket_results)
+                            stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
+                            if validation.get('ok'):
+                                print(
+                                    f"[STORAGE] ✓ Snapshot validation passed: "
+                                    f"portfolio={validation['actual']['portfolio']}, "
+                                    f"property={validation['actual']['property']}, "
+                                    f"lease={validation['actual']['lease']}"
+                                )
+                                logger.info(
+                                    f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
+                                    f"portfolio={validation['actual']['portfolio']}, "
+                                    f"property={validation['actual']['property']}, "
+                                    f"lease={validation['actual']['lease']}"
+                                )
+                            else:
+                                print(f"[STORAGE] ⚠️  Snapshot validation warnings: {validation.get('errors', [])}")
+                                logger.warning(
+                                    f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
+                                )
         except Exception as e:
             print(f"[STORAGE] ⚠️  Display snapshots write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")

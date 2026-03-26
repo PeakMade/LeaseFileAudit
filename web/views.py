@@ -63,12 +63,27 @@ def _ensure_bucket_results_dataframe(df: Any) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame):
         return pd.DataFrame(columns=required_columns)
 
+    source_attrs = dict(df.attrs) if hasattr(df, 'attrs') else {}
     normalized = df.copy()
+    if source_attrs:
+        normalized.attrs.update(source_attrs)
     for column in required_columns:
         if column not in normalized.columns:
             normalized[column] = pd.NA
 
     return normalized
+
+
+def _df_read_source(df: Any) -> str:
+    if isinstance(df, pd.DataFrame):
+        return str(df.attrs.get('read_source', 'unknown'))
+    return 'unknown'
+
+
+def _df_read_reason(df: Any) -> str:
+    if isinstance(df, pd.DataFrame):
+        return str(df.attrs.get('read_reason', 'unknown'))
+    return 'unknown'
 
 
 def _safe_seconds_from_iso(started_at_iso: str) -> float:
@@ -2246,6 +2261,7 @@ def upload_api_property():
             results.get("variance_detail"),
             None,
             property_name_map=results.get("property_name_map"),
+            write_display_snapshots=False,
         )
         save_run_seconds = perf_counter() - save_run_started
         logger.info(
@@ -2463,13 +2479,46 @@ def upload_api_lease():
             f"activity_log_seconds={activity_log_seconds:.2f}"
         )
 
-        flash(f'Successfully audited Lease {lease_id}. Viewing results for property {discovered_property_id}.', 'success')
-        
-        # Redirect to property view if we have a property_id, otherwise to portfolio view
+        def _resolve_single_lease_interval_id() -> int | None:
+            candidate_ids: set[int] = set()
+            lease_col = CanonicalField.LEASE_INTERVAL_ID.value
+            for df_name in ('bucket_results', 'expected_detail', 'actual_detail'):
+                df = results.get(df_name)
+                if not isinstance(df, pd.DataFrame) or df.empty or lease_col not in df.columns:
+                    continue
+                numeric_ids = pd.to_numeric(df[lease_col], errors='coerce').dropna().astype(int).unique().tolist()
+                candidate_ids.update(numeric_ids)
+
+            if not candidate_ids:
+                return None
+            if len(candidate_ids) > 1:
+                logger.warning(
+                    f"[API LEASE UPLOAD] Multiple lease interval ids detected for lease_id={lease_id}; "
+                    f"using first sorted value from {sorted(candidate_ids)}"
+                )
+            return sorted(candidate_ids)[0]
+
+        resolved_lease_interval_id = _resolve_single_lease_interval_id()
+
+        if discovered_property_id and resolved_lease_interval_id is not None:
+            flash(f'Successfully audited Lease {lease_id}. Opening lease detail view.', 'success')
+            return redirect(
+                url_for(
+                    'main.lease_view',
+                    property_id=str(discovered_property_id),
+                    lease_interval_id=str(resolved_lease_interval_id),
+                    run_id=run_id,
+                )
+            )
+
+        flash(
+            f'Successfully audited Lease {lease_id}, but lease detail route could not be resolved. '
+            f'Opening property view instead.',
+            'warning'
+        )
         if discovered_property_id:
             return redirect(url_for('main.property_view', property_id=str(discovered_property_id), run_id=run_id))
-        else:
-            return redirect(url_for('main.portfolio', run_id=run_id))
+        return redirect(url_for('main.portfolio', run_id=run_id))
 
     except Exception as e:
         error_msg = str(e)
@@ -2487,12 +2536,48 @@ def portfolio(run_id: str = None):
         route_started = perf_counter()
         cache_token = _session_cache_token()
         storage = get_storage_service()
+        snapshot_source = 'latest_property_snapshots_across_runs'
+        snapshot_reason = 'preferred'
         
         # Load latest snapshot for each property across ALL runs
         property_snapshots = storage.load_latest_property_snapshots_across_runs()
+
+        # Single-lease API runs are drill-down scope and should not appear as
+        # property-level portfolio rows across runs.
+        metadata_by_run: dict[str, dict] = {}
+        filtered_property_snapshots = []
+        excluded_lease_scoped = 0
+        for snapshot in property_snapshots:
+            snapshot_run_id = snapshot.get('run_id')
+            if not snapshot_run_id:
+                filtered_property_snapshots.append(snapshot)
+                continue
+
+            if snapshot_run_id not in metadata_by_run:
+                try:
+                    metadata_by_run[snapshot_run_id] = cached_load_metadata(snapshot_run_id, cache_token) or {}
+                except Exception:
+                    metadata_by_run[snapshot_run_id] = {}
+
+            run_scope = (metadata_by_run[snapshot_run_id] or {}).get('run_scope') or {}
+            if str(run_scope.get('type') or '').strip().lower() == 'lease':
+                excluded_lease_scoped += 1
+                continue
+
+            filtered_property_snapshots.append(snapshot)
+
+        if excluded_lease_scoped:
+            logger.info(
+                f"[PORTFOLIO_VIEW] Excluded {excluded_lease_scoped} lease-scoped property snapshots "
+                f"from cross-run aggregation"
+            )
+
+        property_snapshots = filtered_property_snapshots
         
         # If no properties found, fall back to showing latest run
         if not property_snapshots:
+            snapshot_source = 'run_scoped_snapshots'
+            snapshot_reason = 'latest_across_runs_empty'
             if not run_id:
                 latest_run = get_latest_run(cache_token)
                 run_id = latest_run.get('run_id')
@@ -2505,6 +2590,12 @@ def portfolio(run_id: str = None):
                 scope_type='property',
                 session_cache_key=cache_token
             )
+
+        logger.info(
+            f"[READ SUMMARY][PORTFOLIO_VIEW] run_id={run_id} "
+            f"snapshot_source={snapshot_source} snapshot_reason={snapshot_reason} "
+            f"property_snapshot_count={len(property_snapshots)}"
+        )
 
         # Aggregate KPIs from all property snapshots
         total_exceptions = sum(p.get('exception_count', 0) for p in property_snapshots)
@@ -2751,6 +2842,8 @@ def property_view(property_id: str, run_id: str = None):
             property_id=int(float(property_id)),
             session_cache_key=cache_token
         )
+        bucket_read_source = _df_read_source(all_property_buckets)
+        bucket_read_reason = _df_read_reason(all_property_buckets)
         all_property_buckets = _ensure_bucket_results_dataframe(all_property_buckets)
         logger.info(
             f"[PROPERTY_VIEW DEBUG] stage=buckets_loaded run_id={run_id} property_id={property_id} "
@@ -2774,12 +2867,16 @@ def property_view(property_id: str, run_id: str = None):
                 lease_interval_id=None,
                 session_cache_key=cache_token,
             )
+            fallback_bucket_read_source = _df_read_source(fallback_property_buckets)
+            fallback_bucket_read_reason = _df_read_reason(fallback_property_buckets)
             fallback_property_buckets = _ensure_bucket_results_dataframe(fallback_property_buckets)
             if not fallback_property_buckets.empty:
                 normalized_property_id = int(float(property_id))
                 all_property_buckets = fallback_property_buckets[
                     fallback_property_buckets[CanonicalField.PROPERTY_ID.value] == normalized_property_id
                 ].copy()
+                bucket_read_source = f"{fallback_bucket_read_source}_run_scope_filter"
+                bucket_read_reason = f"{fallback_bucket_read_reason}_after_scoped_empty_or_malformed"
 
         property_snapshot = cached_load_run_display_snapshot(
             run_id=run_id,
@@ -3092,9 +3189,24 @@ def property_view(property_id: str, run_id: str = None):
         ]
         kpis_input = pd.concat([matched_buckets, property_buckets], ignore_index=True)
         
+        property_findings = cached_load_findings(
+            run_id,
+            property_id=int(float(property_id)),
+            session_cache_key=cache_token,
+        )
+        findings_read_source = _df_read_source(property_findings)
+        findings_read_reason = _df_read_reason(property_findings)
+
+        logger.info(
+            f"[READ SUMMARY][PROPERTY_VIEW] run={run_id} property_id={property_id} "
+            f"bucket_source={bucket_read_source} bucket_reason={bucket_read_reason} bucket_rows={len(all_property_buckets)} "
+            f"findings_source={findings_read_source} findings_reason={findings_read_reason} "
+            f"findings_rows={len(property_findings) if isinstance(property_findings, pd.DataFrame) else 0}"
+        )
+
         property_kpis = calculate_kpis(
             kpis_input,  # Use filtered dataset (matched + unresolved exceptions only)
-            cached_load_findings(run_id, property_id=int(float(property_id)), session_cache_key=cache_token),
+            property_findings,
             property_id=None  # Already filtered, don't filter again
         )
 
@@ -3250,6 +3362,8 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             lease_interval_id=int(float(lease_interval_id)),
             session_cache_key=cache_token
         )
+        bucket_read_source = _df_read_source(bucket_results)
+        bucket_read_reason = _df_read_reason(bucket_results)
         bucket_results = _ensure_bucket_results_dataframe(bucket_results)
         required_bucket_cols = {
             CanonicalField.STATUS.value,
@@ -3267,6 +3381,8 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                 lease_interval_id=None,
                 session_cache_key=cache_token
             )
+            fallback_bucket_read_source = _df_read_source(fallback_bucket_results)
+            fallback_bucket_read_reason = _df_read_reason(fallback_bucket_results)
             fallback_bucket_results = _ensure_bucket_results_dataframe(fallback_bucket_results)
             if isinstance(fallback_bucket_results, pd.DataFrame) and not fallback_bucket_results.empty:
                 normalized_property_id = int(float(property_id))
@@ -3278,6 +3394,13 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     ].copy()
                 else:
                     bucket_results = fallback_bucket_results.copy()
+                bucket_read_source = f"{fallback_bucket_read_source}_run_scope_filter"
+                bucket_read_reason = f"{fallback_bucket_read_reason}_after_scoped_empty_or_malformed"
+
+        logger.info(
+            f"[READ SUMMARY][LEASE_VIEW] run={run_id} property_id={property_id} lease_interval_id={lease_interval_id} "
+            f"bucket_source={bucket_read_source} bucket_reason={bucket_read_reason} bucket_rows={len(bucket_results)}"
+        )
 
         expected_detail = cached_load_expected_detail(run_id, cache_token)
         actual_detail = cached_load_actual_detail(run_id, cache_token)

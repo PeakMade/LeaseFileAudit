@@ -82,7 +82,7 @@
                                     <th style="width: 120px;">AR Code</th>
                                     <th>AR Code Name</th>
                                     <th class="text-center" style="width: 120px;">Matched</th>
-                                    <th class="text-center" style="width: 120px;">Exceptions</th>
+                                    <th class="text-center" style="width: 120px;">Discrepancies</th>
                                     <th class="text-center" style="width: 180px;">Status</th>
                                     <th class="text-center" style="width: 80px;">Details</th>
                                 </tr>
@@ -224,7 +224,7 @@
             content += `<span class="badge bg-success">${data.matched_count} Matched</span>`;
         }
         if (data.exception_count > 0) {
-            content += `<span class="badge bg-danger">${data.exception_count} Exception(s)</span>`;
+            content += `<span class="badge bg-danger">${data.exception_count} Discrepanc${data.exception_count === 1 ? 'y' : 'ies'}</span>`;
         }
         content += `<span class="badge bg-${statusColor}" id="drawerStatusBadge">${backendStatus}</span>`;
         content += '</div>';
@@ -258,7 +258,7 @@
             
             const exception = openExceptions[0] || allExceptions[0];
             const status = exception ? exception.status : null;
-            const statusLabel = exception ? exception.status_label : 'Exception';
+            const statusLabel = exception ? exception.status_label : 'Discrepancy';
             
             let headerText = '';
             if (openExceptions.length > 0 && resolvedExceptions.length > 0) {
@@ -266,11 +266,11 @@
             } else if (openExceptions.length > 0) {
                 headerText = `<strong>${statusLabel}</strong> detected across ${openExceptions.length} month${openExceptions.length > 1 ? 's' : ''}`;
             } else {
-                headerText = `All ${resolvedExceptions.length} exception month${resolvedExceptions.length > 1 ? 's have' : ' has'} been resolved`;
+                headerText = `All ${resolvedExceptions.length} discrepancy month${resolvedExceptions.length > 1 ? 's have' : ' has'} been resolved`;
             }
 
             content += `
-                <h5 class="mb-3"><i class="fas fa-tasks"></i> Exception Workflow</h5>
+                <h5 class="mb-3"><i class="fas fa-tasks"></i> Discrepancy Workflow</h5>
                 <p class="text-muted mb-3">${headerText}</p>
             `;
         }
@@ -510,13 +510,13 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix" data-fix-label="Mark as expected exception" onclick="selectFix(this, 2)">
+                <div class="suggested-fix" data-fix-label="Mark as expected discrepancy" onclick="selectFix(this, 2)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">3</span>
                         <div class="flex-grow-1">
-                            <strong>Mark as expected exception</strong>
+                            <strong>Mark as expected discrepancy</strong>
                             <p class="mb-1 text-muted small">This may be expected (move-out, MTM, concession, etc.). Document the reason and mark as resolved.</p>
-                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Mark as expected exception', 'one_time')">
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Mark as expected discrepancy', 'one_time')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -605,7 +605,7 @@
             `;
         }
         return `
-            <div class="text-muted">No suggested fixes available for this exception type.</div>
+            <div class="text-muted">No suggested fixes available for this discrepancy type.</div>
         `;
     }
     
@@ -618,8 +618,8 @@
                 <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Correct schedule dates', 'external')">
                     Correct schedule dates
                 </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Mark as expected exception', 'one_time')">
-                    Mark as expected exception
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Mark as expected discrepancy', 'one_time')">
+                    Mark as expected discrepancy
                 </button>
             `;
         }
@@ -649,7 +649,7 @@
                 </button>
             `;
         }
-        return `<div class="text-muted">No suggested fixes available for this exception type.</div>`;
+        return `<div class="text-muted">No suggested fixes available for this discrepancy type.</div>`;
     }
 
     async function applyFixToSelected(event, fixLabel, actionType) {
@@ -658,7 +658,7 @@
         // Get selected exception rows (exclude already disabled/resolved ones)
         const selectedCheckboxes = document.querySelectorAll('.exception-row-checkbox:checked:not(:disabled)');
         if (selectedCheckboxes.length === 0) {
-            alert('Please select at least one exception row to apply the fix.');
+            alert('Please select at least one discrepancy row to apply the fix.');
             return;
         }
 

@@ -78,7 +78,7 @@
                             <small class="text-muted">Historical: ${{ "{:,.0f}".format(kpis.historical_overcharge) }}</small>
                         </div>
                         <div class="col-md-4">
-                            <h6 class="text-muted mb-2">Open Exceptions</h6>
+                            <h6 class="text-muted mb-2">Open Discrepancies</h6>
                             <h3 class="mb-0" style="color: #ff6600;">{{ kpis.open_exceptions }}</h3>
                             <small class="text-muted">Match Rate: {{ "%.1f"|format(kpis.match_rate) }}%</small>
                         </div>
@@ -105,7 +105,7 @@
                                     </th>
                                     <th>Property ID</th>
                                     <th class="text-center sortable" data-sort="exceptions" style="cursor: pointer;">
-                                        Exceptions <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span>
+                                        Discrepancies <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span>
                                     </th>
                                     <th class="text-end">Undercharge</th>
                                     <th class="text-end">Overcharge</th>
