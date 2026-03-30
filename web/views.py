@@ -2325,6 +2325,15 @@ def upload_api_property():
         property_name = property_name_from_picklist or api_sources.get('property_name') or f"Property {property_id}"
         logger.info(f"[API UPLOAD] Property {property_id} name: {property_name} (source: {'picklist' if property_name_from_picklist else 'API fallback'})")
 
+        # Patch PROPERTY_NAME in the raw DataFrames so the canonical pipeline carries the
+        # correct name (picklist-resolved) rather than the API fallback "Property {id}".
+        if 'PROPERTY_NAME' in ar_raw.columns and not ar_raw.empty:
+            ar_raw = ar_raw.copy()
+            ar_raw['PROPERTY_NAME'] = property_name
+        if 'PROPERTY_NAME' in scheduled_raw.columns and not scheduled_raw.empty:
+            scheduled_raw = scheduled_raw.copy()
+            scheduled_raw['PROPERTY_NAME'] = property_name
+
         execute_started = perf_counter()
         results = execute_audit_run(
             file_path=None,
@@ -2338,9 +2347,9 @@ def upload_api_property():
             },
         )
         
-        # Override property_name_map with picklist name for snapshot persistence
-        if property_name_from_picklist:
-            results['property_name_map'] = {property_id: property_name_from_picklist}
+        # Always set property_name_map so snapshot persistence stores the correct name.
+        # property_name is already resolved: picklist > API fallback > "Property {id}"
+        results['property_name_map'] = {property_id: property_name}
         execute_seconds = perf_counter() - execute_started
 
         base_run_id = None
@@ -2386,7 +2395,7 @@ def upload_api_property():
             results.get("variance_detail"),
             None,
             property_name_map=results.get("property_name_map"),
-            write_display_snapshots=False,
+            write_display_snapshots=True,
         )
         save_run_seconds = perf_counter() - save_run_started
         logger.info(
@@ -3034,6 +3043,16 @@ def property_view(property_id: str, run_id: str = None):
             )
         
         property_name = _resolve_property_name_for_run(run_id, property_id, cache_token)
+        for property_name_col in ['property_name', 'PROPERTY_NAME', 'PropertyName']:
+            if property_name_col in all_property_buckets.columns:
+                non_empty_property_names = [
+                    str(value).strip()
+                    for value in all_property_buckets[property_name_col].dropna().tolist()
+                    if str(value).strip() and str(value).strip().lower() != 'nan'
+                ]
+                if non_empty_property_names:
+                    property_name = non_empty_property_names[0]
+                    break
         
         # Get all unique leases for this property
         all_lease_ids = sorted(all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value].unique())
@@ -3102,6 +3121,26 @@ def property_view(property_id: str, run_id: str = None):
                             break
 
                 return name_map
+
+            # Prefer resident names already present in list-backed bucket rows.
+            resident_name_column = None
+            for candidate in ['resident_name', 'ResidentName', CanonicalField.CUSTOMER_NAME.value]:
+                if candidate in all_property_buckets.columns:
+                    resident_name_column = candidate
+                    break
+
+            if resident_name_column:
+                for _, record in all_property_buckets.iterrows():
+                    lease_value = record.get(CanonicalField.LEASE_INTERVAL_ID.value)
+                    if pd.isna(lease_value):
+                        continue
+                    lease_key = int(float(lease_value))
+                    if lease_key not in lease_ids_normalized or lease_key in lease_customer_names:
+                        continue
+
+                    resident_name_value = _normalize_person_name(record.get(resident_name_column))
+                    if resident_name_value:
+                        lease_customer_names[lease_key] = resident_name_value
 
             expected_detail = cached_load_expected_detail(run_id, cache_token)
             actual_detail = cached_load_actual_detail(run_id, cache_token)

@@ -13,6 +13,7 @@
 7. [SharePoint Integration](#sharepoint-integration)
 8. [Exception Tracking & Resolution](#exception-tracking--resolution)
 9. [Configuration & Environment](#configuration--environment)
+   - [JSON Configuration Files](#json-configuration-files)
 10. [Deployment](#deployment)
 11. [Development Workflow](#development-workflow)
 12. [Common Scenarios & Troubleshooting](#common-scenarios--troubleshooting)
@@ -980,31 +981,223 @@ LOCAL_DEV_USER_NAME=Sarah VanOrder
 LOCAL_DEV_USER_EMAIL=svanorder@peakmade.com
 ```
 
-### Audit Exclusion Config Files
+### JSON Configuration Files
 
-The audit mapping layer supports JSON-driven exclusions so updates can be made without editing Python source.
+All JSON config files live in the **project root** and are loaded at startup. Each has an optional environment variable to point to a custom path. Changes take effect on the next app restart — no code changes required.
 
-- `api_posted_ar_codes.json`
-   - Purpose: AR code IDs excluded from AR and Scheduled source audits.
-   - Env override: `API_POSTED_AR_CODES_PATH`
-   - Supported JSON:
-      - `[155023, 154776, ...]`
-      - `{"api_posted_ar_codes": [155023, 154776, ...]}`
+---
 
-- `resident_profile_exclusions.json`
-   - Purpose: Resident profile names and lease IDs excluded from AR and Scheduled source audits.
-   - Env override: `RESIDENT_PROFILE_EXCLUSIONS_PATH`
-   - Match behavior: case-insensitive, trimmed, and whitespace-normalized.
-   - Scope behavior: when a name is matched, exclusions are expanded to rows sharing `CUSTOMER_ID`, `LEASE_INTERVAL_ID`, or `LEASE_ID` so linked payment rows with blank/non-resident names are also removed.
-   - Debug verification: logs `[RESIDENT EXCLUSIONS] Expanded exclusion by identifier columns; ...` with per-column added counts and sample keys.
-   - Lease ID behavior: rows with `LEASE_ID` matching configured exclusions are removed from AR and Scheduled source datasets before reconciliation.
-   - UI management: `/settings` supports append-only additions for names and lease IDs; current exclusion lists are shown read-only to prevent accidental removals.
-   - Supported JSON:
-      - `["Resident Name A", "Resident Name B"]`
-      - `{"excluded_resident_profile_names": ["Resident Name A", "Resident Name B"]}`
-      - `{"excluded_resident_profile_names": ["Resident Name A"], "excluded_lease_ids": [14897278]}`
+#### `api_posted_ar_codes.json`
 
-Default behavior for both configs is safe fallback to empty exclusions when files are missing or invalid.
+**Purpose**: Defines which AR code IDs are treated as "API-posted" charges — i.e., system-generated charges that come through the Entrata API rather than manual entry. Used by the audit engine to correctly classify charge source during reconciliation.
+
+**Env override**: `API_POSTED_AR_CODES_PATH`
+
+**Loaded by**: `audit_engine/mappings.py` → `API_POSTED_AR_CODES`, `API_POSTED_AR_CODES_SET`
+
+**Format** (either form accepted):
+```json
+[155023, 154776, 155217]
+```
+or
+```json
+{ "api_posted_ar_codes": [155023, 154776, 155217] }
+```
+
+**Safe fallback**: defaults to empty set if file is missing or malformed — audit continues without API-posted classification.
+
+---
+
+#### `ar_code_name_usage_map.json`
+
+**Purpose**: Maps every Entrata AR code ID to its display name, GL code number, and usage category. Used throughout the audit engine to look up human-readable names and route AR codes into audit buckets (Base, Add Ons, Pet, Amenity, Special, Maintenance, etc.).
+
+**Env override**: `AR_CODE_NAME_USAGE_MAP_PATH`
+
+**Loaded by**: `audit_engine/mappings.py`
+
+**Format**:
+```json
+{
+  "version": 1,
+  "mapping": {
+    "154771": { "code": 2, "name": "Rent", "usage": "Base" },
+    "155052": { "code": 3, "name": "Parking", "usage": "Add Ons" },
+    "155034": { "code": 3, "name": "Pet", "usage": "Pet" }
+  }
+}
+```
+
+**Fields**:
+| Field | Description |
+|---|---|
+| `code` | GL account type code (1=Payment, 2=Rent, 3=Other Income, 4=Expense/Credit, 7=Deposit, 8=Refund, 9=Special) |
+| `name` | Human-readable AR code name as it appears in Entrata |
+| `usage` | Audit bucket category: `Base`, `Add Ons`, `Pet`, `Amenity`, `Special`, `Maintenance`, `Lease Violation`, `Reimbursable Expense` |
+
+**Safe fallback**: defaults to empty map; AR codes will show numeric IDs only.
+
+---
+
+#### `resident_profile_exclusions.json`
+
+**Purpose**: Defines resident names and lease IDs that should be excluded from audit reconciliation entirely. Typically used for non-resident ledger entries (vendors, bad debt agencies, internal accounts) that appear in the AR transaction feed but aren't real lease charges.
+
+**Env override**: `RESIDENT_PROFILE_EXCLUSIONS_PATH`
+
+**Loaded by**: `audit_engine/mappings.py`, `web/views.py`
+
+**Format**:
+```json
+{
+  "excluded_resident_profile_names": ["Bad Debt", "AGENCY", "Aramark"],
+  "excluded_lease_ids": [14897278, 14897279]
+}
+```
+Shorthand (names-only array) also accepted:
+```json
+["Bad Debt", "AGENCY"]
+```
+
+**Match behavior**:
+- Name matching is case-insensitive, trimmed, and whitespace-normalized
+- When a name is matched, the exclusion expands to all rows sharing that entry's `CUSTOMER_ID`, `LEASE_INTERVAL_ID`, or `LEASE_ID` — so linked payment rows with blank or non-resident names are also removed
+
+**UI management**: `/settings` page supports append-only additions; existing entries are shown read-only to prevent accidental removals.
+
+**Safe fallback**: defaults to empty exclusion list.
+
+---
+
+#### `property_lease_config.json`
+
+**Purpose**: Per-property overrides for lease document selection and reconciliation rules. Controls which PDF documents are selected from Entrata when extracting lease terms, and supports reconciliation adjustments like pre-acquisition date handling.
+
+**Env override**: `PROPERTY_LEASE_CONFIG_PATH`
+
+**Loaded by**: `audit_engine/entrata_lease_terms.py`
+
+**Full reference**: see [PROPERTY_LEASE_CONFIG_README.md](PROPERTY_LEASE_CONFIG_README.md)
+
+**Format**:
+```json
+{
+  "description": "...",
+  "default": {
+    "lease_document_selection": {
+      "preferred_codes_tier1": ["LP", "OEP", "PACKET"],
+      "preferred_codes_tier2": ["LEASE", "LD", "OEL"],
+      "min_file_size_bytes": 50000,
+      "exclude_title_patterns": ["e-?sign.*modification"],
+      "preferred_title_patterns": [],
+      "require_signed": true
+    }
+  },
+  "properties": {
+    "100139752": {
+      "property_name": "Chateau on Wells",
+      "lease_document_selection": { "...property-specific overrides..." },
+      "reconciliation": {
+        "pre_acquisition_date": "2026-01-01",
+        "mark_pre_acquisition_scheduled_as_expected": true,
+        "notes": "Acquired mid-lease; suppress Scheduled Not Billed before this date."
+      }
+    }
+  }
+}
+```
+
+**Key fields**:
+| Field | Description |
+|---|---|
+| `preferred_codes_tier1/2` | Entrata document type codes to prefer, checked in tier order |
+| `min_file_size_bytes` | Reject documents below this size (filters blank/stub PDFs) |
+| `exclude_title_patterns` | Regex patterns — matching document titles are skipped |
+| `preferred_title_patterns` | Regex patterns — documents matching these are ranked higher |
+| `require_signed` | If true, only select documents that have been e-signed |
+| `pre_acquisition_date` | Suppress `SCHEDULED_NOT_BILLED` exceptions before this date (for acquired properties) |
+
+**Safe fallback**: if file is missing, default config is used for all properties.
+
+---
+
+#### `lease_term_extraction_config.json`
+
+**Purpose**: Controls how the lease term extractor reads PDF documents to identify specific charge types (base rent, parking, pet rent, admin fee, etc.). Contains regex patterns, page hint keywords, anchor tokens, exclusion signals, and prioritization rules for each term type. Editing this file tunes extraction accuracy without touching Python code.
+
+**Env override**: `LEASE_TERM_EXTRACTION_CONFIG_PATH`
+
+**Loaded by**: `audit_engine/lease_term_extraction_rules.py`
+
+**Supported term types**: `BASE_RENT`, `APPLICATION_FEE`, `ADMIN_FEE`, `AMENITY_PREMIUM`, `PARKING`, `PET_RENT`
+
+**Format (per term)**:
+```json
+{
+  "term_extraction_rules": {
+    "PARKING": {
+      "page_hint_patterns": ["parking\\s+addendum", "parking\\s+fee"],
+      "page_fallback_pattern": "parking|garage|carport",
+      "anchor_keywords": ["parking", "garage", "carport"],
+      "exclusion_signals": ["...patterns that indicate a false match..."],
+      "source_order": ["focus"]
+    }
+  }
+}
+```
+
+**Key fields per term**:
+| Field | Description |
+|---|---|
+| `page_hint_patterns` | Regex patterns used to identify relevant PDF pages |
+| `page_fallback_pattern` | Broader fallback pattern if hint pages yield no results |
+| `anchor_keywords` / `anchor_tokens` | Words that anchor amount extraction near them |
+| `exclusion_signals` | Patterns that disqualify a candidate amount |
+| `regex_fallback_*_patterns` | Explicit regex patterns used when heuristic extraction fails |
+| `source_order` | Controls which extraction strategy is attempted (e.g. `["focus"]` = only focused context) |
+
+**Safe fallback**: if file is missing, extractor falls back to hardcoded defaults.
+
+---
+
+#### `lease_term_mapping_config.json`
+
+**Purpose**: Maps extracted lease term types to their corresponding Entrata AR code IDs. Used by the lease term overlay to match what was found in the PDF to what should appear in the AR transaction feed, and to set expected billing frequency.
+
+**Env override**: `LEASE_TERM_RULES_CONFIG_PATH`
+
+**Loaded by**: `audit_engine/lease_term_rules.py`
+
+**Format**:
+```json
+{
+  "version": 1,
+  "term_to_ar_code_rules": [
+    {
+      "term_type": "BASE_RENT",
+      "label_patterns": ["base\\s*rent", "monthly\\s*rent", "rent"],
+      "accepted_ar_codes": ["154771"],
+      "expected_frequency": "monthly"
+    },
+    {
+      "term_type": "PARKING",
+      "label_patterns": ["parking", "garage", "reserved\\s*parking"],
+      "accepted_ar_codes": ["155052", "155385"],
+      "expected_frequency": "monthly"
+    }
+  ]
+}
+```
+
+**Fields**:
+| Field | Description |
+|---|---|
+| `term_type` | Canonical term type name (must match an extraction rule) |
+| `label_patterns` | Regex patterns used to match extracted term labels from the PDF |
+| `accepted_ar_codes` | AR code IDs that are valid matches for this term type |
+| `expected_frequency` | `monthly` or `one_time` — used to validate billing cadence |
+
+**Safe fallback**: if file is missing, mapping layer falls back to hardcoded defaults.
 
 ### Configuration Classes (config.py)
 

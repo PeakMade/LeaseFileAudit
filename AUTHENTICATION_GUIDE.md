@@ -29,19 +29,17 @@ If you already have an app registration:
 
 ### Required: Configure API Permissions
 
-**Regardless of which option**, you must add Microsoft Graph permissions:
+**Regardless of which option**, you must add a Microsoft Graph **Application** permission:
 
 1. **Azure Portal** → **Azure Active Directory** → **App registrations** → Your app
-2. **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions**
+2. **API permissions** → **Add a permission** → **Microsoft Graph** → **Application permissions**
 
-**Add these permissions:**
-- `User.Read` - Read user profile
-- `email` - Read email
-- `openid` - Sign-in
-- `profile` - Read profile
-- `Sites.ReadWrite.All` - Write to SharePoint (for logging)
+**Add this permission:**
+- `Sites.ReadWrite.All` - Read and write SharePoint lists and document libraries (app-only)
 
 3. Click **Grant admin consent for [your organization]**
+
+> **Note:** Delegated permissions (`User.Read`, `email`, `openid`, `profile`) are **not needed**. The app uses client credentials flow (app-only token) for all Graph API calls. User identity is read from the `X-MS-CLIENT-PRINCIPAL` header injected by Easy Auth — no delegated token is requested.
 
 ---
 
@@ -79,21 +77,23 @@ APP_NAME=YourAppName
 
 ---
 
-## 3. Understanding Access Tokens & Delegated Permissions
+## 3. Understanding Access Tokens
 
 ### How It Works
 
-1. User authenticates via Azure AD
-2. Easy Auth injects headers into every request:
+1. User authenticates via Azure AD (handled entirely by Easy Auth)
+2. Easy Auth injects the user identity header into every request:
    - `X-MS-CLIENT-PRINCIPAL`: Base64 JSON with user info and claims
-   - `X-MS-TOKEN-AAD-ACCESS-TOKEN`: Access token for Microsoft Graph
-3. Your app extracts user info and uses token to call Microsoft Graph API
+3. The app extracts user identity (name, email) from this header for display and logging
+4. For all Graph API / SharePoint calls, the app acquires an **app-only token** via client credentials flow — independent of the user session
 
-### Delegated Permissions
+### App-Only Permissions (Client Credentials)
 
-- **Delegated** = actions performed on behalf of the signed-in user
-- Token contains user's identity and permissions
-- User must have access to SharePoint sites your app writes to
+- **Application permissions** = the app acts as itself, not on behalf of a user
+- Token is acquired via `POST /oauth2/v2.0/token` with `grant_type=client_credentials`
+- Scope: `https://graph.microsoft.com/.default`
+- The app registration must have `Sites.ReadWrite.All` as an **Application** permission with admin consent
+- Users do **not** need individual SharePoint access — the app's service principal does
 
 ### Why Microsoft Graph API?
 
@@ -133,16 +133,14 @@ def get_easy_auth_user():
         claim_key = claim_type.split('/')[-1] if '/' in claim_type else claim_type
         claims[claim_key] = claim_value
     
-    # Get access token
-    access_token = request.headers.get('X-MS-TOKEN-AAD-ACCESS-TOKEN')
-    
     return {
         'user_id': principal_data.get('user_id', ''),
         'name': claims.get('name', claims.get('displayname', 'Unknown')),
         'email': claims.get('emailaddress', claims.get('email', claims.get('upn', ''))),
         'claims': claims,
-        'access_token': access_token,
         'identity_provider': principal_data.get('identity_provider', 'aad')
+        # NOTE: No access_token stored here. Graph API calls use app-only tokens
+        # obtained separately via client credentials flow (get_access_token()).
     }
 
 def require_auth(f):
@@ -264,8 +262,10 @@ def protected_route():
             site_url=os.getenv('SHAREPOINT_SITE_URL'),
             list_name=os.getenv('SHAREPOINT_LIST_NAME')
         )
+        from activity_logging.sharepoint import _get_app_only_token
+        token = _get_app_only_token()  # App-only token via client credentials
         logger.log_activity(
-            access_token=user['access_token'],
+            access_token=token,
             user_name=user['name'],
             user_email=user['email'],
             activity_type='Page View',
@@ -331,9 +331,9 @@ Decode token at [jwt.ms](https://jwt.ms):
 ## 7. Key Points
 
 1. **Use Microsoft Graph API** for all SharePoint operations
-2. **Delegated permissions** = actions performed on behalf of signed-in user
-3. **Easy Auth handles token acquisition and refresh** automatically
-4. **Always grant admin consent** after adding API permissions
+2. **App-only tokens** (client credentials flow) are used for all Graph API calls — not delegated user tokens
+3. **Easy Auth handles user identity only** — it identifies who is logged in via `X-MS-CLIENT-PRINCIPAL`; it does not provide tokens for SharePoint
+4. **Always grant admin consent** after adding Application permissions
 5. **Column names in code must match SharePoint columns exactly**
 6. **Azure can auto-create app registrations** when enabling auth
 
@@ -388,7 +388,7 @@ def debug():
     return headers
 ```
 
-Look for `X-MS-CLIENT-PRINCIPAL` and `X-MS-TOKEN-AAD-ACCESS-TOKEN`
+Look for `X-MS-CLIENT-PRINCIPAL` (user identity — this is the only Easy Auth header the app uses)
 
 ### Issue: SharePoint logging fails
 

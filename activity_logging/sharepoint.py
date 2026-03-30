@@ -2,8 +2,8 @@
 SharePoint logging module for Azure App Service Easy Auth.
 
 This module logs user activity to a SharePoint list using Microsoft Graph API.
-- Production: Uses delegated token from Easy Auth (user context)
-- Local dev: Uses client credentials token (app-only context)
+- Both production and local dev: Uses app-only token via client credentials flow
+- User identity is read from EasyAuth headers (production) or env vars (local dev)
 """
 import logging
 import requests
@@ -398,11 +398,11 @@ def log_user_activity(
         logger.debug("[SHAREPOINT] Local dev mode detected, acquiring app-only token")
         access_token = _get_app_only_token()
     else:
-        # Production: Fetch delegated token per-request from EasyAuth headers
+        # Production: Use app-only token via client credentials flow
         # Import here to avoid circular imports
         from web.auth import get_access_token
-        logger.debug("[SHAREPOINT] Production mode, fetching delegated token from EasyAuth")
-        access_token = get_access_token()  # This will log JWT expiry info
+        logger.debug("[SHAREPOINT] Production mode, acquiring app-only token via client credentials")
+        access_token = get_access_token()
         logger.debug(f"[SHAREPOINT] Token fetched from get_access_token(): {access_token is not None}")
     
     if not access_token:

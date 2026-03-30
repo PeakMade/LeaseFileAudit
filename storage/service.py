@@ -1237,11 +1237,19 @@ class StorageService:
         run_id: str,
         bucket_results: pd.DataFrame,
         findings: pd.DataFrame,
+        actual_detail: Optional[pd.DataFrame] = None,
+        expected_detail: Optional[pd.DataFrame] = None,
     ) -> None:
         """Background wrapper for detailed AuditRuns list persistence."""
         try:
             logger.info(f"[STORAGE] 🚀 Background AuditRuns write started for {run_id}")
-            self._write_results_to_sharepoint_list(run_id, bucket_results, findings)
+            self._write_results_to_sharepoint_list(
+                run_id,
+                bucket_results,
+                findings,
+                actual_detail=actual_detail,
+                expected_detail=expected_detail,
+            )
             logger.info(f"[STORAGE] ✅ Background AuditRuns write finished for {run_id}")
         except Exception as e:
             logger.error(f"[STORAGE] Background AuditRuns write failed for {run_id}: {e}", exc_info=True)
@@ -1663,7 +1671,10 @@ class StorageService:
                 )
                 return []
 
-            # Group by property_id and keep the latest (first occurrence due to ordering)
+            # Group by property_id and keep the latest entry per property.
+            # NOTE: $orderby on RunId is unreliable because $filter is on ScopeType (non-indexed column).
+            # SharePoint may return items in creation order (oldest first) despite the desc orderby.
+            # We compare RunId strings explicitly — run_YYYYMMDD_HHMMSS sorts chronologically as strings.
             latest_by_property: Dict[int, Dict[str, Any]] = {}
             
             for item in response.json().get('value', []):
@@ -1673,9 +1684,11 @@ class StorageService:
                 if property_id_int is None:
                     continue
                 
-                # Skip if we already have a snapshot for this property (first one is latest due to orderby)
-                if property_id_int in latest_by_property:
-                    continue
+                # Keep the entry with the highest RunId (newest run) regardless of return order
+                current_run_id = fields.get('RunId', '')
+                existing = latest_by_property.get(property_id_int)
+                if existing is not None and current_run_id <= existing.get('run_id', ''):
+                    continue  # existing entry is same age or newer — skip this one
                 
                 exception_count = fields.get('ExceptionCountStatic')
                 if exception_count is None:
@@ -1866,7 +1879,9 @@ class StorageService:
         self,
         run_id: str,
         bucket_results: pd.DataFrame,
-        findings: pd.DataFrame
+        findings: pd.DataFrame,
+        actual_detail: Optional[pd.DataFrame] = None,
+        expected_detail: Optional[pd.DataFrame] = None,
     ) -> bool:
         """Persist bucket results and findings to SharePoint list 'AuditRuns'."""
         if not self._can_use_sharepoint_lists():
@@ -1890,6 +1905,147 @@ class StorageService:
             }
 
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            property_name_field = None
+            resident_name_field = None
+            try:
+                columns_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/columns"
+                columns_params = {'$select': 'name', '$top': 200}
+                columns_response = requests.get(columns_url, headers=headers, params=columns_params, timeout=60)
+                if columns_response.status_code == 200:
+                    column_names = {
+                        column.get('name')
+                        for column in columns_response.json().get('value', [])
+                        if column.get('name')
+                    }
+                    if 'PropertyName' in column_names:
+                        property_name_field = 'PropertyName'
+
+                    if 'ResidentName' in column_names:
+                        resident_name_field = 'ResidentName'
+                else:
+                    logger.warning(
+                        f"[STORAGE] Could not read AuditRuns columns: "
+                        f"{columns_response.status_code} - {columns_response.text}"
+                    )
+            except Exception as schema_exc:
+                logger.warning(f"[STORAGE] Failed loading AuditRuns optional column names: {schema_exc}")
+
+            def _normalize_person_name(value: Any) -> str:
+                if value is None:
+                    return ''
+                text = str(value).strip()
+                if not text or text.lower() == 'nan':
+                    return ''
+                return text
+
+            def _row_is_guarantor_like(row: pd.Series) -> bool:
+                customer_value = _normalize_person_name(
+                    row.get('CUSTOMER_NAME', row.get('customer_name'))
+                )
+                guarantor_value = _normalize_person_name(
+                    row.get('GUARANTOR_NAME', row.get('guarantor_name'))
+                )
+                if not customer_value or not guarantor_value:
+                    return False
+                return customer_value.casefold() == guarantor_value.casefold()
+
+            def _build_property_name_lookup(*frames: Optional[pd.DataFrame]) -> Dict[int, str]:
+                lookup: Dict[int, str] = {}
+                for frame in frames:
+                    if frame is None or frame.empty:
+                        continue
+
+                    property_col = None
+                    for candidate in ['PROPERTY_ID', 'property_id']:
+                        if candidate in frame.columns:
+                            property_col = candidate
+                            break
+                    if not property_col:
+                        continue
+
+                    property_name_col = None
+                    for candidate in ['PROPERTY_NAME', 'property_name', 'PropertyName']:
+                        if candidate in frame.columns:
+                            property_name_col = candidate
+                            break
+                    if not property_name_col:
+                        continue
+
+                    for _, record in frame[[property_col, property_name_col]].dropna().iterrows():
+                        property_id_int = self._safe_int(record.get(property_col))
+                        property_name_value = str(record.get(property_name_col)).strip()
+                        if property_id_int is None or not property_name_value or property_name_value.lower() == 'nan':
+                            continue
+                        if property_id_int not in lookup:
+                            lookup[property_id_int] = property_name_value
+
+                return lookup
+
+            def _build_resident_name_lookup(*frames: Optional[pd.DataFrame]) -> Dict[int, str]:
+                lookup: Dict[int, str] = {}
+                for frame in frames:
+                    if frame is None or frame.empty:
+                        continue
+
+                    lease_col = None
+                    for candidate in ['LEASE_INTERVAL_ID', 'lease_interval_id']:
+                        if candidate in frame.columns:
+                            lease_col = candidate
+                            break
+                    if not lease_col:
+                        continue
+
+                    customer_col = None
+                    for candidate in ['CUSTOMER_NAME', 'customer_name']:
+                        if candidate in frame.columns:
+                            customer_col = candidate
+                            break
+                    if not customer_col:
+                        continue
+
+                    non_guarantor_candidates: Dict[int, List[str]] = {}
+                    fallback_candidates: Dict[int, List[str]] = {}
+
+                    for _, record in frame.iterrows():
+                        lease_id_int = self._safe_int(record.get(lease_col))
+                        if lease_id_int is None:
+                            continue
+
+                        customer_value = _normalize_person_name(record.get(customer_col))
+                        if not customer_value:
+                            continue
+
+                        fallback_candidates.setdefault(lease_id_int, []).append(customer_value)
+                        if not _row_is_guarantor_like(record):
+                            non_guarantor_candidates.setdefault(lease_id_int, []).append(customer_value)
+
+                    for lease_id_int, fallback_values in fallback_candidates.items():
+                        if lease_id_int in lookup:
+                            continue
+
+                        preferred = non_guarantor_candidates.get(lease_id_int) or fallback_values
+                        if not preferred:
+                            continue
+
+                        counts: Dict[str, int] = {}
+                        first_seen: Dict[str, int] = {}
+                        for idx_name, name_value in enumerate(preferred):
+                            key = name_value.casefold()
+                            counts[key] = counts.get(key, 0) + 1
+                            if key not in first_seen:
+                                first_seen[key] = idx_name
+
+                        winner_key = max(counts.keys(), key=lambda key: (counts[key], -first_seen[key]))
+                        for name_value in preferred:
+                            if name_value.casefold() == winner_key:
+                                lookup[lease_id_int] = name_value
+                                break
+
+                return lookup
+
+            property_name_lookup = _build_property_name_lookup(actual_detail, expected_detail)
+            resident_name_lookup = _build_resident_name_lookup(expected_detail, actual_detail)
 
             def _write_dataframe_rows(df: pd.DataFrame, result_type: str) -> int:
                 rows_written = 0
@@ -1940,6 +2096,16 @@ class StorageService:
                         'ActualValue': str(row_dict.get('actual_value', row_dict.get('ACTUAL_VALUE', ''))),
                         'CreatedAt': datetime.utcnow().isoformat(),
                     }
+
+                    if property_name_field and property_id_int is not None:
+                        property_name_value = property_name_lookup.get(property_id_int)
+                        if property_name_value:
+                            fields_payload[property_name_field] = property_name_value
+
+                    if resident_name_field and lease_interval_id_int is not None:
+                        resident_name_value = resident_name_lookup.get(lease_interval_id_int)
+                        if resident_name_value:
+                            fields_payload[resident_name_field] = resident_name_value
 
                     row_payloads.append({'fields': fields_payload})
 
@@ -2042,6 +2208,8 @@ class StorageService:
                     row_payload = {
                         'PROPERTY_ID': fields.get('PropertyId'),
                         'LEASE_INTERVAL_ID': fields.get('LeaseIntervalId'),
+                        'property_name': fields.get('PropertyName'),
+                        'resident_name': fields.get('ResidentName'),
                         'AR_CODE_ID': fields.get('ArCodeId'),
                         'AUDIT_MONTH': fields.get('AuditMonth'),
                         'expected_total': fields.get('ExpectedTotal'),
@@ -2067,6 +2235,8 @@ class StorageService:
                         'run_id': fields.get('RunId', run_id),
                         'property_id': fields.get('PropertyId'),
                         'lease_interval_id': fields.get('LeaseIntervalId'),
+                        'property_name': fields.get('PropertyName'),
+                        'resident_name': fields.get('ResidentName'),
                         'ar_code_id': fields.get('ArCodeId'),
                         'audit_month': fields.get('AuditMonth'),
                         'category': fields.get('Category'),
@@ -3791,7 +3961,7 @@ class StorageService:
                 )
                 writer_thread = threading.Thread(
                     target=self._write_results_to_sharepoint_list_async,
-                    args=(run_id, bucket_results, findings),
+                    args=(run_id, bucket_results, findings, actual_detail, expected_detail),
                     daemon=True,
                     name=f"auditruns-write-{run_id}",
                 )
@@ -3803,7 +3973,13 @@ class StorageService:
                 print(f"[STORAGE] ✓ Detail write dispatched (async mode)")
             else:
                 print(f"[STORAGE] Writing details synchronously...")
-                self._write_results_to_sharepoint_list(run_id, bucket_results, findings)
+                self._write_results_to_sharepoint_list(
+                    run_id,
+                    bucket_results,
+                    findings,
+                    actual_detail=actual_detail,
+                    expected_detail=expected_detail,
+                )
                 print(f"[STORAGE] ✓ Details written successfully")
         except Exception as e:
             print(f"[STORAGE] ⚠️  Detail write failed: {e}")
