@@ -190,8 +190,9 @@ LeaseFileAudit/
       - Scheduled Charges: "scheduled", "charges"
    - Loads raw DataFrames from workbook sheets
 - **API property path** (`/upload-api-property`):
-   - User selects property and optional date window
+   - User selects property and optional date window (`api_from_date` / `api_to_date`) and/or audit year/month
    - `audit_engine/api_ingest.py` fetches Entrata API sources (`getLeaseDetails`, `getLeaseArTransactions`)
+   - `api_from_date`/`api_to_date` are sent to Entrata's `getLeaseArTransactions` as `transactionFromDate`/`transactionToDate` (AR pre-filtered server-side) AND applied post-fetch as an `AUDIT_MONTH` range filter to **both** AR and scheduled DataFrames so both sides of the reconciliation cover the same window
    - Builds AR and Scheduled raw DataFrames aligned to the same pipeline contract
 - **API lease path** (`/upload-api-lease`):
    - User submits a single lease (and optional property/date scope)
@@ -1643,6 +1644,14 @@ def calculate_cumulative_metrics(run_id):
    [FILTER] Filtered to month 1: X rows remaining
    ```
 
+**Note on date range vs year/month filters (API property uploads)**:
+When using `api_from_date`/`api_to_date` on the upload form, the filter priority in `execute_audit_run()` is:
+1. **Explicit date range** (`audit_date_from`/`audit_date_to`) — filters `AUDIT_MONTH` on both AR and scheduled sides
+2. **Explicit year/month** (`audit_year`/`audit_month`) — `filter_by_audit_period()`
+3. **Default** — current academic year (Aug → current month)
+
+If date range fields are populated, `audit_year`/`audit_month` are ignored. Always use matching windows on both fields to avoid comparing misaligned periods.
+
 ---
 
 ## Quick Reference
@@ -1727,6 +1736,8 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **2026-03-23**: Reduced upload timeout risk by moving RunDisplaySnapshots writes to async by default in `storage/service.py` via `ASYNC_RUN_DISPLAY_SNAPSHOTS` (default `true`); added background wrapper `_write_run_display_snapshots_async()` with post-write validation support; retained UI correctness during async lag by adding CSV completeness fallback when list rows are partial in `load_bucket_results()` and `load_findings()` and by updating `property_view` lease status fallback to use unresolved bucket counts when lease snapshots are not yet available
 - **2026-03-20**: Switched Entrata lease-term document handling to memory-first extraction in `audit_engine/entrata_lease_terms.py`: selected resident packet/addenda are parsed from in-memory PDF bytes (no required local file path dependency), merged packet+addenda is built in-memory via PyMuPDF, and documents are uploaded to SharePoint Document Library path `Entrata leases/<property_id>/...`; added optional debug/local persistence flag `SAVE_LOCAL_ENTRATA_PDFS` (default `false`) while keeping local path parsing fallback compatibility for explicit path inputs
 - **2026-03-16**: Added status badge column to property view lease table showing per-lease status (Passed/Open/Resolved) with color-coded Bootstrap badges; status calculation logic in `web/views.py` compares static exception count from snapshots with unresolved exception count from filtered lease groups to determine resolution progress; status label shows "Open (X/Y resolved)" format for partially resolved leases
+- **2026-03-31**: Fixed portfolio showing stale results after API property audit: `storage/service.py` `load_latest_property_snapshots_across_runs()` now compares `RunId` strings explicitly instead of relying on `$orderby` (unreliable when `$filter` is on non-indexed `ScopeType` column); `web/views.py` `upload_api_property` now passes `write_display_snapshots=True` (was `False`, so no snapshot was ever written for new runs); always sets `property_name_map` from resolved `property_name` and patches `PROPERTY_NAME` in `ar_raw`/`scheduled_raw` before `execute_audit_run` so the correct picklist name flows through the entire canonical pipeline instead of the Entrata API fallback `"Property {id}"`
+- **2026-03-31**: Added explicit date range filtering for scheduled charges in API property audit: `execute_audit_run()` gains `audit_date_from`/`audit_date_to` parameters; when set, both `expected_detail` (scheduled) and `actual_detail` (AR) are filtered by `AUDIT_MONTH` within the given range post-fetch, ensuring both sides of the reconciliation cover the same window; date range takes priority over `audit_year`/`audit_month` and the default academic year filter; `upload_api_property` passes `transaction_from_date`/`transaction_to_date` through as `audit_date_from`/`audit_date_to`
 - **2026-03-16**: Fixed SharePoint column name reference from `TotalLeaseIntervalsStatic` to `TotalLeaseIntervalStatic` throughout `storage/service.py` to match actual SharePoint list column naming; corrected field candidate mapping and all snapshot read operations to properly display lease interval counts in portfolio view
 - **2026-03-16**: Removed "Total Lease Intervals" column from portfolio page table in `templates/portfolio.html` to simplify dashboard layout; portfolio now displays Property Name, Property ID, Exceptions, Undercharge, Overcharge, Total Variance, and Details columns only
 - **2026-03-16**: Added responsive CSS breakpoints in `templates/base.html` for action buttons container with three breakpoints (@1200px moves buttons closer, @992px drops buttons below header as static element, @768px stacks buttons vertically) to prevent button overlap with lease header content on smaller screens

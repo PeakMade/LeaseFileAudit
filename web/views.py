@@ -1430,6 +1430,8 @@ def execute_audit_run(
     audit_month: int = None,
     scoped_property_ids=None,
     preloaded_sources: dict = None,
+    audit_date_from: str = None,
+    audit_date_to: str = None,
 ) -> dict:
     """
     Execute complete audit run.
@@ -1439,6 +1441,8 @@ def execute_audit_run(
         run_id: Unique run identifier
         audit_year: Optional year to filter audit (e.g., 2024)
         audit_month: Optional month to filter audit (1-12)
+        audit_date_from: Optional start date (MM/DD/YYYY) — filters both AR and scheduled to AUDIT_MONTH >= this date
+        audit_date_to: Optional end date (MM/DD/YYYY) — filters both AR and scheduled to AUDIT_MONTH <= this date
         preloaded_sources: Optional pre-loaded RAW source dict keyed by configured source names
     
     Returns:
@@ -1640,8 +1644,29 @@ def execute_audit_run(
         )
     
     # Apply period filter.
-    # Default behavior when no explicit year is selected: current academic year (Aug -> current month).
-    if audit_year is None:
+    # Priority: explicit date range (from/to) > explicit year/month > default academic year.
+    if audit_date_from or audit_date_to:
+        # Explicit date range — filter both sides to AUDIT_MONTH within [from, to].
+        # This ensures scheduled charges are windowed the same as AR transactions.
+        date_from_ts = pd.to_datetime(audit_date_from, errors='coerce') if audit_date_from else None
+        date_to_ts = pd.to_datetime(audit_date_to, errors='coerce') if audit_date_to else None
+        print(f"\n[AUDIT PERIOD FILTER] Applying explicit date range filter: {audit_date_from or 'open'} → {audit_date_to or 'open'}")
+        print(f"[AUDIT PERIOD FILTER] Before filter - Expected: {len(expected_detail)}, Actual: {len(actual_detail)}")
+        month_col = CanonicalField.AUDIT_MONTH.value
+        for df_name, df in [('expected', expected_detail), ('actual', actual_detail)]:
+            if month_col in df.columns:
+                months = pd.to_datetime(df[month_col], errors='coerce')
+                mask = pd.Series([True] * len(df), index=df.index)
+                if date_from_ts is not None:
+                    mask &= months >= date_from_ts
+                if date_to_ts is not None:
+                    mask &= months <= date_to_ts
+                if df_name == 'expected':
+                    expected_detail = df[mask].copy()
+                else:
+                    actual_detail = df[mask].copy()
+        print(f"[AUDIT PERIOD FILTER] After filter - Expected: {len(expected_detail)}, Actual: {len(actual_detail)}")
+    elif audit_year is None:
         print("\n[AUDIT PERIOD FILTER] Applying default Current Academic Year filter")
         print(f"[AUDIT PERIOD FILTER] Before filter - Expected: {len(expected_detail)}, Actual: {len(actual_detail)}")
 
@@ -2345,6 +2370,8 @@ def upload_api_property():
                 config.ar_source.name: ar_raw,
                 config.scheduled_source.name: scheduled_raw,
             },
+            audit_date_from=transaction_from_date,
+            audit_date_to=transaction_to_date,
         )
         
         # Always set property_name_map so snapshot persistence stores the correct name.
