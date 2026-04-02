@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import pandas as pd
 import requests
@@ -359,18 +359,6 @@ def _is_one_time_charge(charge: dict[str, Any], interval_node: dict[str, Any] | 
     if "monthly" in timing:
         return False
 
-    # Strong recurring evidence from explicit date span on the charge itself.
-    # If a charge has a multi-day start/end range, treat it as recurring even when
-    # chargeTiming/interval bucket metadata is inconsistent.
-    raw_start = charge.get("chargeStartDate") or charge.get("installmentStartDate")
-    raw_end = charge.get("chargeEndDate") or charge.get("installmentEndDate")
-    start_dt = pd.to_datetime(raw_start, errors="coerce")
-    end_dt = pd.to_datetime(raw_end, errors="coerce")
-    if pd.notna(start_dt) and pd.notna(end_dt):
-        span_days = (end_dt - start_dt).days
-        if span_days >= 7:
-            return False
-
     one_time_markers = [
         "one time",
         "one-time",
@@ -384,10 +372,22 @@ def _is_one_time_charge(charge: dict[str, Any], interval_node: dict[str, Any] | 
         return True
 
     interval_bucket = _to_str((interval_node or {}).get("_interval_charge_bucket")).lower()
-    if interval_bucket == "recurring":
-        return False
     if interval_bucket == "one_time":
         return True
+    if interval_bucket == "recurring":
+        return False
+
+    # Strong recurring evidence from explicit date span on the charge itself.
+    # If a charge has a multi-day start/end range, treat it as recurring even when
+    # chargeTiming/interval bucket metadata is inconsistent.
+    raw_start = charge.get("chargeStartDate") or charge.get("installmentStartDate")
+    raw_end = charge.get("chargeEndDate") or charge.get("installmentEndDate")
+    start_dt = pd.to_datetime(raw_start, errors="coerce")
+    end_dt = pd.to_datetime(raw_end, errors="coerce")
+    if pd.notna(start_dt) and pd.notna(end_dt):
+        span_days = (end_dt - start_dt).days
+        if span_days >= 7:
+            return False
 
     # Last resort fallback to prior behavior.
     return "monthly" not in timing
@@ -449,13 +449,15 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
                 is_one_time = _is_one_time_charge(charge, interval_node=interval_node)
                 explicit_charge_end_normalized = _to_mmddyyyy(explicit_charge_end)
 
+                # One-time charges should remain scoped to a single audit month even when
+                # Entrata also emits a lease-length explicit end date on the charge record.
+                if is_one_time:
+                    charge_end = ""
                 # Some Entrata payloads use textual sentinels (e.g. "End During Move-Out")
                 # for recurring charges. Preserve recurring behavior by falling back to
                 # lease_end when the explicit end cannot be parsed as a date.
-                if explicit_charge_end_normalized:
+                elif explicit_charge_end_normalized:
                     charge_end = explicit_charge_end_normalized
-                elif is_one_time:
-                    charge_end = ""
                 else:
                     charge_end = lease_end
 
@@ -652,6 +654,69 @@ def _build_ar_df(property_id: int, property_name: str, ar_payload: dict[str, Any
     return df
 
 
+def _fetch_all_lease_details_pages(
+    endpoint_url: str,
+    api_key: str,
+    api_key_header: str,
+    method_name: str,
+    version: str,
+    params: dict[str, Any],
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    """Call getLeaseDetails repeatedly until all pages are collected, then return a
+    merged payload whose lease list contains every lease node across all pages."""
+    parsed = urlparse(endpoint_url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    per_page = int((qs.get("per_page") or ["100"])[0])
+
+    all_lease_nodes: list[dict[str, Any]] = []
+    first_payload: dict[str, Any] | None = None
+    page_no = 1
+
+    while True:
+        qs["page_no"] = [str(page_no)]
+        page_url = urlunparse(parsed._replace(query=urlencode({k: v[0] for k, v in qs.items()})))
+
+        payload = _post_method(
+            endpoint_url=page_url,
+            api_key=api_key,
+            api_key_header=api_key_header,
+            method_name=method_name,
+            version=version,
+            params=params,
+            timeout_seconds=timeout_seconds,
+        )
+
+        if first_payload is None:
+            first_payload = payload
+
+        page_nodes = _extract_lease_nodes(payload)
+        all_lease_nodes.extend(page_nodes)
+        print(
+            f"[LEASE API PAGINATION] page={page_no}, "
+            f"leases_on_page={len(page_nodes)}, total_so_far={len(all_lease_nodes)}"
+        )
+
+        if len(page_nodes) < per_page:
+            break
+        page_no += 1
+
+    if first_payload is None:
+        return {}
+
+    # Stitch all collected lease nodes back into a single merged payload so the
+    # existing _build_scheduled_df / _extract_lease_nodes helpers work unchanged.
+    merged = dict(first_payload)
+    response = dict(merged.get("response") or {})
+    result = dict(response.get("result") or {})
+    leases = dict(result.get("leases") or {})
+    leases["lease"] = all_lease_nodes
+    result["leases"] = leases
+    response["result"] = result
+    merged["response"] = response
+    return merged
+
+
 def fetch_property_api_sources(
     property_id: int,
     transaction_from_date: str | None = None,
@@ -671,7 +736,7 @@ def fetch_property_api_sources(
 
     timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "60") or "60")
 
-    lease_details_payload = _post_method(
+    lease_details_payload = _fetch_all_lease_details_pages(
         endpoint_url=details_url,
         api_key=api_key,
         api_key_header=api_key_header,

@@ -164,10 +164,19 @@
         <div class="col-12">
             <div class="card shadow-sm">
                 <div class="card-header bg-light border-bottom">
-                    <h5 class="mb-0">
-                        <i class="fas fa-table"></i> Leases
-                        <span class="badge bg-secondary ms-2">{{ lease_summary|length }} Total</span>
-                    </h5>
+                    <div class="d-flex flex-wrap align-items-center gap-3 py-1">
+                        <h5 class="mb-0 me-auto">
+                            <i class="fas fa-table"></i> Leases
+                            <span class="badge bg-secondary ms-2">{{ lease_summary|length }} Total</span>
+                        </h5>
+                        <input type="text" id="leaseSearch" class="form-control form-control-sm" placeholder="Search resident…" style="width: 200px;">
+                        <select id="statusFilter" class="form-select form-select-sm" style="width: 155px;">
+                            <option value="">All Statuses</option>
+                            <option value="clean">Clean</option>
+                            <option value="disc">Has Discrepancies</option>
+                        </select>
+                        <span id="leaseCount" class="text-muted small text-nowrap"></span>
+                    </div>
                 </div>
                 <div class="card-body p-0">
                     {% if lease_summary %}
@@ -175,22 +184,29 @@
                         <table class="table table-hover table-bordered mb-0" id="leasesTable" style="border-collapse: collapse;">
                             <thead style="background-color: #f8f9fa; position: sticky; top: 0; z-index: 10;">
                                 <tr style="border-bottom: 2px solid #dee2e6;">
-                                    <th class="sortable" data-sort="customer_name" style="width: 180px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">
-                                        Resident Name <span id="customerSortIcon" style="font-size: 1em; color: #000;">↓</span>
+                                    <th class="sortable" data-sort="customer_name" style="width: 180px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">
+                                        Resident Name <span class="sort-icon" style="font-size: 1em; color: #000;">↓</span>
                                     </th>
-                                    <th style="width: 150px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease ID</th>
-                                    <th style="width: 170px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Lease Interval ID</th>
-                                    <th class="text-center" style="width: 100px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Matched</th>
-                                    <th class="text-center sortable" data-sort="exceptions" style="width: 110px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer;">Discrepancies <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span></th>
-                                    <th class="text-end" style="width: 130px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Variance</th>
-                                    <th class="text-center" style="width: 100px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6;">Status</th>
+                                    <th class="sortable" data-sort="lease_id" style="width: 150px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Lease ID <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
+                                    <th class="sortable" data-sort="lease_interval_id" style="width: 170px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Lease Interval ID <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
+                                    <th class="text-center sortable" data-sort="matched" style="width: 100px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Matched <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
+                                    <th class="text-center sortable" data-sort="exceptions" style="width: 110px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Discrepancies <span class="sort-icon" style="font-size: 1em; color: #000;">↓</span></th>
+                                    <th class="text-end sortable" data-sort="variance" style="width: 130px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Variance <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
+                                    <th class="text-center sortable" data-sort="status" style="width: 100px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Status <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
                                     <th class="text-center" style="width: 80px; padding: 12px; font-weight: 600; color: #495057;">Details</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for lease in lease_summary %}
-                                <tr class="lease-row" style="cursor: pointer; transition: background-color 0.15s;" 
+                                <tr class="lease-row" style="cursor: pointer; transition: background-color 0.15s;"
                                     data-lease-url="{{ url_for('main.lease_view', property_id=property_id, lease_interval_id=lease.lease_interval_id) }}?run_id={{ run_id|urlencode }}"
+                                    data-customer-name="{{ (lease.customer_name or '') | lower | e }}"
+                                    data-lease-id="{{ (lease.lease_id or 0) | int }}"
+                                    data-lease-interval-id="{{ lease.lease_interval_id | int }}"
+                                    data-matched="{{ lease.matched_count }}"
+                                    data-exceptions="{{ lease.exception_count }}"
+                                    data-variance="{{ lease.total_variance | abs }}"
+                                    data-status="{{ lease.status_label | lower | e }}"
                                     onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href=this.dataset.leaseUrl;">
                                     <td style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
                                         {{ lease.customer_name if lease.customer_name else '' }}
@@ -260,90 +276,92 @@
 </style>
 
 <script>
-    // Auto-sort by exceptions (descending) on page load
     document.addEventListener('DOMContentLoaded', function() {
         const table = document.getElementById('leasesTable');
+        if (!table) return;
         const tbody = table.querySelector('tbody');
-        const customerIcon = document.getElementById('customerSortIcon');
-        const exceptionsIcon = document.getElementById('exceptionsSortIcon');
-        
-        let currentSort = {
-            column: null,
-            order: 'desc'
-        };
-        
-        // Sort by customer name
-        function sortByCustomer() {
-            const rows = Array.from(tbody.querySelectorAll('tr'));
-            currentSort.order = currentSort.column === 'customer_name' && currentSort.order === 'asc' ? 'desc' : 'asc';
-            currentSort.column = 'customer_name';
-            
-            rows.sort((a, b) => {
-                const nameA = a.cells[0].textContent.trim().toLowerCase();
-                const nameB = b.cells[0].textContent.trim().toLowerCase();
-                
-                if (currentSort.order === 'asc') {
-                    return nameA.localeCompare(nameB);
-                } else {
-                    return nameB.localeCompare(nameA);
-                }
+        const allRows = Array.from(tbody.querySelectorAll('tr.lease-row'));
+        const searchInput = document.getElementById('leaseSearch');
+        const statusFilter = document.getElementById('statusFilter');
+        const countDisplay = document.getElementById('leaseCount');
+
+        let currentSort = { column: 'exceptions', direction: 'desc' };
+
+        function updateIcons() {
+            table.querySelectorAll('.sortable .sort-icon').forEach(icon => {
+                icon.textContent = '↕';
+                icon.style.color = '#999';
             });
-            
-            // Update icons
-            customerIcon.textContent = currentSort.order === 'asc' ? '↑' : '↓';
-            customerIcon.style.color = '#000';
-            exceptionsIcon.textContent = '↕';
-            exceptionsIcon.style.color = '#999';
-            
-            // Re-append sorted rows
-            rows.forEach(row => tbody.appendChild(row));
-        }
-        
-        // Sort by exceptions
-        function sortByExceptions() {
-            const rows = Array.from(tbody.querySelectorAll('tr'));
-            // Toggle only if already sorting by exceptions
-            if (currentSort.column === 'exceptions') {
-                currentSort.order = currentSort.order === 'desc' ? 'asc' : 'desc';
-            } else {
-                currentSort.order = 'desc'; // Default to descending
-                currentSort.column = 'exceptions';
+            const active = table.querySelector(`.sortable[data-sort="${currentSort.column}"] .sort-icon`);
+            if (active) {
+                active.textContent = currentSort.direction === 'asc' ? '↑' : '↓';
+                active.style.color = '#000';
             }
-            
-            rows.sort((a, b) => {
-                const countA = parseInt(a.cells[4].textContent.trim()) || 0;
-                const countB = parseInt(b.cells[4].textContent.trim()) || 0;
-                
-                if (currentSort.order === 'asc') {
-                    return countA - countB;
-                } else {
-                    return countB - countA;
-                }
-            });
-            
-            // Update icons
-            exceptionsIcon.textContent = currentSort.order === 'asc' ? '↑' : '↓';
-            exceptionsIcon.style.color = '#000';
-            customerIcon.textContent = '↕';
-            customerIcon.style.color = '#999';
-            
-            // Re-append sorted rows
-            rows.forEach(row => tbody.appendChild(row));
         }
 
-        // Add click handlers
-        const customerHeader = table.querySelector('.sortable[data-sort="customer_name"]');
-        if (customerHeader) {
-            customerHeader.addEventListener('click', sortByCustomer);
+        function applyFiltersAndSort() {
+            const term = (searchInput ? searchInput.value : '').trim().toLowerCase();
+            const status = statusFilter ? statusFilter.value : '';
+
+            const visible = allRows.filter(row => {
+                const name = row.dataset.customerName || '';
+                const exc = parseInt(row.dataset.exceptions || '0');
+                if (term && !name.includes(term)) return false;
+                if (status === 'clean' && exc > 0) return false;
+                if (status === 'disc' && exc === 0) return false;
+                return true;
+            });
+
+            const { column, direction } = currentSort;
+            visible.sort((a, b) => {
+                if (column === 'customer_name') {
+                    const av = a.dataset.customerName || '';
+                    const bv = b.dataset.customerName || '';
+                    return direction === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+                }
+                if (column === 'status') {
+                    const av = a.dataset.status || '';
+                    const bv = b.dataset.status || '';
+                    return direction === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+                }
+                const numMap = {
+                    lease_id: 'leaseId',
+                    lease_interval_id: 'leaseIntervalId',
+                    matched: 'matched',
+                    exceptions: 'exceptions',
+                    variance: 'variance'
+                };
+                const key = numMap[column] || column;
+                const av = parseFloat(a.dataset[key] || '0') || 0;
+                const bv = parseFloat(b.dataset[key] || '0') || 0;
+                return direction === 'asc' ? av - bv : bv - av;
+            });
+
+            allRows.forEach(r => r.style.display = 'none');
+            visible.forEach(r => {
+                r.style.display = '';
+                tbody.appendChild(r);
+            });
+
+            if (countDisplay) {
+                countDisplay.textContent = `Showing ${visible.length} of ${allRows.length}`;
+            }
+            updateIcons();
         }
-        
-        const exceptionsHeader = table.querySelector('.sortable[data-sort="exceptions"]');
-        if (exceptionsHeader) {
-            exceptionsHeader.addEventListener('click', sortByExceptions);
-        }
-        
-        // Initial sort by exceptions (descending)
-        sortByExceptions();
+
+        table.querySelectorAll('.sortable').forEach(header => {
+            header.addEventListener('click', function() {
+                const col = this.dataset.sort;
+                currentSort.direction = currentSort.column === col && currentSort.direction === 'desc' ? 'asc' : 'desc';
+                currentSort.column = col;
+                applyFiltersAndSort();
+            });
+        });
+
+        if (searchInput) searchInput.addEventListener('input', applyFiltersAndSort);
+        if (statusFilter) statusFilter.addEventListener('change', applyFiltersAndSort);
+
+        applyFiltersAndSort();
     });
 </script>
 {% endblock %}

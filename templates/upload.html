@@ -3,162 +3,109 @@
 {% block title %}Upload File - Lease File Audit{% endblock %}
 
 {% block content %}
-<style>
-    .info-icon {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 18px;
-        height: 18px;
-        border-radius: 50%;
-        background-color: #6c757d;
-        color: white;
-        font-size: 12px;
-        font-weight: bold;
-        cursor: help;
-        margin-left: 8px;
-        user-select: none;
-    }
-    
-    .info-icon:hover {
-        background-color: #5a6268;
-    }
-</style>
-
 <div style="width: 100%; padding: 20px 40px;">
         <div class="card" style="max-width: 1200px; margin: 0 auto;">
             <div class="card-header">
-                <h4 class="mb-0"><i class="fas fa-upload me-2"></i>Upload Lease Data for Audit</h4>
+                <h4 class="mb-0"><i class="fas fa-network-wired me-2"></i>Run Lease Audit</h4>
             </div>
             <div class="card-body">
-                <form method="POST" action="{{ url_for('main.upload') }}" enctype="multipart/form-data">
-                    <div class="mb-3">
-                        <label for="file" class="form-label fw-bold">
-                            Select Excel File (.xlsx)
-                            <span class="info-icon" 
-                                  data-bs-toggle="tooltip" 
-                                  data-bs-html="true"
-                                  data-bs-placement="right"
-                                  title="<strong>Required sheets:</strong><br>
-                                         • <strong>AR Transactions</strong>: PROPERTY_ID, LEASE_INTERVAL_ID, AR_CODE_ID, TRANSACTION_AMOUNT, POST_MONTH_DATE, IS_POSTED, IS_DELETED, IS_REVERSAL, ID<br>
-                                         • <strong>Scheduled Charges</strong>: SCHEDULED_CHARGES_ID, PROPERTY_ID, LEASE_INTERVAL_ID, AR_CODE_ID, CHARGE_AMOUNT, DATE_CHARGE_START, DATE_CHARGE_END">ⓘ</span>
-                        </label>
-                        <input type="file" class="form-control" id="file" name="file" accept=".xlsx" required>
-                    </div>
-                    
-                    <div class="card mb-3" style="border: 2px solid #00a8c8; background-color: #f8fcfd;">
-                        <div class="card-body">
-                            <h6 class="card-title" style="color: #00a8c8;"><i class="fas fa-calendar-check me-2"></i>Audit Period</h6>
-                            <p class="text-muted small">Filter audit to specific year/month.</p>
-                            <div class="row">
-                                <div class="col-md-6">
-                                    <label for="audit_year" class="form-label">Year</label>
-                                    <select class="form-select" id="audit_year" name="audit_year">
-                                        <option value="">Current Academic Year</option>
-                                        <option value="2025">2025</option>
-                                        <option value="2026">2026</option>
-                                        <option value="2027">2027</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-6">
-                                    <label for="audit_month" class="form-label">Month</label>
-                                    <select class="form-select" id="audit_month" name="audit_month">
-                                        <option value="">All Months</option>
-                                        <option value="1">January</option>
-                                        <option value="2">February</option>
-                                        <option value="3">March</option>
-                                        <option value="4">April</option>
-                                        <option value="5">May</option>
-                                        <option value="6">June</option>
-                                        <option value="7">July</option>
-                                        <option value="8">August</option>
-                                        <option value="9">September</option>
-                                        <option value="10">October</option>
-                                        <option value="11">November</option>
-                                        <option value="12">December</option>
-                                    </select>
-                                </div>
+                <p class="text-muted mb-4">Launch audits directly from Entrata without using the Excel upload workflow.</p>
+
+                <div class="row g-4">
+                    <div class="col-lg-7">
+                        <div class="card h-100" style="border: 2px solid #00a8c8; background-color: #f8fcfd;">
+                            <div class="card-body">
+                                <h5 class="mb-3" style="color: #00a8c8;"><i class="fas fa-building me-2"></i>Run Property Audit</h5>
+                                <p class="text-muted small">Fetch all lease activity for a property and run the standard reconciliation pipeline.</p>
+                                <form method="POST" action="{{ url_for('main.upload_api_property') }}">
+                                    <div class="row g-3">
+                                        <div class="col-md-12">
+                                            <label for="api_property_id" class="form-label fw-bold">Property ID</label>
+                                            {% if api_property_options %}
+                                            <select class="form-select" id="api_property_id" name="api_property_id" required>
+                                                <option value="">Select Property...</option>
+                                                {% for property in api_property_options %}
+                                                <option value="{{ property.property_id }}">{{ property.property_name }} ({{ property.property_id }})</option>
+                                                {% endfor %}
+                                            </select>
+                                            {% else %}
+                                            <input type="number" step="1" class="form-control" id="api_property_id" name="api_property_id" required>
+                                            <small class="text-muted">Property picklist unavailable; enter Property ID manually.</small>
+                                            {% endif %}
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="api_from_date" class="form-label">Transaction From Date</label>
+                                            <input type="date" class="form-control" id="api_from_date" name="api_from_date">
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="api_to_date" class="form-label">Transaction To Date</label>
+                                            <input type="date" class="form-control" id="api_to_date" name="api_to_date">
+                                        </div>
+                                    </div>
+
+                                    <div class="mt-3">
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="fas fa-search me-2"></i>Run Property Audit
+                                        </button>
+                                    </div>
+                                </form>
                             </div>
                         </div>
                     </div>
-                    
-                    <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-cloud-upload-alt me-2"></i>Upload and Run Audit
-                    </button>
-                </form>
 
-                <hr class="my-4">
+                    <div class="col-lg-5">
+                        <div class="card h-100" style="border: 2px solid #198754; background-color: #fbfefc;">
+                            <div class="card-body">
+                                <h5 class="mb-3" style="color: #198754;"><i class="fas fa-user-check me-2"></i>Run Single Lease Audit</h5>
+                                <p class="text-muted small">Analyze one resident lease without fetching the full property dataset.</p>
+                                <form method="POST" action="{{ url_for('main.upload_api_lease') }}">
+                                    <div class="row g-3">
+                                        <div class="col-12">
+                                            <label for="api_lease_id" class="form-label fw-bold">Lease ID</label>
+                                            <input type="number" step="1" class="form-control" id="api_lease_id" name="api_lease_id" required placeholder="e.g. 12345">
+                                        </div>
+                                        <div class="col-12">
+                                            <label for="api_lease_property_id" class="form-label">Property ID (optional)</label>
+                                            <input type="number" step="1" class="form-control" id="api_lease_property_id" name="api_lease_property_id" placeholder="Auto-detected if not provided">
+                                            <small class="text-muted">Usually auto-detected from lease data.</small>
+                                        </div>
+                                        <div class="col-12">
+                                            <label for="api_lease_from_date" class="form-label">Transaction From Date</label>
+                                            <input type="date" class="form-control" id="api_lease_from_date" name="api_lease_from_date">
+                                        </div>
+                                    </div>
 
-                <h5 class="mb-3"><i class="fas fa-network-wired me-2"></i>Run Property Audit from API</h5>
-                <form method="POST" action="{{ url_for('main.upload_api_property') }}">
-                    <div class="row g-3">
-                        <div class="col-md-4">
-                            <label for="api_property_id" class="form-label fw-bold">Property ID</label>
-                            {% if api_property_options %}
-                            <select class="form-select" id="api_property_id" name="api_property_id" required>
-                                <option value="">Select Property...</option>
-                                {% for property in api_property_options %}
-                                <option value="{{ property.property_id }}">{{ property.property_name }} ({{ property.property_id }})</option>
-                                {% endfor %}
-                            </select>
-                            {% else %}
-                            <input type="number" step="1" class="form-control" id="api_property_id" name="api_property_id" required>
-                            <small class="text-muted">Property picklist unavailable; enter Property ID manually.</small>
-                            {% endif %}
-                        </div>
-                        <div class="col-md-4">
-                            <label for="api_from_date" class="form-label">Transaction From Date</label>
-                            <input type="date" class="form-control" id="api_from_date" name="api_from_date">
-                        </div>
-                        <div class="col-md-4">
-                            <label for="api_to_date" class="form-label">Transaction To Date</label>
-                            <input type="date" class="form-control" id="api_to_date" name="api_to_date">
+                                    <div class="mt-3">
+                                        <button type="submit" class="btn btn-outline-success">
+                                            <i class="fas fa-user-check me-2"></i>Run Single Lease Audit
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
                         </div>
                     </div>
-
-                    <div class="mt-3">
-                        <button type="submit" class="btn btn-outline-primary">
-                            <i class="fas fa-search me-2"></i>Fetch API Data and Run Audit
-                        </button>
-                    </div>
-                </form>
-
-                <hr class="my-4">
-
-                <h5 class="mb-3"><i class="fas fa-user-check me-2"></i>Run Single Lease Audit from API</h5>
-                <p class="text-muted small">Analyze one resident's lease without fetching entire property data.</p>
-                <form method="POST" action="{{ url_for('main.upload_api_lease') }}">
-                    <div class="row g-3">
-                        <div class="col-md-4">
-                            <label for="api_lease_id" class="form-label fw-bold">Lease ID</label>
-                            <input type="number" step="1" class="form-control" id="api_lease_id" name="api_lease_id" required placeholder="e.g. 12345">
-                        </div>
-                        <div class="col-md-4">
-                            <label for="api_lease_property_id" class="form-label">Property ID (optional)</label>
-                            <input type="number" step="1" class="form-control" id="api_lease_property_id" name="api_lease_property_id" placeholder="Auto-detected if not provided">
-                            <small class="text-muted">Usually auto-detected from lease data.</small>
-                        </div>
-                        <div class="col-md-4">
-                            <label for="api_lease_from_date" class="form-label">Transaction From Date</label>
-                            <input type="date" class="form-control" id="api_lease_from_date" name="api_lease_from_date">
-                        </div>
-                    </div>
-
-                    <div class="mt-3">
-                        <button type="submit" class="btn btn-outline-success">
-                            <i class="fas fa-user-check me-2"></i>Fetch Single Lease and Run Audit
-                        </button>
-                    </div>
-                </form>
+                </div>
             </div>
         </div>
 
         {% if recent_runs %}
         <div class="card mt-4">
-            <div class="card-header">
+            <div class="card-header d-flex align-items-center justify-content-between">
                 <h5 class="mb-0">Recent Audit Runs</h5>
+                <button
+                    class="btn btn-sm btn-light"
+                    type="button"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#recentRunsCollapse"
+                    aria-expanded="false"
+                    aria-controls="recentRunsCollapse"
+                >
+                    Show Latest 5
+                </button>
             </div>
+            <div id="recentRunsCollapse" class="collapse">
             <div class="card-body">
+                <p class="text-muted small mb-3">Showing the 5 most recent audit runs.</p>
                 <div class="table-responsive">
                     <table class="table table-hover">
                         <thead>
@@ -184,26 +131,8 @@
                     </table>
                 </div>
             </div>
+            </div>
         </div>
         {% endif %}
 </div>
-{% endblock %}
-
-{% block extra_js %}
-<script>
-    // Initialize Bootstrap tooltips and set default audit period
-    document.addEventListener('DOMContentLoaded', function() {
-        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-        var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
-            return new bootstrap.Tooltip(tooltipTriggerEl);
-        });
-        
-        // Default to Current Academic Year (blank option) and All Months
-        const yearDropdown = document.getElementById('audit_year');
-        if (yearDropdown && yearDropdown.options.length > 0) {
-            yearDropdown.selectedIndex = 0;
-        }
-        
-    });
-</script>
 {% endblock %}

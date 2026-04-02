@@ -1981,7 +1981,7 @@ def index():
     logger = logging.getLogger(__name__)
     
     storage = get_storage_service()
-    recent_runs = storage.list_runs(limit=10)
+    recent_runs = storage.list_runs(limit=5)
     api_property_options = []
     try:
         api_property_options = cached_load_api_property_picklist(_session_cache_token())

@@ -92,30 +92,50 @@
     <div class="row">
         <div class="col-12">
             <div class="card">
-                <div class="card-header bg-light">
-                    <h5 class="mb-0">Properties</h5>
+                <div class="card-header bg-light d-flex flex-wrap align-items-center gap-3 py-2">
+                    <h5 class="mb-0 me-auto">Properties</h5>
+                    <input type="text" id="portfolioSearch" class="form-control form-control-sm" placeholder="Search by property name…" style="width: 210px;">
+                    <div class="form-check mb-0 d-flex align-items-center gap-1">
+                        <input class="form-check-input mt-0" type="checkbox" id="discrepanciesOnly">
+                        <label class="form-check-label small text-nowrap" for="discrepanciesOnly" style="cursor: pointer;">Discrepancies only</label>
+                    </div>
+                    <span id="portfolioCount" class="text-muted small text-nowrap"></span>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
                         <table class="table table-hover mb-0" id="propertiesTable">
                             <thead class="table-light">
                                 <tr>
-                                    <th class="sortable" data-sort="property_name" style="cursor: pointer;">
-                                        Property Name <span id="propertyNameSortIcon" style="font-size: 1em; color: #999;">↕</span>
+                                    <th class="sortable" data-sort="property_name" style="cursor: pointer; user-select: none;">
+                                        Property Name <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
                                     </th>
-                                    <th>Property ID</th>
-                                    <th class="text-center sortable" data-sort="exceptions" style="cursor: pointer;">
-                                        Discrepancies <span id="exceptionsSortIcon" style="font-size: 1em; color: #000;">↓</span>
+                                    <th class="sortable" data-sort="property_id" style="cursor: pointer; user-select: none;">
+                                        Property ID <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
                                     </th>
-                                    <th class="text-end">Undercharge</th>
-                                    <th class="text-end">Overcharge</th>
-                                    <th class="text-end">Total Variance</th>
+                                    <th class="text-center sortable" data-sort="exceptions" style="cursor: pointer; user-select: none;">
+                                        Discrepancies <span class="sort-icon" style="font-size: 1em; color: #000;">↓</span>
+                                    </th>
+                                    <th class="text-end sortable" data-sort="undercharge" style="cursor: pointer; user-select: none;">
+                                        Undercharge <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
+                                    </th>
+                                    <th class="text-end sortable" data-sort="overcharge" style="cursor: pointer; user-select: none;">
+                                        Overcharge <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
+                                    </th>
+                                    <th class="text-end sortable" data-sort="variance" style="cursor: pointer; user-select: none;">
+                                        Total Variance <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
+                                    </th>
                                     <th class="text-center">Details</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for property in properties %}
-                                <tr style="cursor: pointer; transition: background-color 0.15s;" 
+                                <tr style="cursor: pointer; transition: background-color 0.15s;"
+                                    data-property-name="{{ (property.property_name or '') | lower | e }}"
+                                    data-property-id="{{ property.property_id | int }}"
+                                    data-exceptions="{{ property.exception_buckets }}"
+                                    data-undercharge="{{ property.total_undercharge }}"
+                                    data-overcharge="{{ property.total_overcharge }}"
+                                    data-variance="{{ property.total_variance | abs }}"
                                     onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href='{{ url_for('main.property_view', property_id=property.property_id, run_id=property.run_id) }}'">
                                     <td><strong>{{ property.property_name if property.property_name else '-' }}</strong></td>
                                     <td>{{ property.property_id|int }}</td>
@@ -243,75 +263,88 @@ document.addEventListener('DOMContentLoaded', function() {
         selector.addEventListener('touchstart', loadRunsForPicker, { once: true });
     }
 
+});
+
+document.addEventListener('DOMContentLoaded', function() {
     const table = document.getElementById('propertiesTable');
+    if (!table) return;
     const tbody = table.querySelector('tbody');
-    const rows = Array.from(tbody.querySelectorAll('tr'));
-    
-    let currentSort = {
-        column: 'exceptions',
-        direction: 'desc'
-    };
-    
-    // Store original data in rows
-    rows.forEach(row => {
-        const cells = row.querySelectorAll('td');
-        row.dataset.propertyName = cells[0].textContent.trim();
-        row.dataset.exceptions = parseInt(cells[3].textContent.replace(/\D/g, '') || '0');
-    });
-    
-    // Sort function
-    function sortTable(column, direction) {
-        const sortedRows = [...rows].sort((a, b) => {
-            let aVal, bVal;
-            
-            if (column === 'property_name') {
-                aVal = a.dataset.propertyName.toLowerCase();
-                bVal = b.dataset.propertyName.toLowerCase();
-                return direction === 'asc' 
-                    ? aVal.localeCompare(bVal)
-                    : bVal.localeCompare(aVal);
-            } else if (column === 'exceptions') {
-                aVal = parseInt(a.dataset.exceptions);
-                bVal = parseInt(b.dataset.exceptions);
-                return direction === 'asc' 
-                    ? aVal - bVal
-                    : bVal - aVal;
-            }
-            return 0;
-        });
-        
-        // Clear and repopulate tbody
-        tbody.innerHTML = '';
-        sortedRows.forEach(row => tbody.appendChild(row));
-        
-        // Update sort icons
-        table.querySelectorAll('.sortable span').forEach(icon => {
+    const allRows = Array.from(tbody.querySelectorAll('tr'));
+    const searchInput = document.getElementById('portfolioSearch');
+    const discrepanciesOnlyCheck = document.getElementById('discrepanciesOnly');
+    const countDisplay = document.getElementById('portfolioCount');
+
+    let currentSort = { column: 'exceptions', direction: 'desc' };
+
+    function updateIcons() {
+        table.querySelectorAll('.sortable .sort-icon').forEach(icon => {
             icon.textContent = '↕';
             icon.style.color = '#999';
         });
-        
-        const activeHeader = table.querySelector(`.sortable[data-sort="${column}"] span`);
-        if (activeHeader) {
-            activeHeader.textContent = direction === 'asc' ? '↑' : '↓';
-            activeHeader.style.color = '#000';
+        const active = table.querySelector(`.sortable[data-sort="${currentSort.column}"] .sort-icon`);
+        if (active) {
+            active.textContent = currentSort.direction === 'asc' ? '↑' : '↓';
+            active.style.color = '#000';
         }
-        
-        currentSort = { column, direction };
     }
-    
-    // Add click handlers to sortable headers
+
+    function applyFiltersAndSort() {
+        const term = (searchInput ? searchInput.value : '').trim().toLowerCase();
+        const discOnly = discrepanciesOnlyCheck ? discrepanciesOnlyCheck.checked : false;
+
+        const visible = allRows.filter(row => {
+            const name = row.dataset.propertyName || '';
+            const exc = parseInt(row.dataset.exceptions || '0');
+            if (term && !name.includes(term)) return false;
+            if (discOnly && exc === 0) return false;
+            return true;
+        });
+
+        const { column, direction } = currentSort;
+        visible.sort((a, b) => {
+            if (column === 'property_name') {
+                const av = a.dataset.propertyName || '';
+                const bv = b.dataset.propertyName || '';
+                return direction === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+            }
+            const numMap = {
+                property_id: 'propertyId',
+                exceptions: 'exceptions',
+                undercharge: 'undercharge',
+                overcharge: 'overcharge',
+                variance: 'variance'
+            };
+            const key = numMap[column] || column;
+            const av = parseFloat(a.dataset[key] || '0') || 0;
+            const bv = parseFloat(b.dataset[key] || '0') || 0;
+            return direction === 'asc' ? av - bv : bv - av;
+        });
+
+        allRows.forEach(r => r.style.display = 'none');
+        visible.forEach(r => {
+            r.style.display = '';
+            tbody.appendChild(r);
+        });
+
+        if (countDisplay) {
+            countDisplay.textContent = `Showing ${visible.length} of ${allRows.length}`;
+        }
+        updateIcons();
+    }
+
     table.querySelectorAll('.sortable').forEach(header => {
         header.addEventListener('click', function() {
-            const column = this.dataset.sort;
-            const direction = currentSort.column === column && currentSort.direction === 'desc' 
-                ? 'asc' 
-                : 'desc';
-            sortTable(column, direction);
+            const col = this.dataset.sort;
+            currentSort.direction = currentSort.column === col && currentSort.direction === 'desc' ? 'asc' : 'desc';
+            currentSort.column = col;
+            applyFiltersAndSort();
         });
     });
-    
-    // Initial sort by exceptions (descending)
-    sortTable('exceptions', 'desc');
+
+    if (searchInput) searchInput.addEventListener('input', applyFiltersAndSort);
+    if (discrepanciesOnlyCheck) discrepanciesOnlyCheck.addEventListener('change', applyFiltersAndSort);
+
+    applyFiltersAndSort();
 });
 </script>
 
