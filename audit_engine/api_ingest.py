@@ -717,6 +717,38 @@ def _fetch_all_lease_details_pages(
     return merged
 
 
+
+def _is_other_income_lease_node(node: dict[str, Any]) -> bool:
+    """Return True if this lease node is an Other Income lease.
+
+    Other Income leases in Entrata have only leaseId + name and are missing
+    the unit/floorplan fields present on every real residential lease.
+    """
+    return not node.get("unitTypeId") and not node.get("propertyUnitId")
+
+
+def _strip_other_income_lease_nodes(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Remove Other Income lease nodes from the merged details payload.
+    Returns (filtered_payload, count_removed).
+    """
+    all_nodes = _extract_lease_nodes(payload)
+    kept = [n for n in all_nodes if not _is_other_income_lease_node(n)]
+    dropped = len(all_nodes) - len(kept)
+
+    if dropped:
+        print(f"[OTHER INCOME FILTER] Removed {dropped} Other Income lease node(s) before processing")
+
+    merged = dict(payload)
+    response = dict(merged.get("response") or {})
+    result = dict(response.get("result") or {})
+    leases = dict(result.get("leases") or {})
+    leases["lease"] = kept
+    result["leases"] = leases
+    response["result"] = result
+    merged["response"] = response
+    return merged, dropped
+
+
 def fetch_property_api_sources(
     property_id: int,
     transaction_from_date: str | None = None,
@@ -736,6 +768,7 @@ def fetch_property_api_sources(
 
     timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "60") or "60")
 
+    # Step 1: Fetch all lease detail pages.
     lease_details_payload = _fetch_all_lease_details_pages(
         endpoint_url=details_url,
         api_key=api_key,
@@ -751,6 +784,9 @@ def fetch_property_api_sources(
         },
     )
 
+    # Step 2: Strip Other Income lease nodes before anything is parsed or audited.
+    lease_details_payload, _ = _strip_other_income_lease_nodes(lease_details_payload)
+
     lease_nodes = _extract_lease_nodes(lease_details_payload)
     property_name = ""
     if lease_nodes:
@@ -758,8 +794,10 @@ def fetch_property_api_sources(
     if not property_name:
         property_name = f"Property {int(property_id)}"
 
+    # Step 3: Build scheduled charges only from the already-filtered lease nodes.
     scheduled_df, lease_ids = _build_scheduled_df(int(property_id), property_name, lease_details_payload)
 
+    # Step 4: Fetch AR transactions scoped to the surviving lease IDs.
     lease_ids_csv = ",".join(_to_str(item) for item in lease_ids if _to_str(item))
 
     ar_params: dict[str, Any] = {
