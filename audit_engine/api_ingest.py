@@ -26,6 +26,18 @@ def _to_str(value: Any) -> str:
     return str(value).strip()
 
 
+def _contains_deleted_never_posted_marker(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, dict):
+        return any(_contains_deleted_never_posted_marker(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_deleted_never_posted_marker(item) for item in value)
+
+    text = _to_str(value).lower()
+    return bool(text) and ("deleted" in text and "never posted" in text)
+
+
 def _to_yyyymmdd_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
@@ -340,18 +352,69 @@ def _extract_charges_from_interval(interval_node: dict[str, Any]) -> list[dict[s
                 merged.setdefault("installmentEndDate", installment.get("installmentEndDate"))
                 installment_charges.append(merged)
 
+    seen_signatures: set[tuple[str, str, str, str, str, str, str]] = set()
+
+    def _append_charge(charge: dict[str, Any]) -> None:
+        signature = (
+            _to_str(charge.get("scheduledChargeId") or charge.get("scheduledChargeID") or charge.get("id")),
+            _to_str(charge.get("arCodeId")),
+            _to_str(charge.get("chargeCode")),
+            _to_str(charge.get("chargeTiming")),
+            _to_str(charge.get("amount")),
+            _to_str(charge.get("chargeStartDate") or charge.get("installmentStartDate")),
+            _to_str(charge.get("chargeEndDate") or charge.get("installmentEndDate")),
+        )
+        if signature in seen_signatures:
+            return
+        seen_signatures.add(signature)
+        rows.append(charge)
+
     for source in [active, past, direct]:
         for charge in _as_list(source):
             if isinstance(charge, dict):
-                rows.append(charge)
+                _append_charge(charge)
 
-    rows.extend(installment_charges)
+    for charge in installment_charges:
+        _append_charge(charge)
     return rows
 
 
 def _is_deleted_never_posted(value: Any) -> bool:
-    text = _to_str(value).lower()
-    return bool(text) and ("deleted" in text and "never posted" in text)
+    return _contains_deleted_never_posted_marker(value)
+
+
+def _resolve_scheduled_posting_marker(charge: dict[str, Any], interval_node: dict[str, Any] | None = None) -> str:
+    candidates = [
+        charge.get("postedThrough"),
+        charge.get("posted_through"),
+        charge.get("postedThroughDate"),
+        charge.get("lastPosted"),
+        charge.get("last_posted"),
+    ]
+
+    if interval_node:
+        candidates.extend([
+            interval_node.get("postedThrough"),
+            interval_node.get("posted_through"),
+            interval_node.get("postedThroughDate"),
+            interval_node.get("lastPosted"),
+            interval_node.get("last_posted"),
+        ])
+
+    for candidate in candidates:
+        text = _to_str(candidate)
+        if text:
+            return text
+
+    return ""
+
+
+def _charge_is_deleted_never_posted(charge: dict[str, Any], interval_node: dict[str, Any] | None = None) -> bool:
+    if _contains_deleted_never_posted_marker(charge):
+        return True
+    if interval_node and _contains_deleted_never_posted_marker(interval_node):
+        return True
+    return _is_deleted_never_posted(_resolve_scheduled_posting_marker(charge, interval_node=interval_node))
 
 
 def _is_one_time_charge(charge: dict[str, Any], interval_node: dict[str, Any] | None = None) -> bool:
@@ -428,13 +491,8 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
 
             charges = _extract_charges_from_interval(interval_node)
             for charge_index, charge in enumerate(charges, start=1):
-                posted_through_value = (
-                    charge.get("postedThrough")
-                    or charge.get("posted_through")
-                    or charge.get("postedThroughDate")
-                    or interval_node.get("postedThrough")
-                )
-                if _is_deleted_never_posted(posted_through_value):
+                posted_through_value = _resolve_scheduled_posting_marker(charge, interval_node=interval_node)
+                if _charge_is_deleted_never_posted(charge, interval_node=interval_node):
                     continue
 
                 amount = _parse_money(charge.get("amount"))
@@ -486,6 +544,7 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
                             "leaseStartDate": lease_start,
                             "leaseEndDate": lease_end,
                             "postedThrough": _to_str(posted_through_value),
+                            "lastPosted": _to_str(charge.get("lastPosted") or interval_node.get("lastPosted")),
                             "isOneTimeDerived": bool(is_one_time),
                             "finalChargeStart": charge_start,
                             "finalChargeEnd": charge_end,
