@@ -10,36 +10,42 @@
     },
     {
       "term_type": "PET_RENT",
+      "disabled": true,
       "label_patterns": ["pet\\s*rent", "pet\\s*fee"],
       "accepted_ar_codes": ["155034"],
       "expected_frequency": "monthly"
     },
     {
       "term_type": "PARKING",
+      "disabled": true,
       "label_patterns": ["parking", "garage", "carport", "reserved\\s*parking"],
       "accepted_ar_codes": ["155052", "155385"],
       "expected_frequency": "monthly"
     },
     {
       "term_type": "UTILITY",
+      "disabled": true,
       "label_patterns": ["utility", "water", "sewer", "electric", "trash"],
       "accepted_ar_codes": ["155026", "155030", "155023"],
       "expected_frequency": "monthly"
     },
     {
       "term_type": "APPLICATION_FEE",
+      "disabled": true,
       "label_patterns": ["application\\s*fee"],
       "accepted_ar_codes": ["154788"],
       "expected_frequency": "one_time"
     },
     {
       "term_type": "ADMIN_FEE",
+      "disabled": true,
       "label_patterns": ["admin\\s*fee", "administrative\\s*fee"],
       "accepted_ar_codes": ["155012"],
       "expected_frequency": "one_time"
     },
     {
       "term_type": "AMENITY_PREMIUM",
+      "disabled": true,
       "label_patterns": ["amenity\\s*premium", "premium\\s*feature", "premium\\s*amount"],
       "accepted_ar_codes": ["155007"],
       "expected_frequency": "monthly"

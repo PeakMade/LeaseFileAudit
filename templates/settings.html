@@ -55,6 +55,57 @@
 							></textarea>
 						</details>
 
+						<details class="mb-3" open>
+							<summary class="fw-bold mb-2">Current Excluded AR Codes</summary>
+							<textarea
+								class="form-control font-monospace"
+								id="excluded_ar_codes"
+								name="excluded_ar_codes"
+								rows="6"
+								disabled
+							>{{ excluded_ar_codes }}</textarea>
+						</details>
+
+						<details class="mb-4" open>
+							<summary class="fw-bold mb-2">Add AR Codes</summary>
+							<textarea
+								class="form-control"
+								id="add_excluded_ar_codes"
+								name="add_excluded_ar_codes"
+								rows="3"
+								placeholder="One AR code ID per line (integers only)"
+							></textarea>
+						</details>
+
+						<details class="mb-4" open>
+							<summary class="fw-bold mb-2">Audit Scope — Term Types</summary>
+							<p class="text-muted small mb-2">Shows which lease term types are currently included in the audit. Disabled types are skipped entirely.</p>
+							<table class="table table-sm table-bordered mb-0">
+								<thead class="table-light">
+									<tr>
+										<th>Term Type</th>
+										<th>AR Codes</th>
+										<th>Status</th>
+									</tr>
+								</thead>
+								<tbody>
+									{% for term in term_type_statuses %}
+									<tr>
+										<td class="font-monospace">{{ term.term_type }}</td>
+										<td class="font-monospace text-muted small">{{ term.ar_codes | join(', ') }}</td>
+										<td>
+											{% if term.disabled %}
+											<span class="badge bg-secondary">Disabled</span>
+											{% else %}
+											<span class="badge bg-success">Active</span>
+											{% endif %}
+										</td>
+									</tr>
+									{% endfor %}
+								</tbody>
+							</table>
+						</details>
+
 						<div class="d-flex gap-2">
 							<button type="submit" class="btn btn-primary">
 								<i class="fas fa-save me-2"></i>Save Settings

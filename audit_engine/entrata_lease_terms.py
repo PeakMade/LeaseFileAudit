@@ -3369,6 +3369,7 @@ def build_lease_expectation_overlay(
             continue
         by_ar_code[ar_code] = group
         ar_display = format_ar_code_display(ar_code)
+
         group.setdefault("lease_expectation", {
             "has_term": False,
             "status": "no_lease_term",

@@ -4,7 +4,7 @@ Audit Engine - Core audit processing modules.
 from .io import DataSourceLoader, ExcelSourceLoader
 from .normalize import normalize_ar_transactions, normalize_scheduled_charges
 from .expand import expand_scheduled_to_months
-from .reconcile import reconcile_buckets
+from .reconcile import reconcile_buckets, realign_scheduled_intervals, synthesize_missing_scheduled_charges
 from .rules import RuleContext, Rule, RuleRegistry, ARScheduledMatchRule
 from .findings import Finding, generate_findings
 from .metrics import calculate_kpis, calculate_property_summary
@@ -28,6 +28,8 @@ __all__ = [
     "normalize_scheduled_charges",
     "expand_scheduled_to_months",
     "reconcile_buckets",
+    "realign_scheduled_intervals",
+    "synthesize_missing_scheduled_charges",
     "RuleContext",
     "Rule",
     "RuleRegistry",

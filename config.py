@@ -3,7 +3,7 @@ Centralized configuration for Lease File Audit application.
 All mappings, tolerances, and detection rules are defined here.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pathlib import Path
 import os
 
@@ -36,6 +36,11 @@ class ReconciliationConfig:
     status_scheduled_not_billed: str = "SCHEDULED_NOT_BILLED"
     status_billed_not_scheduled: str = "BILLED_NOT_SCHEDULED"
     status_amount_mismatch: str = "AMOUNT_MISMATCH"
+    # Audit window — used for scope-checking rent charges. When set, MISSING_BILLINGS
+    # for rent charges whose scheduled period only partially covers the window are
+    # downgraded to MEDIUM, and charges fully outside the window are suppressed.
+    audit_start: Optional[Any] = None
+    audit_end: Optional[Any] = None
 
 
 @dataclass

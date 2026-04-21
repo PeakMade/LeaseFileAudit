@@ -131,17 +131,17 @@ class SourceMapping:
 
 # ==================== V1 Mappings: AR Transactions ====================
 
-# AR codes posted through API or timed/external charges - exclude from audit to prevent false exceptions
-# These codes should NOT appear in scheduled charges; if they do, they're flagged as "TIMED_OR_EXTERNAL_CHARGE"
+# AR codes excluded from reconciliation per business policy - these codes are filtered from
+# both AR transactions and scheduled charges before auditing to prevent false exceptions.
 
 
 def _load_api_posted_ar_codes() -> List[int]:
     """
-    Load API-posted AR code list from JSON config file.
+    Load the excluded AR codes list from JSON config file.
 
     File path resolution order:
     1) API_POSTED_AR_CODES_PATH environment variable
-    2) <repo_root>/api_posted_ar_codes.json
+    2) <repo_root>/excluded_ar_codes.json
 
     Supported JSON formats:
     - [155023, 154776, ...]
@@ -151,7 +151,7 @@ def _load_api_posted_ar_codes() -> List[int]:
     """
     repo_root = Path(__file__).resolve().parent.parent
     configured_path = os.getenv('API_POSTED_AR_CODES_PATH')
-    codes_path = Path(configured_path) if configured_path else (repo_root / 'api_posted_ar_codes.json')
+    codes_path = Path(configured_path) if configured_path else (repo_root / 'excluded_ar_codes.json')
 
     if not codes_path.exists():
         print(
@@ -171,7 +171,10 @@ def _load_api_posted_ar_codes() -> List[int]:
 
     raw_codes = payload
     if isinstance(payload, dict):
-        raw_codes = payload.get('api_posted_ar_codes')
+        raw_codes = list(payload.get('api_posted_ar_codes') or [])
+        extra = payload.get('base_rent_only_mode')
+        if isinstance(extra, list):
+            raw_codes = raw_codes + extra
 
     if not isinstance(raw_codes, list):
         print(
@@ -206,10 +209,63 @@ def _load_api_posted_ar_codes() -> List[int]:
     return normalized_codes
 
 
-API_POSTED_AR_CODES = _load_api_posted_ar_codes()
+def _load_allowed_ar_codes() -> List[int]:
+    """
+    Load the AR code whitelist from excluded_ar_codes.json (key: 'allowed_ar_codes').
+    When non-empty, ONLY these codes are processed; all others are excluded.
+    Returns an empty list when no whitelist is configured (all codes allowed).
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    configured_path = os.getenv('API_POSTED_AR_CODES_PATH')
+    codes_path = Path(configured_path) if configured_path else (repo_root / 'excluded_ar_codes.json')
 
-API_POSTED_AR_CODES_SET = {int(code) for code in API_POSTED_AR_CODES}
-API_POSTED_AR_CODES_TEXT_SET = {str(code) for code in API_POSTED_AR_CODES_SET}
+    if not codes_path.exists():
+        return []
+
+    try:
+        payload = json.loads(codes_path.read_text(encoding='utf-8-sig'))
+    except Exception:
+        return []
+
+    if not isinstance(payload, dict):
+        return []
+
+    raw_codes = payload.get('allowed_ar_codes') or []
+    if not isinstance(raw_codes, list):
+        return []
+
+    normalized: List[int] = []
+    for raw in raw_codes:
+        try:
+            normalized.append(int(float(raw)))
+        except Exception:
+            pass
+
+    normalized = sorted(set(normalized))
+    if normalized:
+        print(f"[AR CODE WHITELIST] Restricting to {len(normalized)} allowed AR code(s): {normalized}")
+    return normalized
+
+
+API_POSTED_AR_CODES: List[int] = _load_api_posted_ar_codes()
+API_POSTED_AR_CODES_SET: set[int] = {int(code) for code in API_POSTED_AR_CODES}
+API_POSTED_AR_CODES_TEXT_SET: set[str] = {str(code) for code in API_POSTED_AR_CODES_SET}
+
+ALLOWED_AR_CODES: List[int] = _load_allowed_ar_codes()
+ALLOWED_AR_CODES_SET: set[int] = {int(code) for code in ALLOWED_AR_CODES}
+ALLOWED_AR_CODES_TEXT_SET: set[str] = {str(code) for code in ALLOWED_AR_CODES_SET}
+
+
+def reload_excluded_ar_codes() -> None:
+    """Reload excluded AR code list and whitelist from JSON config file into module-level caches."""
+    global API_POSTED_AR_CODES, API_POSTED_AR_CODES_SET, API_POSTED_AR_CODES_TEXT_SET
+    global ALLOWED_AR_CODES, ALLOWED_AR_CODES_SET, ALLOWED_AR_CODES_TEXT_SET
+    API_POSTED_AR_CODES = _load_api_posted_ar_codes()
+    API_POSTED_AR_CODES_SET = {int(code) for code in API_POSTED_AR_CODES}
+    API_POSTED_AR_CODES_TEXT_SET = {str(code) for code in API_POSTED_AR_CODES_SET}
+    ALLOWED_AR_CODES = _load_allowed_ar_codes()
+    ALLOWED_AR_CODES_SET = {int(code) for code in ALLOWED_AR_CODES}
+    ALLOWED_AR_CODES_TEXT_SET = {str(code) for code in ALLOWED_AR_CODES_SET}
 
 
 def _normalize_name_token(value: Any) -> str | None:
@@ -572,9 +628,9 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     They will be flagged as special variance types during reconciliation (REVERSED_BILLING).
     This prevents false "SCHEDULED_NOT_BILLED" flags when a charge was billed but then reversed.
     
-    API-posted codes (157001, 155180, 156669, 155203) are automatically posted
-    and should not appear in scheduled charges. Excluding them prevents false
-    exceptions from API-generated transactions.
+    Codes in excluded_ar_codes.json are excluded from reconciliation per business policy.
+    Excluding them prevents false exceptions from charges that are intentionally
+    not audited (fines, utilities, policy items, etc.).
     
     FLAG_ACTIVE_LEASE_INTERVAL = 1 indicates an active lease interval.
     Only active lease intervals should be audited.
@@ -598,13 +654,25 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     # ONLY filter by IS_POSTED - KEEP deleted/reversed for matching
     mask = (df[ARSourceColumns.IS_POSTED].astype(float) == 1)
     
-    # Exclude API-posted AR codes - these are automatically posted and shouldn't be audited
+    # Exclude AR codes per business policy (excluded_ar_codes.json)
     if ARSourceColumns.AR_CODE_ID in df.columns:
         api_posted_mask = _build_api_posted_code_mask(df[ARSourceColumns.AR_CODE_ID])
         filtered_api_codes = int(api_posted_mask.sum())
         if filtered_api_codes > 0:
-            print(f"[FILTER] Excluding {filtered_api_codes} AR transactions with API-posted AR codes: {API_POSTED_AR_CODES}")
+            print(f"[FILTER] Excluding {filtered_api_codes} AR transactions with excluded AR codes: {API_POSTED_AR_CODES}")
         mask = mask & ~api_posted_mask
+
+        # Whitelist filter: if allowed_ar_codes is configured, exclude everything not in it
+        if ALLOWED_AR_CODES_SET:
+            numeric_values = pd.to_numeric(df[ARSourceColumns.AR_CODE_ID], errors='coerce')
+            not_allowed_mask = ~(
+                numeric_values.isin(ALLOWED_AR_CODES_SET) |
+                df[ARSourceColumns.AR_CODE_ID].astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET)
+            )
+            filtered_whitelist = int(not_allowed_mask.sum())
+            if filtered_whitelist > 0:
+                print(f"[FILTER] Excluding {filtered_whitelist} AR transactions outside allowed AR codes whitelist: {ALLOWED_AR_CODES}")
+            mask = mask & ~not_allowed_mask
 
     # Exclude configured resident profile names
     excluded_resident_mask = _build_excluded_resident_name_mask(
@@ -748,13 +816,25 @@ def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
         numeric = pd.to_numeric(series, errors='coerce')
         return numeric == 1
     
-    # Exclude API-posted AR codes - these are automatically posted and shouldn't be in scheduled charges
+    # Exclude AR codes per business policy (excluded_ar_codes.json)
     if ScheduledSourceColumns.AR_CODE_ID in df.columns:
         api_posted_mask = _build_api_posted_code_mask(df[ScheduledSourceColumns.AR_CODE_ID])
         filtered_api_codes = int(api_posted_mask.sum())
         if filtered_api_codes > 0:
-            print(f"[FILTER] Excluding {filtered_api_codes} scheduled charges with API-posted AR codes: {API_POSTED_AR_CODES}")
+            print(f"[FILTER] Excluding {filtered_api_codes} scheduled charges with excluded AR codes: {API_POSTED_AR_CODES}")
         mask = mask & ~api_posted_mask
+
+        # Whitelist filter: if allowed_ar_codes is configured, exclude everything not in it
+        if ALLOWED_AR_CODES_SET:
+            numeric_values = pd.to_numeric(df[ScheduledSourceColumns.AR_CODE_ID], errors='coerce')
+            not_allowed_mask = ~(
+                numeric_values.isin(ALLOWED_AR_CODES_SET) |
+                df[ScheduledSourceColumns.AR_CODE_ID].astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET)
+            )
+            filtered_whitelist = int(not_allowed_mask.sum())
+            if filtered_whitelist > 0:
+                print(f"[FILTER] Excluding {filtered_whitelist} scheduled charges outside allowed AR codes whitelist: {ALLOWED_AR_CODES}")
+            mask = mask & ~not_allowed_mask
 
     # Exclude configured resident profile names
     excluded_resident_mask = _build_excluded_resident_name_mask(

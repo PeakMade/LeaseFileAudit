@@ -78,6 +78,8 @@ def _load_term_extraction_rules_from_config() -> dict[str, dict[str, Any]]:
 		term_key = str(term_type or "").strip().upper()
 		if not term_key or not isinstance(term_rule, dict):
 			continue
+		if term_rule.get("disabled"):
+			continue
 
 		normalized_rule: dict[str, Any] = {
 			"include_patterns": _normalize_pattern_list(term_rule.get("include_patterns")),

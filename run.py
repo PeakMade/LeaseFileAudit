@@ -11,7 +11,7 @@ app = create_app()
 
 if __name__ == '__main__':
     # Azure App Service sets PORT environment variable
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 6001))
     # Use debug mode for local development to enable auto-reload
     debug = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
     use_reloader = os.environ.get('FLASK_USE_RELOADER', 'False').lower() == 'true'

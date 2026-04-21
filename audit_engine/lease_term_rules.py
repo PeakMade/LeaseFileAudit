@@ -86,6 +86,8 @@ def _load_lease_term_rules_from_config() -> list[dict[str, Any]]:
     for item in rules:
         if not isinstance(item, dict):
             continue
+        if item.get("disabled"):
+            continue
         term_type = str(item.get("term_type") or "").strip().upper()
         if not term_type:
             continue

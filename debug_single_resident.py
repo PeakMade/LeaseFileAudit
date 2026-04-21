@@ -36,7 +36,7 @@ from audit_engine.expand import expand_scheduled_to_months
 from audit_engine.reconcile import reconcile_detail
 from audit_engine.findings import generate_findings
 from audit_engine.canonical_fields import CanonicalField
-from audit_engine.lease_term_extraction_rules import get_term_extraction_rules
+from audit_engine.lease_term_extraction_rules import get_term_extraction_rule, _load_term_extraction_rules_from_config as get_term_extraction_rules
 from config import config
 
 pd.set_option('display.max_columns', None)
@@ -430,8 +430,7 @@ def main():
         debug_single_resident(
             excel_path=excel_path,
             lease_id=args.lease_id,
-            resident_id=args.residentth,
-            lease_id=args.lease_id,
+            resident_id=args.resident_id,
             customer_id=args.customer_id,
             customer_name=args.customer_name,
             use_api=False,

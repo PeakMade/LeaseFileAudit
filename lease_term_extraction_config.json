@@ -47,6 +47,7 @@
 			]
 		},
 		"APPLICATION_FEE": {
+			"disabled": true,
 			"include_patterns": [
 				"application\\s+fee"
 			],
@@ -60,6 +61,7 @@
 			]
 		},
 		"ADMIN_FEE": {
+			"disabled": true,
 			"include_patterns": [
 				"admin(?:istration|istrative)?\\s+fee"
 			],
@@ -99,6 +101,7 @@
 			"application_leak_amount_pattern": "application\\s+fee.{0,80}?\\$\\s*([0-9][0-9,]*(?:\\.\\d{2})?)"
 		},
 		"AMENITY_PREMIUM": {
+			"disabled": true,
 			"include_patterns": [
 				"exclusive\\s+bedspace",
 				"bedspace\\s+addendum",
@@ -126,6 +129,7 @@
 			]
 		},
 		"PARKING": {
+			"disabled": true,
 			"page_hint_patterns": [
 				"parking\\s+addendum",
 				"parking\\s+space",
@@ -214,6 +218,7 @@
 			]
 		},
 		"PET_RENT": {
+			"disabled": true,
 			"anchor_patterns": [
 				"pet\\s+rent",
 				"pet\\s+fee"
@@ -244,6 +249,7 @@
 			]
 		},
 		"TELECOM_FEE": {
+			"disabled": true,
 			"include_patterns": [
 				"telecom\\s+fee",
 				"internet\\s+(?:setup|set-up|set\\s+up)\\s+fee",

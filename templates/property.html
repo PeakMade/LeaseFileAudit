@@ -210,6 +210,9 @@
                                     onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href=this.dataset.leaseUrl;">
                                     <td style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
                                         {{ lease.customer_name if lease.customer_name else '' }}
+                                        {% if lease.is_future_lease %}
+                                        <span class="badge ms-1" style="background-color: #0d6efd; color: #fff; font-size: 0.7em; vertical-align: middle; padding: 2px 6px; border-radius: 4px;">Future</span>
+                                        {% endif %}
                                     </td>
                                     <td style="padding: 10px 12px; font-family: 'Courier New', monospace; border-right: 1px solid #dee2e6;">
                                         {% if lease.lease_id %}

@@ -18,6 +18,8 @@ from audit_engine import (
     normalize_scheduled_charges,
     expand_scheduled_to_months,
     reconcile_buckets,
+    realign_scheduled_intervals,
+    synthesize_missing_scheduled_charges,
     RuleContext,
     generate_findings,
     calculate_kpis,
@@ -407,6 +409,53 @@ def _resident_exclusions_config_path() -> Path:
     return Path(__file__).resolve().parent.parent / 'resident_profile_exclusions.json'
 
 
+def _excluded_ar_codes_config_path() -> Path:
+    """Resolve excluded AR codes config path used by audit mappings."""
+    configured_path = os.getenv('API_POSTED_AR_CODES_PATH')
+    if configured_path:
+        return Path(configured_path)
+    return Path(__file__).resolve().parent.parent / 'excluded_ar_codes.json'
+
+
+def _load_term_type_statuses() -> list[dict]:
+    """Load term types from lease_term_mapping_config.json with their enabled/disabled state."""
+    config_path = Path(__file__).resolve().parent.parent / 'lease_term_mapping_config.json'
+    if not config_path.exists():
+        return []
+    try:
+        payload = json.loads(config_path.read_text(encoding='utf-8-sig'))
+    except Exception:
+        return []
+    result = []
+    for rule in payload.get('term_to_ar_code_rules', []):
+        result.append({
+            'term_type': rule.get('term_type', ''),
+            'disabled': bool(rule.get('disabled', False)),
+            'ar_codes': rule.get('accepted_ar_codes', []),
+        })
+    return result
+
+
+def _load_ar_codes_for_settings() -> list[int]:
+    """Load current excluded AR code list for display in settings UI."""
+    config_path = _excluded_ar_codes_config_path()
+    if not config_path.exists():
+        return []
+    try:
+        payload = json.loads(config_path.read_text(encoding='utf-8-sig'))
+    except Exception as exc:
+        logger.warning(f"[SETTINGS] Failed to read excluded AR codes at {config_path}: {exc}")
+        return []
+    raw = payload if isinstance(payload, list) else payload.get('api_posted_ar_codes', []) if isinstance(payload, dict) else []
+    codes: list[int] = []
+    for item in raw:
+        try:
+            codes.append(int(float(item)))
+        except Exception:
+            pass
+    return sorted(set(codes))
+
+
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
     seen = set()
     deduped: list[str] = []
@@ -451,13 +500,17 @@ def _load_exclusions_for_settings() -> tuple[list[str], list[str], Path]:
 def settings_view():
     """Settings page for exclusion configuration management (append-only)."""
     names, lease_ids, config_path = _load_exclusions_for_settings()
+    ar_codes = _load_ar_codes_for_settings()
+    ar_codes_config_path = _excluded_ar_codes_config_path()
 
     if request.method == 'POST':
         add_names_text = request.form.get('add_excluded_resident_profile_names', '')
         add_lease_ids_text = request.form.get('add_excluded_lease_ids', '')
+        add_ar_codes_text = request.form.get('add_excluded_ar_codes', '')
 
         add_name_lines = [line.strip() for line in add_names_text.splitlines() if line.strip()]
         add_lease_id_lines = [line.strip() for line in add_lease_ids_text.splitlines() if line.strip()]
+        add_ar_code_lines = [line.strip() for line in add_ar_codes_text.splitlines() if line.strip()]
 
         existing_names = _dedupe_preserve_order([str(value).strip() for value in names if str(value).strip()])
         existing_lease_ids = _dedupe_preserve_order([str(value).strip() for value in lease_ids if str(value).strip()])
@@ -472,13 +525,23 @@ def settings_view():
             except Exception:
                 invalid_lease_ids.append(raw_lease_id)
 
+        normalized_ar_code_additions: list[int] = []
+        invalid_ar_codes: list[str] = []
+        for raw_code in _dedupe_preserve_order(add_ar_code_lines):
+            try:
+                normalized_ar_code_additions.append(int(float(raw_code)))
+            except Exception:
+                invalid_ar_codes.append(raw_code)
+
         combined_names = _dedupe_preserve_order(existing_names + add_names)
         combined_lease_id_tokens = _dedupe_preserve_order(existing_lease_ids + normalized_lease_additions)
+        combined_ar_codes = sorted(set(ar_codes) | set(normalized_ar_code_additions))
 
         normalized_lease_ids = [int(value) for value in combined_lease_id_tokens]
 
         added_name_count = len(combined_names) - len(existing_names)
         added_lease_count = len(combined_lease_id_tokens) - len(existing_lease_ids)
+        added_ar_code_count = len(combined_ar_codes) - len(ar_codes)
 
         payload = {
             'excluded_resident_profile_names': combined_names,
@@ -489,38 +552,48 @@ def settings_view():
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8')
 
+            ar_codes_config_path.write_text(json.dumps(combined_ar_codes, indent=2), encoding='utf-8')
+
             try:
                 from audit_engine import mappings as mappings_module
                 mappings_module.reload_exclusion_config()
+                mappings_module.reload_excluded_ar_codes()
             except Exception as reload_error:
-                logger.warning(f"[SETTINGS] Exclusion config saved but reload failed: {reload_error}")
+                logger.warning(f"[SETTINGS] Config saved but reload failed: {reload_error}")
 
             summary_message = (
-                f"Settings saved. Added {added_name_count} resident name(s) and "
-                f"{added_lease_count} lease ID(s). Existing values were preserved."
+                f"Settings saved. Added {added_name_count} resident name(s), "
+                f"{added_lease_count} lease ID(s), and {added_ar_code_count} AR code(s). "
+                f"Existing values were preserved."
             )
 
+            warning_parts = []
             if invalid_lease_ids:
-                flash(
-                    f"{summary_message} Ignored {len(invalid_lease_ids)} invalid lease ID value(s): {invalid_lease_ids[:10]}",
-                    'warning'
-                )
+                warning_parts.append(f"invalid lease ID(s): {invalid_lease_ids[:10]}")
+            if invalid_ar_codes:
+                warning_parts.append(f"invalid AR code(s): {invalid_ar_codes[:10]}")
+
+            if warning_parts:
+                flash(f"{summary_message} Ignored {'; '.join(warning_parts)}.", 'warning')
             else:
                 flash(summary_message, 'success')
 
             return redirect(url_for('main.settings_view'))
         except Exception as save_error:
-            logger.error(f"[SETTINGS] Failed saving exclusions config: {save_error}")
+            logger.error(f"[SETTINGS] Failed saving settings: {save_error}")
             flash(f"Failed to save settings: {save_error}", 'danger')
 
         names = combined_names
         lease_ids = combined_lease_id_tokens
+        ar_codes = combined_ar_codes
 
     return render_template(
         'settings.html',
         excluded_resident_profile_names='\n'.join(_dedupe_preserve_order(names)),
         excluded_lease_ids='\n'.join(_dedupe_preserve_order(lease_ids)),
+        excluded_ar_codes='\n'.join(str(c) for c in ar_codes),
         config_path=str(config_path),
+        term_type_statuses=_load_term_type_statuses(),
     )
 
 
@@ -1815,10 +1888,21 @@ def execute_audit_run(
 
         # Reconcile detail for this property only.
         print(f"[PROPERTY EXECUTION] Running reconciliation for property {property_key}...")
+        # Attach the resolved audit window so _identify_variances can scope-check
+        # scheduled charges (suppress/downgrade charges outside the audit window).
+        recon_config = config.reconciliation
+        audit_window_start, audit_window_end = _resolve_audit_window_bounds(
+            audit_year=audit_year, audit_month=audit_month
+        )
+        if audit_date_from or audit_date_to:
+            audit_window_start = pd.to_datetime(audit_date_from, errors='coerce') if audit_date_from else None
+            audit_window_end = pd.to_datetime(audit_date_to, errors='coerce') if audit_date_to else None
+        recon_config.audit_start = audit_window_start
+        recon_config.audit_end = audit_window_end
         variance_detail_prop, recon_stats_prop = reconcile_detail(
             scheduled_prop,
             actual_prop,
-            config.reconciliation
+            recon_config
         )
         print(f"[PROPERTY EXECUTION] ✓ Reconciliation complete for property {property_key}")
         print(f"[PROPERTY EXECUTION] Buckets created: {len(variance_detail_prop)}")
@@ -1826,6 +1910,12 @@ def execute_audit_run(
             print(f"[PROPERTY EXECUTION] Reconciliation stats:")
             for stat_key, stat_value in recon_stats_prop.items():
                 print(f"[PROPERTY EXECUTION]   - {stat_key}: {stat_value}")
+
+        # Re-attribute scheduled charge interval IDs using AR-side SCHEDULED_CHARGE_ID
+        # links before bucket reconciliation. Fixes false BILLED_NOT_SCHEDULED /
+        # SCHEDULED_NOT_BILLED pairs caused by Entrata renewal interval splits.
+        expected_prop = realign_scheduled_intervals(expected_prop, actual_prop)
+        expected_prop = synthesize_missing_scheduled_charges(expected_prop, actual_prop)
 
         # Reconcile buckets for this property only.
         print(f"[PROPERTY EXECUTION] Running bucket reconciliation for property {property_key}...")
@@ -3086,6 +3176,7 @@ def property_view(property_id: str, run_id: str = None):
 
         lease_customer_names = {}
         lease_parent_ids = {}
+        lease_start_date_map = {}
         try:
             lease_ids_normalized = {int(float(lease_id)) for lease_id in all_lease_ids}
 
@@ -3171,6 +3262,18 @@ def property_view(property_id: str, run_id: str = None):
 
             expected_detail = cached_load_expected_detail(run_id, cache_token)
             actual_detail = cached_load_actual_detail(run_id, cache_token)
+
+            # Build lease start date map to identify future leases
+            _start_col = CanonicalField.LEASE_START_DATE.value
+            _lid_col = CanonicalField.LEASE_INTERVAL_ID.value
+            if not expected_detail.empty and _start_col in expected_detail.columns:
+                for _, _row in expected_detail[[_lid_col, _start_col]].dropna(subset=[_lid_col]).iterrows():
+                    try:
+                        _lid = int(float(_row[_lid_col]))
+                    except Exception:
+                        continue
+                    if _lid not in lease_start_date_map and pd.notna(_row.get(_start_col)):
+                        lease_start_date_map[_lid] = pd.to_datetime(_row[_start_col], errors='coerce')
 
             # Prefer names from lease-details (expected) first, then fill from AR (actual).
             for source_df in [expected_detail, actual_detail]:
@@ -3280,6 +3383,7 @@ def property_view(property_id: str, run_id: str = None):
             lease_groups[lease_id].append(exception)
         
         # Build comprehensive lease summary (including clean and matched leases)
+        _today = pd.Timestamp.now().normalize()
         lease_summary = []
         for lease_id in all_lease_ids:
             # Get guarantor name and customer name for this lease
@@ -3323,6 +3427,9 @@ def property_view(property_id: str, run_id: str = None):
                     status_label = 'Open'
                 status_color = 'danger'
             
+            _lease_start = lease_start_date_map.get(lease_key)
+            _is_future = bool(_lease_start is not None and pd.notna(_lease_start) and _lease_start > _today)
+
             if lease_id in lease_groups:
                 # Lease has exceptions
                 exceptions = lease_groups[lease_id]
@@ -3339,7 +3446,9 @@ def property_view(property_id: str, run_id: str = None):
                     'total_variance': total_variance,
                     'status_label': status_label,
                     'status_color': status_color,
-                    'exceptions': sorted(exceptions, key=lambda x: abs(x['variance']), reverse=True)
+                    'exceptions': sorted(exceptions, key=lambda x: abs(x['variance']), reverse=True),
+                    'lease_start_date': _lease_start,
+                    'is_future_lease': _is_future,
                 })
             else:
                 # Clean lease - no exceptions
@@ -3355,7 +3464,9 @@ def property_view(property_id: str, run_id: str = None):
                     'total_variance': 0,
                     'status_label': status_label,
                     'status_color': status_color,
-                    'exceptions': []
+                    'exceptions': [],
+                    'lease_start_date': _lease_start,
+                    'is_future_lease': _is_future,
                 })
 
         # Sort: highest exception count first, then unresolved count, then variance.
@@ -3619,6 +3730,15 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                 f"property {property_id}, lease {lease_interval_id} (snapshot not found or unavailable)"
             )
         
+        # Exclude AR codes per business policy (excluded_ar_codes.json) at display time.
+        # This catches stale run data that was generated before a code was added to the exclusion list.
+        from audit_engine.mappings import API_POSTED_AR_CODES_SET, API_POSTED_AR_CODES_TEXT_SET
+        if CanonicalField.AR_CODE_ID.value in bucket_results.columns:
+            _ar_col = bucket_results[CanonicalField.AR_CODE_ID.value]
+            _numeric = pd.to_numeric(_ar_col, errors='coerce')
+            _excluded_mask = _numeric.isin(API_POSTED_AR_CODES_SET) | _ar_col.astype(str).str.strip().isin(API_POSTED_AR_CODES_TEXT_SET)
+            bucket_results = bucket_results[~_excluded_mask].copy()
+
         # Get all buckets for this lease - exceptions and matches separately
         lease_buckets = bucket_results[
             (bucket_results[CanonicalField.STATUS.value] != config.reconciliation.status_matched)
