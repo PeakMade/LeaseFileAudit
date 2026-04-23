@@ -6,6 +6,38 @@
 <div class="container-fluid mt-4 px-4">
 	<div class="row justify-content-center">
 		<div class="col-12 col-xl-10">
+
+			{# ── Entrata Environment Toggle ── #}
+			<div class="card fade-in mb-4">
+				<div class="card-header d-flex justify-content-between align-items-center">
+					<span><i class="fas fa-exchange-alt me-2"></i>Entrata API Environment</span>
+					{% if entrata_environment == 'sandbox' %}
+					<span class="badge bg-warning text-dark fs-6">SANDBOX</span>
+					{% else %}
+					<span class="badge bg-success fs-6">PRODUCTION</span>
+					{% endif %}
+				</div>
+				<div class="card-body">
+					<p class="text-muted small mb-3">
+						Switch between the Production and Sandbox Entrata API environments.
+						All API calls (property data, lease details, AR transactions) will use the selected environment.
+					</p>
+					<form method="post" action="{{ url_for('main.settings_view') }}" class="d-flex gap-2 align-items-center">
+						{% if entrata_environment == 'sandbox' %}
+						<button type="submit" name="entrata_environment" value="prod" class="btn btn-success">
+							<i class="fas fa-arrow-up me-2"></i>Switch to Production
+						</button>
+						<span class="text-muted small">Currently pointing at the <strong>sandbox</strong> org (<code>peakmade-test-17291</code>)</span>
+						{% else %}
+						<button type="submit" name="entrata_environment" value="sandbox" class="btn btn-warning">
+							<i class="fas fa-flask me-2"></i>Switch to Sandbox
+						</button>
+						<span class="text-muted small">Currently pointing at the <strong>production</strong> org</span>
+						{% endif %}
+					</form>
+				</div>
+			</div>
+
 			<div class="card fade-in">
 				<div class="card-header d-flex justify-content-between align-items-center">
 					<span><i class="fas fa-sliders-h me-2"></i>Exclusion Configuration</span>

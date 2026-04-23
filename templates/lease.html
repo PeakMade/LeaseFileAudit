@@ -43,8 +43,8 @@
             <div class="alert alert-light border" role="alert">
                 <div class="row">
                     <div class="col-md-6">
-                        <strong>Total Undercharge:</strong> <span style="color: #c20068;">${{ "{:,.0f}".format(total_undercharge) }}</span>
-                        <span class="ms-4"><strong>Total Overcharge:</strong> <span style="color: #00a8c8;">${{ "{:,.0f}".format(total_overcharge) }}</span></span>
+                        <strong>Total Undercharge:</strong> <span style="color: #c20068;">${{ "{:,.2f}".format(total_undercharge) }}</span>
+                        <span class="ms-4"><strong>Total Overcharge:</strong> <span style="color: #00a8c8;">${{ "{:,.2f}".format(total_overcharge) }}</span></span>
                     </div>
                 </div>
             </div>
@@ -284,7 +284,7 @@
         content += '<th class="month-group-header" style="width: 30px;"></th>';
         content += '<th class="align-middle month-group-header">Month</th>';
         content += '<th colspan="2" class="text-center text-dark expected-group-header">Expected</th>';
-        content += '<th colspan="2" class="text-center text-dark actual-group-header">Actual</th>';
+        content += '<th colspan="3" class="text-center text-dark actual-group-header">Actual</th>';
         content += '</tr>';
         content += '<tr>';
         content += '<th class="month-subheader"></th>';
@@ -293,6 +293,7 @@
         content += '<th class="text-center text-dark expected-amount-col">Amount</th>';
         content += '<th class="text-center text-dark actual-col">Post Date</th>';
         content += '<th class="text-center text-dark actual-amount-col">Amount</th>';
+        content += '<th class="text-center text-dark actual-txn-col">Transaction ID</th>';
         content += '</tr>';
         content += '</thead>';
         content += '<tbody>';
@@ -371,18 +372,20 @@
                         const act = actTrans[i];
                         content += `<td class="actual-col text-center">${formatDate(act.post_date, 'MM/DD/YYYY')}</td>`;
                         content += `<td class="text-center actual-amount-col">$${formatNumber(act.amount)}</td>`;
+                        content += `<td class="text-center actual-txn-col"><small class="text-muted">${act.transaction_id != null ? act.transaction_id : ''}</small></td>`;
                     } else {
                         // No actual transactions at all for the month: use one rowspan cell on first row.
                         if (actTrans.length === 0) {
                             if (i === 0 && isException && month.status === 'SCHEDULED_NOT_BILLED') {
-                                content += `<td rowspan="${maxRows}" colspan="2" class="text-center align-middle actual-fix-cell actual-col-span" id="actualFix-${monthIndex}"><em class="text-muted">No actual transactions</em></td>`;
+                                content += `<td rowspan="${maxRows}" colspan="3" class="text-center align-middle actual-fix-cell actual-col-span" id="actualFix-${monthIndex}"><em class="text-muted">No actual transactions</em></td>`;
                             } else if (i === 0) {
-                                content += `<td rowspan="${maxRows}" colspan="2" class="text-muted text-center align-middle actual-col-span"><em>No actual transactions</em></td>`;
+                                content += `<td rowspan="${maxRows}" colspan="3" class="text-muted text-center align-middle actual-col-span"><em>No actual transactions</em></td>`;
                             }
                         } else {
                             // Actual has fewer rows than expected for this month: emit blanks to preserve alignment.
                             content += '<td class="text-muted text-center actual-col"></td>';
                             content += '<td class="text-center text-muted actual-amount-col"></td>';
+                            content += '<td class="text-center actual-txn-col"></td>';
                         }
                     }
                     
@@ -390,7 +393,7 @@
                 }
             });
         } else {
-            content += '<tr><td colspan="4" class="text-center text-muted">No monthly details available</td></tr>';
+            content += '<tr><td colspan="7" class="text-center text-muted">No monthly details available</td></tr>';
         }
         
         content += '</tbody>';
@@ -985,8 +988,8 @@
     }
     
     function formatNumber(num) {
-        if (num === null || num === undefined) return '0';
-        return Math.round(num).toLocaleString();
+        if (num === null || num === undefined) return '0.00';
+        return parseFloat(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
     </script>
 

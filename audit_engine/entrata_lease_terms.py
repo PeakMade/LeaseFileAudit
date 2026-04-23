@@ -70,6 +70,7 @@ ApiFetcher = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 FieldExtractor = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
+# Module-level defaults (overridden at call time via _get_entrata_headers_and_url)
 API_KEY = os.environ.get("ENTRATA_API_KEY")
 ORG = os.environ.get("ENTRATA_ORG", "peakmade")
 BASE_URL = f"https://apis.entrata.com/ext/orgs/{ORG}/v1/leases"
@@ -90,15 +91,35 @@ PICKLIST_CACHE = {
 }
 
 
+def _get_entrata_headers_and_url() -> tuple[dict, str]:
+    """Return (headers, base_url) resolved from the active Entrata environment at call time."""
+    from .api_ingest import get_entrata_environment
+    env = get_entrata_environment()
+    if env == "sandbox":
+        api_key = os.environ.get("ENTRATA_API_SANDBOX_KEY") or os.environ.get("LEASE_API_SANDBOX_KEY") or API_KEY
+        org = os.environ.get("ENTRATA_SANDBOX_ORG") or "peakmade-test-17291"
+    else:
+        api_key = os.environ.get("ENTRATA_API_KEY") or API_KEY
+        org = os.environ.get("ENTRATA_ORG") or "peakmade"
+    base_url = f"https://apis.entrata.com/ext/orgs/{org}/v1/leases"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-Api-Key": api_key,
+    }
+    return headers, base_url
+
+
 def post_entrata(payload: dict, url: str = None) -> dict:
     """Send POST request to Entrata API."""
-    target_url = url or BASE_URL
+    headers, base_url = _get_entrata_headers_and_url()
+    target_url = url or base_url
     logger.info("=" * 80)
     logger.info("POST REQUEST TO ENTRATA API")
     logger.info(f"URL: {target_url}")
     logger.info(f"Payload: {json.dumps(payload, indent=2)}")
 
-    resp = requests.post(target_url, headers=HEADERS, json=payload, timeout=60)
+    resp = requests.post(target_url, headers=headers, json=payload, timeout=60)
     resp.raise_for_status()
 
     response_json = resp.json()

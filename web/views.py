@@ -164,7 +164,7 @@ def cached_load_property_exception_months(run_id: str, property_id: int, session
 
 
 @cache.memoize(timeout=3600)
-def cached_load_api_property_picklist(session_cache_key: str = None):
+def cached_load_api_property_picklist(session_cache_key: str = None, entrata_env: str = "prod"):
     """Cached Entrata properties picklist for API upload form."""
     logger.info("[CACHE] ⏬ Cache MISS: Loading Entrata property picklist")
     return fetch_entrata_property_picklist()
@@ -499,11 +499,20 @@ def _load_exclusions_for_settings() -> tuple[list[str], list[str], Path]:
 @require_auth
 def settings_view():
     """Settings page for exclusion configuration management (append-only)."""
+    from audit_engine.api_ingest import get_entrata_environment, set_entrata_environment
+
     names, lease_ids, config_path = _load_exclusions_for_settings()
     ar_codes = _load_ar_codes_for_settings()
     ar_codes_config_path = _excluded_ar_codes_config_path()
 
     if request.method == 'POST':
+        # Handle environment switch independently (separate form button)
+        new_env = request.form.get('entrata_environment')
+        if new_env in {'prod', 'sandbox'}:
+            set_entrata_environment(new_env)
+            flash(f"Entrata environment switched to {'Production' if new_env == 'prod' else 'Sandbox'}.", 'success')
+            return redirect(url_for('main.settings_view'))
+
         add_names_text = request.form.get('add_excluded_resident_profile_names', '')
         add_lease_ids_text = request.form.get('add_excluded_lease_ids', '')
         add_ar_codes_text = request.form.get('add_excluded_ar_codes', '')
@@ -594,6 +603,7 @@ def settings_view():
         excluded_ar_codes='\n'.join(str(c) for c in ar_codes),
         config_path=str(config_path),
         term_type_statuses=_load_term_type_statuses(),
+        entrata_environment=get_entrata_environment(),
     )
 
 
@@ -2074,7 +2084,8 @@ def index():
     recent_runs = storage.list_runs(limit=5)
     api_property_options = []
     try:
-        api_property_options = cached_load_api_property_picklist(_session_cache_token())
+        from audit_engine.api_ingest import get_entrata_environment
+        api_property_options = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
     except Exception as e:
         logger.warning(f"[INDEX] Failed loading Entrata property picklist: {e}")
     user = get_current_user()
@@ -2413,7 +2424,8 @@ def upload_api_property():
         # Load property name from picklist (authoritative source for property names)
         property_name_from_picklist = None
         try:
-            picklist = cached_load_api_property_picklist(_session_cache_token())
+            from audit_engine.api_ingest import get_entrata_environment
+            picklist = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
             for item in picklist:
                 if str(item.get('property_id')) == str(property_id):
                     property_name_from_picklist = item.get('property_name')
@@ -3863,7 +3875,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                         'amount': act_rec.get('actual_amount', 0),
                         'post_date': post_date,
                         'ar_code_name': act_rec.get('AR_CODE_NAME', ar_code_name),
-                        'transaction_id': act_rec.get('AR_TRANSACTION_ID')
+                        'transaction_id': act_rec.get('ID') or act_rec.get('AR_TRANSACTION_ID')
                     })
             
             # Convert audit_month Timestamp to date string
@@ -4128,7 +4140,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     actual_transactions.append({
                         'amount': act_rec.get('actual_amount', 0),
                         'post_date': post_date,
-                        'transaction_id': act_rec.get('AR_TRANSACTION_ID')
+                        'transaction_id': act_rec.get('ID') or act_rec.get('AR_TRANSACTION_ID')
                     })
             
             # Convert audit_month to date string

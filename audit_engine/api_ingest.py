@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
@@ -10,6 +12,63 @@ import requests
 
 from .mappings import ARSourceColumns, ScheduledSourceColumns
 from activity_logging.sharepoint import _get_app_only_token
+
+# ---------------------------------------------------------------------------
+# Entrata environment switching (prod / sandbox)
+# ---------------------------------------------------------------------------
+_ENTRATA_ENV_CONFIG_PATH = Path(__file__).parent.parent / "entrata_environment.json"
+
+
+def get_entrata_environment() -> str:
+    """Return the active Entrata environment: 'prod' or 'sandbox'."""
+    try:
+        data = json.loads(_ENTRATA_ENV_CONFIG_PATH.read_text(encoding="utf-8"))
+        env = str(data.get("environment", "prod")).lower()
+        return env if env in {"prod", "sandbox"} else "prod"
+    except Exception:
+        return "prod"
+
+
+def set_entrata_environment(env: str) -> None:
+    """Persist the active Entrata environment ('prod' or 'sandbox') to config."""
+    if env not in {"prod", "sandbox"}:
+        raise ValueError(f"Invalid environment '{env}'. Must be 'prod' or 'sandbox'.")
+    _ENTRATA_ENV_CONFIG_PATH.write_text(
+        json.dumps({"environment": env}, indent=2), encoding="utf-8"
+    )
+
+
+def _resolve_api_credentials() -> tuple[str, str, str, str]:
+    """Return (details_url, ar_url, api_key, api_key_header) for the active environment."""
+    env = get_entrata_environment()
+
+    if env == "sandbox":
+        details_url = (
+            _to_str(os.getenv("LEASE_API_SANDBOX_DETAILS_URL"))
+            or _to_str(os.getenv("LEASE_API_SANDBOX_BASE_URL"))
+            or "https://apis.entrata.com/ext/orgs/peakmade-test-17291/v1/leases?page_no=1&per_page=100"
+        )
+        ar_url = (
+            _to_str(os.getenv("LEASE_API_SANDBOX_AR_URL"))
+            or _to_str(os.getenv("LEASE_API_SANDBOX_BASE_URL"))
+            or "https://apis.entrata.com/ext/orgs/peakmade-test-17291/v1/artransactions?page_no=1&per_page=100"
+        )
+        api_key = _to_str(os.getenv("LEASE_API_SANDBOX_KEY"))
+    else:
+        details_url = (
+            _to_str(os.getenv("LEASE_API_DETAILS_URL"))
+            or _to_str(os.getenv("LEASE_API_BASE_URL"))
+            or "https://apis.entrata.com/ext/orgs/peakmade/v1/leases?page_no=1&per_page=100"
+        )
+        ar_url = (
+            _to_str(os.getenv("LEASE_API_AR_URL"))
+            or _to_str(os.getenv("LEASE_API_BASE_URL"))
+            or "https://apis.entrata.com/ext/orgs/peakmade/v1/artransactions?page_no=1&per_page=100"
+        )
+        api_key = _to_str(os.getenv("LEASE_API_KEY"))
+
+    api_key_header = _to_str(os.getenv("LEASE_API_KEY_HEADER") or "X-Api-Key")
+    return details_url, ar_url, api_key, api_key_header
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -248,8 +307,31 @@ def fetch_entrata_property_picklist() -> list[dict[str, str]]:
         }
 
     result_rows = list(deduped.values())
+
+    # In sandbox mode, replace property IDs with sandbox-specific IDs where defined.
+    if get_entrata_environment() == "sandbox":
+        sandbox_map = _load_sandbox_property_id_map()
+        if sandbox_map:
+            filtered: list[dict[str, str]] = []
+            for row in result_rows:
+                name = row.get("property_name", "")
+                sandbox_id = sandbox_map.get(name)
+                if sandbox_id:
+                    filtered.append({"property_id": sandbox_id, "property_name": name})
+            # Only return properties that have a sandbox ID defined
+            result_rows = filtered
+
     result_rows.sort(key=lambda item: (item.get("property_name", "").lower(), item.get("property_id", "")))
     return result_rows
+
+
+def _load_sandbox_property_id_map() -> dict[str, str]:
+    """Load the property-name -> sandbox-property-id mapping from sandbox_property_ids.json."""
+    config_path = Path(__file__).parent.parent / "sandbox_property_ids.json"
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _extract_lease_nodes(details_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -813,17 +895,16 @@ def fetch_property_api_sources(
     transaction_from_date: str | None = None,
     transaction_to_date: str | None = None,
 ) -> dict[str, Any]:
-    details_url = _to_str(os.getenv("LEASE_API_DETAILS_URL")) or _to_str(os.getenv("LEASE_API_BASE_URL")) or "https://apis.entrata.com/ext/orgs/peakmade/v1/leases?page_no=1&per_page=100"
-    ar_url = _to_str(os.getenv("LEASE_API_AR_URL")) or _to_str(os.getenv("LEASE_API_BASE_URL")) or "https://apis.entrata.com/ext/orgs/peakmade/v1/artransactions?page_no=1&per_page=100"
-    api_key = _to_str(os.getenv("LEASE_API_KEY"))
-    api_key_header = _to_str(os.getenv("LEASE_API_KEY_HEADER") or "X-Api-Key")
+    details_url, ar_url, api_key, api_key_header = _resolve_api_credentials()
+    env = get_entrata_environment()
+    print(f"[API ENV] Using Entrata environment: {env}")
 
     if not details_url:
         raise ValueError("Missing LEASE_API_DETAILS_URL (or LEASE_API_BASE_URL) env var")
     if not ar_url:
         raise ValueError("Missing LEASE_API_AR_URL (or LEASE_API_BASE_URL) env var")
     if not api_key:
-        raise ValueError("Missing LEASE_API_KEY env var")
+        raise ValueError("Missing LEASE_API_KEY (or LEASE_API_SANDBOX_KEY) env var")
 
     timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "60") or "60")
 
@@ -921,22 +1002,20 @@ def fetch_single_lease_api_sources(
             - ar_raw: DataFrame of AR transactions
             - lease_count: Always 1 for single lease fetch
     """
-    details_url = _to_str(os.getenv("LEASE_API_DETAILS_URL")) or _to_str(os.getenv("LEASE_API_BASE_URL")) or "https://apis.entrata.com/ext/orgs/peakmade/v1/leases?page_no=1&per_page=100"
-    ar_url = _to_str(os.getenv("LEASE_API_AR_URL")) or _to_str(os.getenv("LEASE_API_BASE_URL")) or "https://apis.entrata.com/ext/orgs/peakmade/v1/artransactions?page_no=1&per_page=100"
-    api_key = _to_str(os.getenv("LEASE_API_KEY"))
-    api_key_header = _to_str(os.getenv("LEASE_API_KEY_HEADER") or "X-Api-Key")
+    details_url, ar_url, api_key, api_key_header = _resolve_api_credentials()
+    env = get_entrata_environment()
 
     if not details_url:
         raise ValueError("Missing LEASE_API_DETAILS_URL (or LEASE_API_BASE_URL) env var")
     if not ar_url:
         raise ValueError("Missing LEASE_API_AR_URL (or LEASE_API_BASE_URL) env var")
     if not api_key:
-        raise ValueError("Missing LEASE_API_KEY env var")
+        raise ValueError("Missing LEASE_API_KEY (or LEASE_API_SANDBOX_KEY) env var")
 
     timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "60") or "60")
 
     print(f"\n{'='*80}")
-    print(f"[SINGLE LEASE API] ===== STARTING API FETCH FOR LEASE {lease_id} =====")
+    print(f"[SINGLE LEASE API] ===== STARTING API FETCH FOR LEASE {lease_id} (env={env}) =====")
     print(f"{'='*80}")
     print(f"[SINGLE LEASE API] Input Parameters:")
     print(f"  - lease_id: {lease_id}")

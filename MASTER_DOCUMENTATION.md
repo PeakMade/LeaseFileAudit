@@ -944,6 +944,13 @@ SAVE_LOCAL_ENTRATA_PDFS=false
 LEASE_TERM_REFRESH_TTL_HOURS=24
 LEASE_TERM_FORCE_REFRESH=false
 
+# Entrata Sandbox Environment (used when entrata_environment.json = "sandbox")
+LEASE_API_SANDBOX_DETAILS_URL=https://apis.entrata.com/ext/orgs/<sandbox-org>/v1/leases?page_no=1&per_page=100
+LEASE_API_SANDBOX_AR_URL=https://apis.entrata.com/ext/orgs/<sandbox-org>/v1/artransactions?page_no=1&per_page=100
+LEASE_API_SANDBOX_KEY=<sandbox-api-key>
+ENTRATA_API_SANDBOX_KEY=<sandbox-api-key>
+ENTRATA_SANDBOX_ORG=<sandbox-org-name>
+
 # SharePoint Lease-Term Lists (GUID or full list URL)
 LEASE_TERM_SET_LIST_ID=<optional-guid>
 LEASE_TERM_SET_LIST_URL=<optional-list-url>
@@ -988,22 +995,28 @@ All JSON config files live in the **project root** and are loaded at startup. Ea
 
 ---
 
-#### `api_posted_ar_codes.json`
+#### `excluded_ar_codes.json`
 
-**Purpose**: Defines which AR code IDs are treated as "API-posted" charges — i.e., system-generated charges that come through the Entrata API rather than manual entry. Used by the audit engine to correctly classify charge source during reconciliation.
+**Purpose**: Defines which AR code IDs are excluded from reconciliation processing (`api_posted_ar_codes`), and optionally restricts processing to a whitelist of allowed codes (`allowed_ar_codes`). When `allowed_ar_codes` is non-empty, only codes in that list are processed — all others are excluded regardless of `api_posted_ar_codes`.
 
 **Env override**: `API_POSTED_AR_CODES_PATH`
 
-**Loaded by**: `audit_engine/mappings.py` → `API_POSTED_AR_CODES`, `API_POSTED_AR_CODES_SET`
+**Loaded by**: `audit_engine/mappings.py` → `API_POSTED_AR_CODES`, `API_POSTED_AR_CODES_SET`, `ALLOWED_AR_CODES_SET`
 
-**Format** (either form accepted):
+**Format** (object with both keys — preferred):
+```json
+{
+  "api_posted_ar_codes": [154774, 154776, 155023, 155217],
+  "allowed_ar_codes": [154771]
+}
+```
+
+Flat array (excluded codes only, legacy — still accepted):
 ```json
 [155023, 154776, 155217]
 ```
-or
-```json
-{ "api_posted_ar_codes": [155023, 154776, 155217] }
-```
+
+**`allowed_ar_codes` behavior**: When non-empty, acts as a whitelist — audit processing is restricted to only those AR codes. Startup logs: `[AR CODE WHITELIST] Restricting to N allowed AR code(s): [...]`. When empty or absent, all codes not in `api_posted_ar_codes` are processed normally.
 
 **Safe fallback**: defaults to empty set if file is missing or malformed — audit continues without API-posted classification.
 
@@ -1199,6 +1212,40 @@ Shorthand (names-only array) also accepted:
 | `expected_frequency` | `monthly` or `one_time` — used to validate billing cadence |
 
 **Safe fallback**: if file is missing, mapping layer falls back to hardcoded defaults.
+
+---
+
+#### `entrata_environment.json`
+
+**Purpose**: Persists the active Entrata API environment (`"prod"` or `"sandbox"`). Written by the Settings page when the user toggles environment. Read at each API call so switching takes effect immediately without a restart.
+
+**Managed by**: `audit_engine/api_ingest.py` → `get_entrata_environment()` / `set_entrata_environment()`
+
+**Format**:
+```json
+{ "environment": "prod" }
+```
+
+**Safe fallback**: defaults to `"prod"` if file is missing or unreadable.
+
+---
+
+#### `sandbox_property_ids.json`
+
+**Purpose**: Maps SharePoint property names to their corresponding Entrata property IDs in the sandbox org. Required because sandbox uses different property IDs than production. Only properties listed here appear in the picklist when sandbox mode is active.
+
+**Loaded by**: `audit_engine/api_ingest.py` → `_load_sandbox_property_id_map()`
+
+**Format** (keys must exactly match SharePoint property names):
+```json
+{
+  "48 West": "100162547"
+}
+```
+
+**Safe fallback**: if file is missing, sandbox mode returns an empty property picklist.
+
+---
 
 ### Configuration Classes (config.py)
 
@@ -1746,6 +1793,8 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **2026-03-16**: Created comprehensive documentation files: `ENTRATA_API_GUIDE.md` (beginner's guide to Entrata API integration with request/response examples and troubleshooting), `SINGLE_LEASE_AUDIT_FLOW.md` (detailed technical flow from API call through SharePoint save), and `PROPERTY_LEASE_CONFIG_README.md` (property-specific lease term configuration guide)
 - **2026-03-10**: Made SharePoint AuditRuns writes synchronous by default to prevent partial data display: changed `ASYNC_AUDIT_RESULTS_WRITE` default from `true` to `false` so property uploads now wait for complete SharePoint list write before returning; ensures all bucket results and findings are available immediately when viewing property audit; trade-off is uploads take ~2 minutes instead of 20 seconds but eliminates issue where only partial rows (e.g., 60 of 2,731) were visible due to incomplete background writes; added `ASYNC_AUDIT_RESULTS_WRITE` configuration option for users who prefer faster uploads and can tolerate temporary incomplete data
 - **2026-04-03**: Hardened API scheduled-charge filtering in `audit_engine/api_ingest.py`: deleted/never-posted scheduled rows are now excluded when Entrata surfaces the sentinel anywhere in the scheduled charge payload (including `postedThrough` and `lastPosted`), and duplicate charge objects emitted from overlapping interval subcollections are deduped before normalization; this prevents fresh API audits from creating false expected one-time charges for rows shown in Entrata as `Deleted - Never Posted`
+- **2026-04-23**: Added Entrata sandbox/production environment switching: Settings page now shows an "Entrata API Environment" toggle; active environment is persisted in `entrata_environment.json`; `audit_engine/api_ingest.py` gained `get_entrata_environment()`, `set_entrata_environment()`, and `_resolve_api_credentials()` so all API calls (lease details, AR transactions, lease documents) route to the correct org/credentials at call time; `audit_engine/entrata_lease_terms.py` gained `_get_entrata_headers_and_url()` to apply sandbox credentials to PDF fetch calls; property picklist in sandbox mode is filtered to only properties mapped in `sandbox_property_ids.json` (sandbox uses different property IDs than prod); picklist cache is environment-aware (separate cache entries for prod and sandbox) so switching env immediately reflects the correct property list without cache invalidation issues
+- **2026-04-23**: Restored AR code whitelist in `excluded_ar_codes.json`: file converted from flat array to object format with `api_posted_ar_codes` (existing excluded codes) and `allowed_ar_codes: [154771]` (rent-only whitelist); whitelist applies to both prod and sandbox environments identically; startup confirms activation with `[AR CODE WHITELIST] Restricting to 1 allowed AR code(s): [154771]`
 - **2026-03-10**: Enhanced SharePoint batch write resilience with exponential backoff retry logic: reduced default AuditRuns batch size from 20 to 10 items to reduce 504 Gateway Timeout errors; added automatic retry for 429/503/504 throttling with exponential backoff (items: 0.5s→1s→2s, batches: 1s→2s, max 3 attempts); added 0.5s delays between batches to reduce API pressure; failed batches automatically fall back to individual item posts with retry; configurable via `SHAREPOINT_BATCH_SIZE_AUDITRUNS` and `SHAREPOINT_BATCH_SIZE_SNAPSHOTS` environment variables
 - **2026-03-10**: Simplified property upload architecture by removing baseline merge/overlay logic: each property upload now stores ONLY that property's data in an independent immutable run (no merging with previous runs); portfolio dashboard aggregates latest snapshot per property across ALL runs using new `load_latest_property_snapshots_across_runs()` function which queries RunDisplaySnapshots with property-scope filter, groups by PropertyId, and selects max RunId per property; eliminates duplicate data storage, session dependencies, and SharePoint eventual consistency issues; each property row in portfolio links to its specific run_id for drill-down
 - **2026-03-10**: Integrated SharePoint Properties_0 picklist as authoritative property name source: added property name lookup during API uploads and snapshot building with priority chain (SharePoint picklist → API response → DataFrame backfill → "Property {id}" fallback); property_name_map now saved to metadata JSON and backfilled from actual_detail/expected_detail DataFrames when loading older runs; added `_extract_property_names_from_detail()` helper to populate missing property names from reconciliation data; fixes issue where properties showed as "Property XXXXX" instead of actual names
