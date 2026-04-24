@@ -3580,7 +3580,8 @@ def _get_status_label(status: str) -> str:
     labels = {
         "SCHEDULED_NOT_BILLED": "Scheduled Not Billed",
         "BILLED_NOT_SCHEDULED": "Billed Without Schedule",
-        "AMOUNT_MISMATCH": "Amount Mismatch"
+        "AMOUNT_MISMATCH": "Amount Mismatch",
+        "REVERSED_BILLING": "Reversal",
     }
     return labels.get(status, status)
 
@@ -3621,7 +3622,8 @@ def _get_status_color(status: str) -> str:
     colors = {
         "SCHEDULED_NOT_BILLED": "secondary",  # grey
         "BILLED_NOT_SCHEDULED": "secondary",  # grey
-        "AMOUNT_MISMATCH": "secondary"  # grey
+        "AMOUNT_MISMATCH": "secondary",  # grey
+        "REVERSED_BILLING": "warning",  # orange/yellow
     }
     return colors.get(status, "secondary")
 
@@ -3630,6 +3632,7 @@ def build_entrata_url(lease_id: str, customer_id: str = None) -> str:
     """Build Entrata resident profile URL.
     
     Opens the resident profile shell (module=customers_systemxxx) with customer[id] and lease[id].
+    Uses the sandbox org URL when sandbox environment is active.
     
     Args:
         lease_id: The lease interval ID
@@ -3638,7 +3641,11 @@ def build_entrata_url(lease_id: str, customer_id: str = None) -> str:
     Returns:
         Entrata URL string. If customer_id is missing, returns customers module.
     """
-    base_url = "https://peakmade.entrata.com/"
+    from audit_engine.api_ingest import get_entrata_environment
+    if get_entrata_environment() == "sandbox":
+        base_url = "https://peakmade-test-17291.entrata.com/"
+    else:
+        base_url = "https://peakmade.entrata.com/"
     
     if customer_id and str(customer_id).strip() and str(customer_id).lower() != 'nan':
         # Open resident profile shell
@@ -3875,7 +3882,9 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                         'amount': act_rec.get('actual_amount', 0),
                         'post_date': post_date,
                         'ar_code_name': act_rec.get('AR_CODE_NAME', ar_code_name),
-                        'transaction_id': act_rec.get('ID') or act_rec.get('AR_TRANSACTION_ID')
+                        'transaction_id': act_rec.get('ID') or act_rec.get('AR_TRANSACTION_ID'),
+                        'is_reversal': bool(pd.to_numeric(act_rec.get('IS_REVERSAL', 0), errors='coerce') == 1),
+                        'is_deleted': bool(pd.to_numeric(act_rec.get('IS_DELETED', 0), errors='coerce') == 1),
                     })
             
             # Convert audit_month Timestamp to date string
@@ -4140,7 +4149,9 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     actual_transactions.append({
                         'amount': act_rec.get('actual_amount', 0),
                         'post_date': post_date,
-                        'transaction_id': act_rec.get('ID') or act_rec.get('AR_TRANSACTION_ID')
+                        'transaction_id': act_rec.get('ID') or act_rec.get('AR_TRANSACTION_ID'),
+                        'is_reversal': bool(pd.to_numeric(act_rec.get('IS_REVERSAL', 0), errors='coerce') == 1),
+                        'is_deleted': bool(pd.to_numeric(act_rec.get('IS_DELETED', 0), errors='coerce') == 1),
                     })
             
             # Convert audit_month to date string

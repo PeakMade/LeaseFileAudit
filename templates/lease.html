@@ -370,9 +370,12 @@
                     // Actual columns
                     if (i < actTrans.length) {
                         const act = actTrans[i];
-                        content += `<td class="actual-col text-center">${formatDate(act.post_date, 'MM/DD/YYYY')}</td>`;
-                        content += `<td class="text-center actual-amount-col">$${formatNumber(act.amount)}</td>`;
-                        content += `<td class="text-center actual-txn-col"><small class="text-muted">${act.transaction_id != null ? act.transaction_id : ''}</small></td>`;
+                        const isReversal = act.is_reversal || act.is_deleted || (act.amount != null && parseFloat(act.amount) < 0);
+                        const reversalBadge = isReversal ? ` <span class="badge bg-warning text-dark" title="This transaction is a reversal or deletion">Reversal</span>` : '';
+                        const reversalStyle = isReversal ? ' style="background-color: #fff8e1;"' : '';
+                        content += `<td class="actual-col text-center"${reversalStyle}>${formatDate(act.post_date, 'MM/DD/YYYY')}${reversalBadge}</td>`;
+                        content += `<td class="text-center actual-amount-col"${reversalStyle}>$${formatNumber(act.amount)}</td>`;
+                        content += `<td class="text-center actual-txn-col"${reversalStyle}><small class="text-muted">${act.transaction_id != null ? act.transaction_id : ''}</small></td>`;
                     } else {
                         // No actual transactions at all for the month: use one rowspan cell on first row.
                         if (actTrans.length === 0) {
