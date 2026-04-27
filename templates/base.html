@@ -186,20 +186,17 @@
         
         /* User badge styling */
         .user-badge {
-            position: absolute;
-            top: 90px;
-            right: 40px;
             background: white;
             border: 1px solid #e0e0e0;
             border-radius: 8px;
-            padding: 8px 16px;
+            padding: 6px 12px;
             display: flex;
             align-items: center;
-            gap: 10px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            gap: 8px;
             cursor: pointer;
             transition: all 0.2s ease;
-            z-index: 1000;
+            color: white;
+            white-space: nowrap;
         }
         
         /* Action buttons container */
@@ -256,18 +253,18 @@
         
         .user-badge .user-icon {
             color: #666;
-            font-size: 18px;
+            font-size: 16px;
         }
         
         .user-badge .user-name {
             color: #333;
             font-weight: 600;
-            font-size: 14px;
+            font-size: 13px;
         }
         
         .user-badge .dropdown-arrow {
             color: #999;
-            font-size: 12px;
+            font-size: 11px;
             transition: transform 0.2s ease;
         }
         
@@ -286,7 +283,7 @@
             padding: 12px;
             min-width: 250px;
             display: none;
-            z-index: 999;
+            z-index: 9999;
             margin-top: 4px;
         }
         
@@ -561,9 +558,40 @@
             </div>
         </div>
     </div>
-    <!-- User Badge (fixed position at top right) -->
+
+    <!-- Standard PeakMade Header -->
+    <header style="background: linear-gradient(90deg, #ffb6b6 0%, #1f51ff 50%, #90eeff 100%);
+                   box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+                   height: 80px;
+                   padding: 0;
+                   margin-bottom: 0;
+                   position: sticky;
+                   top: 0;
+                   z-index: 1000;">
+        <div style="display: flex; align-items: center; justify-content: space-between; max-width: 100%; margin: 0 auto; padding: 0 40px;">
+            
+            <div style="flex: 1; display: flex; justify-content: flex-start; align-items: center; height: 80px;">
+                <img src="{{ url_for('static', filename='Peakmade_logo.png') }}" alt="PeakMade Logo" style="height: 40px; width: auto;">
+            </div>
+            
+            <div style="flex: 1; display: flex; justify-content: center; align-items: center; height: 80px;">
+                <h1 style="font-size: 28px; font-family: 'Montserrat', sans-serif; font-weight: 700; color: #fff; margin: 0; letter-spacing: 2px; text-shadow: 0 2px 6px rgba(0,0,0,0.12); line-height: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                    {% block app_title %}Lease File Audit{% endblock %}
+                </h1>
+            </div>
+            
+            <div style="flex: 1; display: flex; justify-content: flex-end; align-items: center; height: 80px; gap: 16px; padding-right: 0;">
+                <img src="{{ url_for('static', filename='Redpoint_logo.png') }}" alt="Redpoint Logo" style="height: 32px; width: auto;">
+                <!-- Page-specific controls (run selector, etc.) -->
+                {% block page_controls %}{% endblock %}
+            </div>
+            
+        </div>
+    </header>
+
+    <!-- User badge (floating, below header) -->
     {% if user %}
-    <div class="user-badge">
+    <div class="user-badge" style="position: fixed; top: 90px; right: 20px; z-index: 999;">
         <i class="fas fa-user user-icon"></i>
         <span class="user-name">{{ user.name }}</span>
         <i class="fas fa-chevron-down dropdown-arrow"></i>
@@ -585,31 +613,6 @@
         </div>
     </div>
     {% endif %}
-    
-    <!-- Standard PeakMade Header -->
-    <header style="background: linear-gradient(90deg, #ffb6b6 0%, #1f51ff 50%, #90eeff 100%);
-                   box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-                   height: 80px;
-                   padding: 0;
-                   margin-bottom: 0;">
-        <div style="display: flex; align-items: center; justify-content: space-between; max-width: 100%; margin: 0 auto; padding: 0 40px;">
-            
-            <div style="flex: 1; display: flex; justify-content: flex-start; align-items: center; height: 80px;">
-                <img src="{{ url_for('static', filename='Peakmade_logo.png') }}" alt="PeakMade Logo" style="height: 40px; width: auto;">
-            </div>
-            
-            <div style="flex: 1; display: flex; justify-content: center; align-items: center; height: 80px;">
-                <h1 style="font-size: 28px; font-family: 'Montserrat', sans-serif; font-weight: 700; color: #fff; margin: 0; letter-spacing: 2px; text-shadow: 0 2px 6px rgba(0,0,0,0.12); line-height: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                    {% block app_title %}Lease File Audit{% endblock %}
-                </h1>
-            </div>
-            
-            <div style="flex: 1; display: flex; justify-content: flex-end; align-items: center; height: 80px; gap: 20px;">
-                <img src="{{ url_for('static', filename='Redpoint_logo.png') }}" alt="Redpoint Logo" style="height: 32px; width: auto;">
-            </div>
-            
-        </div>
-    </header>
 
     <!-- Main Content Area -->
     <main class="main-content">
@@ -698,5 +701,94 @@
     </script>
     
     {% block extra_js %}{% endblock %}
+
+    <!-- Global collapsible cards -->
+    <script>
+    (function () {
+        const STORAGE_KEY = 'collapsedCards';
+
+        function getCollapsed() {
+            try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
+        }
+        function saveCollapsed(map) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+        }
+
+        function cardId(header) {
+            // Use existing id, or derive one from text content
+            if (header.id) return header.id;
+            const txt = (header.textContent || '').trim().replace(/\s+/g, '_').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 60);
+            return 'card_' + txt;
+        }
+
+        function initCards() {
+            document.querySelectorAll('.card').forEach(card => {
+                const header = card.querySelector(':scope > .card-header');
+                // Find all direct children that aren't the header
+                const collapsibles = Array.from(card.children).filter(el => !el.classList.contains('card-header'));
+                if (!header || !collapsibles.length) return;
+                // Skip already-initialized cards
+                if (header.hasAttribute('data-collapse-init')) return;
+
+                const id = cardId(header);
+                header.setAttribute('data-card-id', id);
+                header.style.cursor = 'pointer';
+                header.style.userSelect = 'none';
+
+                // Add toggle chevron
+                const chevron = document.createElement('span');
+                chevron.className = 'card-collapse-chevron ms-auto';
+                chevron.innerHTML = '<i class="fas fa-chevron-up"></i>';
+                chevron.style.cssText = 'font-size:0.75rem;color:#999;margin-left:8px;transition:transform 0.2s;flex-shrink:0;';
+                // Only append if not already there
+                if (!header.querySelector('.card-collapse-chevron')) {
+                    // Make header flex so chevron goes to far right
+                    if (!header.style.display) header.style.display = 'flex';
+                    if (getComputedStyle(header).display !== 'flex') {
+                        header.style.display = 'flex';
+                    }
+                    header.style.alignItems = 'center';
+                    header.appendChild(chevron);
+                }
+
+                function applyState(animate) {
+                    const isCollapsed = getCollapsed()[id];
+                    collapsibles.forEach(el => {
+                        el.style.transition = animate ? 'opacity 0.15s' : '';
+                        el.style.display = isCollapsed ? 'none' : '';
+                        el.style.opacity = isCollapsed ? '0' : '1';
+                    });
+                    const icon = header.querySelector('.card-collapse-chevron i');
+                    if (icon) {
+                        icon.style.transform = isCollapsed ? 'rotate(180deg)' : '';
+                    }
+                }
+
+                // Restore saved state
+                applyState(false);
+
+                header.addEventListener('click', function (e) {
+                    // Don't collapse if user clicked a button/input/link inside the header
+                    if (e.target.closest('button, a, input, select, label, .form-check')) return;
+                    const map = getCollapsed();
+                    map[id] = !map[id];
+                    saveCollapsed(map);
+                    applyState(true);
+                });
+
+                header.setAttribute('data-collapse-init', '1');
+            });
+        }
+
+        // Run after DOM ready and also after any dynamic content loads
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initCards);
+        } else {
+            initCards();
+        }
+        // Re-run after a short delay in case cards render after JS
+        setTimeout(initCards, 600);
+    })();
+    </script>
 </body>
 </html>

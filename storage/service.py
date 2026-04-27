@@ -2500,149 +2500,6 @@ class StorageService:
 
         return dataframe
 
-    def load_exception_states_from_sharepoint_list(self, run_id: str, property_id: int, lease_interval_id: int) -> List[Dict[str, Any]]:
-        """Load exception workflow states from SharePoint List 'ExceptionStates'."""
-        if not self._can_use_sharepoint_lists():
-            logger.debug("[STORAGE] SharePoint list not configured, returning empty exception states")
-            return []
-
-        try:
-            logger.info("[STORAGE] 📊 Loading exception states from SharePoint list")
-            site_id = self._get_site_id()
-            if not site_id:
-                return []
-
-            list_id = self._get_sharepoint_list_id("ExceptionStates")
-            if not list_id:
-                return []
-
-            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
-            headers = {
-                'Authorization': f'Bearer {self.access_token}',
-                'Content-Type': 'application/json'
-            }
-            filter_query = (
-                f"fields/RunId eq '{run_id}' and "
-                f"fields/PropertyId eq {int(property_id)} and "
-                f"fields/LeaseIntervalId eq {int(lease_interval_id)}"
-            )
-            logger.info(f"[STORAGE] ExceptionStates filter: {filter_query}")
-            params = {'$expand': 'fields', '$filter': filter_query}
-            response = requests.get(items_url, headers=headers, params=params, timeout=30)
-
-            if response.status_code != 200:
-                logger.error(f"[STORAGE] Failed to query exception states: {response.status_code} - {response.text}")
-                return []
-
-            items_data = response.json()
-            items = items_data.get('value', [])
-            results = []
-            for item in items:
-                fields = item.get('fields', {})
-                results.append({
-                    'composite_key': fields.get('CompositeKey', ''),
-                    'run_id': fields.get('RunId', ''),
-                    'property_id': fields.get('PropertyId', None),
-                    'lease_interval_id': fields.get('LeaseIntervalId', None),
-                    'ar_code_id': fields.get('ArCodeId', None),
-                    'exception_type': fields.get('ExceptionType', ''),
-                    'status': fields.get('Status', ''),
-                    'fix_label': fields.get('FixLabel', ''),
-                    'original_fix_label': fields.get('OriginalFixLabel', ''),
-                    'updated_fix_label': fields.get('UpdatedFixLabel', ''),
-                    'action_type': fields.get('ActionType', ''),
-                    'resolved_at': fields.get('ResolvedAt', ''),
-                    'resolved_months': fields.get('ResolvedMonths', ''),
-                    'updated_at': fields.get('UpdatedAt', ''),
-                    'updated_by': fields.get('UpdatedBy', '')
-                })
-            logger.info(f"[STORAGE] Loaded {len(results)} exception state(s)")
-            return results
-
-        except Exception as e:
-            logger.error(f"[STORAGE] Error loading exception states from SharePoint list: {e}", exc_info=True)
-            return []
-
-    def upsert_exception_state_to_sharepoint_list(self, state: Dict[str, Any]) -> bool:
-        """Upsert exception workflow state into SharePoint List 'ExceptionStates'."""
-        if not self._can_use_sharepoint_lists():
-            logger.debug("[STORAGE] SharePoint list not configured, skipping exception state upsert")
-            return False
-
-        try:
-            site_id = self._get_site_id()
-            if not site_id:
-                return False
-
-            list_id = self._get_sharepoint_list_id("ExceptionStates")
-            if not list_id:
-                return False
-
-            composite_key = state.get('composite_key')
-            if not composite_key:
-                composite_key = (
-                    f"{state.get('run_id')}:{state.get('property_id')}:{state.get('lease_interval_id')}:"
-                    f"{state.get('ar_code_id')}:{state.get('exception_type')}"
-                )
-            logger.info(f"[STORAGE] Upserting ExceptionState: {composite_key}")
-
-            headers = {
-                'Authorization': f'Bearer {self.access_token}',
-                'Content-Type': 'application/json'
-            }
-
-            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
-            filter_query = f"fields/CompositeKey eq '{composite_key}'"
-            params = {'$expand': 'fields', '$filter': filter_query}
-            response = requests.get(items_url, headers=headers, params=params, timeout=30)
-
-            if response.status_code != 200:
-                logger.error(f"[STORAGE] Failed to query exception state: {response.status_code} - {response.text}")
-                return False
-
-            fields_payload = {
-                'CompositeKey': composite_key,
-                'RunId': state.get('run_id'),
-                'PropertyId': state.get('property_id'),
-                'LeaseIntervalId': state.get('lease_interval_id'),
-                'ArCodeId': state.get('ar_code_id'),
-                'ExceptionType': state.get('exception_type'),
-                'Status': state.get('status'),
-                'FixLabel': state.get('fix_label'),
-                'OriginalFixLabel': state.get('original_fix_label'),
-                'UpdatedFixLabel': state.get('updated_fix_label'),
-                'ActionType': state.get('action_type'),
-                'ResolvedAt': state.get('resolved_at'),
-                'ResolvedMonths': state.get('resolved_months'),
-                'UpdatedAt': state.get('updated_at'),
-                'UpdatedBy': state.get('updated_by')
-            }
-
-            items_data = response.json()
-            items = items_data.get('value', [])
-            if items:
-                item_id = items[0]['id']
-                update_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items/{item_id}/fields"
-                update_response = requests.patch(update_url, headers=headers, json=fields_payload, timeout=30)
-                if update_response.status_code in [200, 204]:
-                    logger.info("[STORAGE] ✅ Exception state updated")
-                    return True
-                logger.error(f"[STORAGE] Failed to update exception state: {update_response.status_code} - {update_response.text}")
-                return False
-
-            create_payload = {'fields': fields_payload}
-            create_response = requests.post(items_url, headers=headers, json=create_payload, timeout=30)
-            if create_response.status_code in [200, 201]:
-                logger.info("[STORAGE] ✅ Exception state created")
-                return True
-
-            logger.error(f"[STORAGE] Failed to create exception state: {create_response.status_code} - {create_response.text}")
-            return False
-
-        except Exception as e:
-            logger.error(f"[STORAGE] Error upserting exception state: {e}", exc_info=True)
-            return False
-
     def upsert_lease_term_set_to_sharepoint_list(self, payload: Dict[str, Any]) -> bool:
         """Upsert LeaseTermSet row by LeaseKey."""
         if not self._can_use_sharepoint_lists():
@@ -3216,6 +3073,110 @@ class StorageService:
 
         except Exception as e:
             logger.error(f"[STORAGE] Error in bulk fetch: {e}", exc_info=True)
+            return {}
+
+    def load_lease_exception_months_bulk(self, run_id: str, property_id: int, lease_interval_id: int) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        BULK FETCH: Load all exception months for a single lease in ONE API call,
+        grouped by ar_code_id. Replaces the N+1 per-AR-code loop in the lease view.
+
+        Returns:
+            Dictionary keyed by ar_code_id (str) -> list of month records
+        """
+        if not self._can_use_sharepoint_lists():
+            return {}
+
+        try:
+            logger.info(f"[STORAGE] 🚀 BULK FETCH: Loading ALL exception months for lease {lease_interval_id}")
+            site_id = self._get_site_id()
+            if not site_id:
+                return {}
+
+            list_id = self._get_sharepoint_list_id("ExceptionMonths")
+            if not list_id:
+                logger.warning("[STORAGE] ExceptionMonths list not found")
+                return {}
+
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+
+            filter_query = (
+                f"fields/PropertyId eq {int(property_id)} and "
+                f"fields/LeaseIntervalId eq {int(lease_interval_id)}"
+            )
+            params = {'$expand': 'fields', '$filter': filter_query, '$top': 5000}
+
+            response = requests.get(items_url, headers=headers, params=params, timeout=30)
+
+            if response.status_code != 200:
+                logger.error(f"[STORAGE] ❌ Lease bulk fetch failed: {response.status_code} - {response.text}")
+                return {}
+
+            items = response.json().get('value', [])
+            logger.info(f"[STORAGE] ✅ Bulk fetched {len(items)} exception month records for lease {lease_interval_id}")
+
+            # Group by ar_code_id
+            grouped: Dict[str, list] = {}
+            for item in items:
+                fields = item.get('fields', {})
+                ar_code_id = str(fields.get('ArCodeId', '')).strip()
+                audit_month = self._normalize_snapshot_audit_month(fields.get('AuditMonth', ''))
+                record_run_id = fields.get('RunId', '')
+
+                record = {
+                    'item_id': item.get('id'),
+                    'composite_key': fields.get('CompositeKey', ''),
+                    'run_id': record_run_id,
+                    'property_id': fields.get('PropertyId', None),
+                    'lease_interval_id': fields.get('LeaseIntervalId', None),
+                    'ar_code_id': ar_code_id,
+                    'audit_month': audit_month,
+                    'exception_type': fields.get('ExceptionType', ''),
+                    'status': fields.get('Status', 'Open'),
+                    'fix_label': fields.get('FixLabel', ''),
+                    'action_type': fields.get('ActionType', ''),
+                    'variance': fields.get('Variance', 0),
+                    'expected_total': fields.get('ExpectedTotal', 0),
+                    'actual_total': fields.get('ActualTotal', 0),
+                    'resolved_at': fields.get('ResolvedAt', ''),
+                    'resolved_by': fields.get('ResolvedBy', ''),
+                    'resolved_by_name': fields.get('ResolvedByName', ''),
+                    'updated_at': fields.get('UpdatedAt', ''),
+                    'updated_by': fields.get('UpdatedBy', ''),
+                    'is_historical': record_run_id != run_id,
+                    'is_current_run': record_run_id == run_id,
+                }
+
+                if ar_code_id not in grouped:
+                    grouped[ar_code_id] = []
+                grouped[ar_code_id].append(record)
+
+            # Deduplicate months within each AR code group (same priority logic as per-code method)
+            for ar_code_id, records in grouped.items():
+                seen_months: set = set()
+                deduped = []
+                for record in records:
+                    if record['status'] == 'Resolved' and record['audit_month'] not in seen_months:
+                        deduped.append(record)
+                        seen_months.add(record['audit_month'])
+                for record in records:
+                    if record['is_current_run'] and record['audit_month'] not in seen_months:
+                        deduped.append(record)
+                        seen_months.add(record['audit_month'])
+                for record in records:
+                    if not record['is_current_run'] and record['audit_month'] not in seen_months:
+                        deduped.append(record)
+                        seen_months.add(record['audit_month'])
+                grouped[ar_code_id] = deduped
+
+            logger.info(f"[STORAGE] 📦 Lease bulk grouped into {len(grouped)} AR code(s)")
+            return grouped
+
+        except Exception as e:
+            logger.error(f"[STORAGE] Error in lease bulk fetch: {e}", exc_info=True)
             return {}
 
     def upsert_exception_month_to_sharepoint_list(self, month_data: Dict[str, Any]) -> bool:
