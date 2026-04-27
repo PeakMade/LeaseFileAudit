@@ -723,6 +723,7 @@
 
         function initCards() {
             document.querySelectorAll('.card').forEach(card => {
+                if (card.hasAttribute('data-no-collapse')) return;
                 const header = card.querySelector(':scope > .card-header');
                 // Find all direct children that aren't the header
                 const collapsibles = Array.from(card.children).filter(el => !el.classList.contains('card-header'));

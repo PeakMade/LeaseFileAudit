@@ -49,6 +49,11 @@
                                         </button>
                                     </div>
                                 </form>
+                                <div class="mt-2">
+                                    <a href="{{ url_for('main.portfolio') }}" class="btn btn-secondary btn-sm">
+                                        Go to Portfolio
+                                    </a>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -88,21 +93,18 @@
         </div>
 
         {% if recent_runs %}
-        <div class="card mt-4">
+        <div class="card mt-4" data-no-collapse>
             <div class="card-header d-flex align-items-center justify-content-between">
                 <h5 class="mb-0">Recent Audit Runs</h5>
                 <button
-                    class="btn btn-sm btn-light"
+                    class="btn btn-sm btn-light ms-auto"
                     type="button"
-                    data-bs-toggle="collapse"
-                    data-bs-target="#recentRunsCollapse"
-                    aria-expanded="false"
-                    aria-controls="recentRunsCollapse"
+                    onclick="var el=document.getElementById('recentRunsCollapse'); var hidden=el.style.display==='none'||el.style.display===''; el.style.display=hidden?'block':'none'; this.textContent=hidden?'Hide':'Show Latest 5';"
                 >
                     Show Latest 5
                 </button>
             </div>
-            <div id="recentRunsCollapse" class="collapse">
+            <div id="recentRunsCollapse" style="display:none;">
             <div class="card-body">
                 <p class="text-muted small mb-3">Showing the 5 most recent audit runs.</p>
                 <div class="table-responsive">
