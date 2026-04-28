@@ -20,14 +20,138 @@
                                 <form method="POST" action="{{ url_for('main.upload_api_property') }}">
                                     <div class="row g-3">
                                         <div class="col-md-12">
-                                            <label for="api_property_id" class="form-label fw-bold">Property ID</label>
+                                            <label class="form-label fw-bold">Property</label>
                                             {% if api_property_options %}
-                                            <select class="form-select" id="api_property_id" name="api_property_id" required>
-                                                <option value="">Select Property...</option>
-                                                {% for property in api_property_options %}
-                                                <option value="{{ property.property_id }}">{{ property.property_name }} ({{ property.property_id }})</option>
-                                                {% endfor %}
-                                            </select>
+                                            <!-- Hidden input that actually submits -->
+                                            <input type="hidden" id="api_property_id" name="api_property_id" required>
+                                            <!-- Custom dropdown -->
+                                            <div class="property-picker" id="propertyPicker">
+                                                <div class="property-picker-input form-control d-flex align-items-center justify-content-between"
+                                                     id="propertyPickerTrigger" role="combobox" aria-expanded="false"
+                                                     style="cursor: pointer; user-select: none;">
+                                                    <span id="propertyPickerLabel" style="color: #6c757d;">Select Property…</span>
+                                                    <i class="fas fa-chevron-down ms-2" style="font-size: 0.75rem; color: #aaa;"></i>
+                                                </div>
+                                                <div class="property-picker-dropdown" id="propertyPickerDropdown">
+                                                    <div class="property-picker-search-wrap">
+                                                        <input type="text" class="form-control form-control-sm"
+                                                               id="propertyPickerSearch" placeholder="Search properties…" autocomplete="off">
+                                                    </div>
+                                                    <ul class="property-picker-list" id="propertyPickerList">
+                                                        {% for property in api_property_options %}
+                                                        <li class="property-picker-item"
+                                                            data-value="{{ property.property_id }}"
+                                                            data-name="{{ property.property_name }}"
+                                                            data-search="{{ property.property_name | lower }} {{ property.property_id }}">
+                                                            <span class="prop-name">{{ property.property_name }}</span>
+                                                            <span class="prop-id">{{ property.property_id }}</span>
+                                                        </li>
+                                                        {% endfor %}
+                                                    </ul>
+                                                </div>
+                                            </div>
+                                            <style>
+                                            .property-picker { position: relative; }
+                                            .property-picker-input { min-height: 38px; background: #fff; }
+                                            .property-picker-input:focus-within,
+                                            .property-picker-input.open { border-color: #00a8c8; box-shadow: 0 0 0 0.2rem rgba(0,168,200,0.2); }
+                                            .property-picker-dropdown {
+                                                display: none;
+                                                position: absolute;
+                                                top: calc(100% + 4px);
+                                                left: 0; right: 0;
+                                                background: #fff;
+                                                border: 1px solid #dee2e6;
+                                                border-radius: 8px;
+                                                box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+                                                z-index: 1050;
+                                                overflow: hidden;
+                                            }
+                                            .property-picker-dropdown.open { display: block; }
+                                            .property-picker-search-wrap { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
+                                            .property-picker-list {
+                                                list-style: none; margin: 0; padding: 0;
+                                                max-height: 280px; overflow-y: auto;
+                                            }
+                                            .property-picker-item {
+                                                display: flex; flex-direction: column;
+                                                padding: 8px 14px; cursor: pointer;
+                                                border-bottom: 1px solid #f8f8f8;
+                                                transition: background 0.1s;
+                                            }
+                                            .property-picker-item:hover,
+                                            .property-picker-item.highlighted { background: #e6f7fb; }
+                                            .property-picker-item.selected { background: #d0f0f7; }
+                                            .prop-name { font-weight: 600; color: #231f20; font-size: 0.9rem; }
+                                            .prop-id { font-size: 0.78rem; color: #00a8c8; margin-top: 1px; }
+                                            .property-picker-item.hidden { display: none; }
+                                            </style>
+                                            <script>
+                                            (function() {
+                                                const picker      = document.getElementById('propertyPicker');
+                                                const trigger     = document.getElementById('propertyPickerTrigger');
+                                                const dropdown    = document.getElementById('propertyPickerDropdown');
+                                                const search      = document.getElementById('propertyPickerSearch');
+                                                const list        = document.getElementById('propertyPickerList');
+                                                const label       = document.getElementById('propertyPickerLabel');
+                                                const hiddenInput = document.getElementById('api_property_id');
+
+                                                function openDropdown() {
+                                                    dropdown.classList.add('open');
+                                                    trigger.classList.add('open');
+                                                    trigger.setAttribute('aria-expanded', 'true');
+                                                    search.value = '';
+                                                    filterItems('');
+                                                    setTimeout(() => search.focus(), 50);
+                                                }
+                                                function closeDropdown() {
+                                                    dropdown.classList.remove('open');
+                                                    trigger.classList.remove('open');
+                                                    trigger.setAttribute('aria-expanded', 'false');
+                                                }
+                                                function filterItems(query) {
+                                                    const q = query.trim().toLowerCase();
+                                                    list.querySelectorAll('.property-picker-item').forEach(item => {
+                                                        const match = !q || item.dataset.search.includes(q);
+                                                        item.classList.toggle('hidden', !match);
+                                                    });
+                                                }
+                                                function selectItem(item) {
+                                                    hiddenInput.value = item.dataset.value;
+                                                    label.textContent = item.dataset.name + ' (' + item.dataset.value + ')';
+                                                    label.style.color = '#231f20';
+                                                    list.querySelectorAll('.property-picker-item').forEach(i => i.classList.remove('selected'));
+                                                    item.classList.add('selected');
+                                                    closeDropdown();
+                                                }
+
+                                                trigger.addEventListener('click', function(e) {
+                                                    dropdown.classList.contains('open') ? closeDropdown() : openDropdown();
+                                                });
+                                                search.addEventListener('input', function() { filterItems(this.value); });
+                                                list.addEventListener('click', function(e) {
+                                                    const item = e.target.closest('.property-picker-item');
+                                                    if (item) selectItem(item);
+                                                });
+                                                document.addEventListener('click', function(e) {
+                                                    if (!picker.contains(e.target)) closeDropdown();
+                                                });
+
+                                                // Validate on form submit
+                                                trigger.closest('form').addEventListener('submit', function(e) {
+                                                    if (!hiddenInput.value) {
+                                                        e.preventDefault();
+                                                        trigger.classList.add('is-invalid');
+                                                        trigger.style.borderColor = '#dc3545';
+                                                        openDropdown();
+                                                    }
+                                                });
+                                                hiddenInput.addEventListener('change', function() {
+                                                    trigger.classList.remove('is-invalid');
+                                                    trigger.style.borderColor = '';
+                                                });
+                                            })();
+                                            </script>
                                             {% else %}
                                             <input type="number" step="1" class="form-control" id="api_property_id" name="api_property_id" required>
                                             <small class="text-muted">Property picklist unavailable; enter Property ID manually.</small>

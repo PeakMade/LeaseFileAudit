@@ -2487,12 +2487,30 @@ def upload_api_property():
     request_started_at_utc = datetime.utcnow()
 
     try:
-        property_id_raw = request.form.get('api_property_id')
+        property_id_raw = request.form.get('api_property_id', '').strip()
         if not property_id_raw:
             flash('Property ID is required for API upload.', 'danger')
             return redirect(url_for('main.index'))
 
-        property_id = int(float(property_id_raw))
+        # Try numeric parse first; if it fails, look up by name in the picklist
+        try:
+            property_id = int(float(property_id_raw))
+        except (ValueError, TypeError):
+            try:
+                from audit_engine.api_ingest import get_entrata_environment
+                _picklist = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
+                _match = next(
+                    (item for item in _picklist if item.get('property_name', '').strip().lower() == property_id_raw.lower()),
+                    None,
+                )
+                if not _match:
+                    flash(f'Property "{property_id_raw}" not found in picklist. Please enter a valid Property ID or select from the list.', 'danger')
+                    return redirect(url_for('main.index'))
+                property_id = int(float(_match['property_id']))
+            except Exception as _lookup_err:
+                logger.warning(f"[API UPLOAD] Picklist lookup failed for '{property_id_raw}': {_lookup_err}")
+                flash(f'Invalid Property ID "{property_id_raw}". Please enter a numeric Property ID.', 'danger')
+                return redirect(url_for('main.index'))
 
         audit_year = request.form.get('audit_year')
         audit_month = request.form.get('audit_month')
@@ -2996,6 +3014,19 @@ def portfolio(run_id: str = None):
             f"overcharge={total_overcharge}, match_rate={match_rate:.2f}%"
         )
 
+        # Build a picklist lookup to resolve property names missing from snapshots
+        picklist_name_map: dict[int, str] = {}
+        try:
+            from audit_engine.api_ingest import get_entrata_environment
+            picklist = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
+            for item in picklist:
+                pid = _normalize_property_id_token(item.get('property_id'))
+                pname = _clean_property_name(item.get('property_name'))
+                if pid is not None and pname:
+                    picklist_name_map[pid] = pname
+        except Exception as _picklist_err:
+            logger.debug(f"[PORTFOLIO] Could not load picklist for name enrichment: {_picklist_err}")
+
         # Build property rows for display
         properties = []
         for snapshot_row in property_snapshots:
@@ -3010,11 +3041,17 @@ def portfolio(run_id: str = None):
             # Use run_id from this specific property's snapshot (for drill-down links)
             property_run_id = snapshot_row.get('run_id')
 
+            property_id_int = _normalize_property_id_token(property_id)
+            resolved_name = (
+                _clean_property_name(snapshot_row.get('property_name'))
+                or (picklist_name_map.get(property_id_int) if property_id_int is not None else None)
+            )
+            # Skip properties with no resolved name — stale/sandbox entries with no real identity
+            if not resolved_name:
+                logger.debug(f"[PORTFOLIO] Skipping unnamed property_id={property_id}")
+                continue
             properties.append({
-                'property_name': (
-                    _clean_property_name(snapshot_row.get('property_name'))
-                    or f"Property {property_id}"
-                ),
+                'property_name': resolved_name,
                 'property_id': property_id,
                 'run_id': property_run_id,  # Store which run this property data is from
                 'total_lease_intervals': int(snapshot_row.get('total_lease_intervals', 0) or 0),

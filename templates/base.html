@@ -203,7 +203,7 @@
         .action-buttons-container {
             position: absolute;
             top: 90px;
-            right: 280px;
+            right: 20px;
             display: flex;
             gap: 10px;
             z-index: 999;
@@ -222,7 +222,7 @@
         /* Responsive adjustments for smaller screens */
         @media (max-width: 1200px) {
             .action-buttons-container {
-                right: 220px;
+                right: 20px;
             }
         }
         
@@ -547,15 +547,27 @@
 </head>
 <body style="margin: 0; padding: 0; overflow-x: hidden; position: relative; background-color: #f4f4f4;">
     <div id="pageLoadingOverlay" class="page-loading-overlay" aria-hidden="true">
-        <div class="page-scan" role="status" aria-label="Loading">
-            <div class="scan-sheet">
-                <div class="scan-top"></div>
-                <div class="scan-line"></div>
-                <div class="scan-text line-1"></div>
-                <div class="scan-text line-2"></div>
-                <div class="scan-text line-3"></div>
-                <div class="scan-text line-4"></div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 16px;">
+            <div class="page-scan" role="status" aria-label="Loading">
+                <div class="scan-sheet">
+                    <div class="scan-top"></div>
+                    <div class="scan-line"></div>
+                    <div class="scan-text line-1"></div>
+                    <div class="scan-text line-2"></div>
+                    <div class="scan-text line-3"></div>
+                    <div class="scan-text line-4"></div>
+                </div>
             </div>
+            <div id="overlayStatusText" style="
+                color: #fff;
+                font-family: 'Montserrat', sans-serif;
+                font-size: 0.85rem;
+                font-weight: 600;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                text-shadow: 0 1px 4px rgba(0,0,0,0.4);
+                opacity: 0.92;
+            ">Loading…</div>
         </div>
     </div>
 
@@ -582,37 +594,38 @@
             
             <div style="flex: 1; display: flex; justify-content: flex-end; align-items: center; height: 80px; gap: 16px; padding-right: 0;">
                 <img src="{{ url_for('static', filename='Redpoint_logo.png') }}" alt="Redpoint Logo" style="height: 32px; width: auto;">
-                <!-- Page-specific controls (run selector, etc.) -->
-                {% block page_controls %}{% endblock %}
             </div>
             
         </div>
     </header>
 
-    <!-- User badge (floating, below header) -->
-    {% if user %}
-    <div class="user-badge" style="position: fixed; top: 90px; right: 20px; z-index: 999;">
-        <i class="fas fa-user user-icon"></i>
-        <span class="user-name">{{ user.name }}</span>
-        <i class="fas fa-chevron-down dropdown-arrow"></i>
-        <div class="user-dropdown">
-            <div class="user-dropdown-item">
-                <strong>Name</strong>
-                <div class="value">{{ user.name }}</div>
+    <!-- Top-right fixed bar: action buttons + user badge -->
+    <div style="position: fixed; top: 88px; right: 20px; z-index: 999; display: flex; align-items: center; gap: 8px;">
+        {% block action_buttons %}{% endblock %}
+        {% if user %}
+        <div class="user-badge">
+            <i class="fas fa-user user-icon"></i>
+            <span class="user-name">{{ user.name }}</span>
+            <i class="fas fa-chevron-down dropdown-arrow"></i>
+            <div class="user-dropdown">
+                <div class="user-dropdown-item">
+                    <strong>Name</strong>
+                    <div class="value">{{ user.name }}</div>
+                </div>
+                <div class="user-dropdown-item">
+                    <strong>Email</strong>
+                    <div class="value">{{ user.email }}</div>
+                </div>
+                <a href="{{ url_for('main.settings_view') }}" class="logout-link" style="background: transparent; color: #231f20; border-top: 1px solid #eee;">
+                    <i class="fas fa-cog me-2"></i>Settings
+                </a>
+                <a href="{{ url_for('main.end_session') }}" class="logout-link">
+                    <i class="fas fa-sign-out-alt me-2"></i>End Session
+                </a>
             </div>
-            <div class="user-dropdown-item">
-                <strong>Email</strong>
-                <div class="value">{{ user.email }}</div>
-            </div>
-            <a href="{{ url_for('main.settings_view') }}" class="logout-link" style="background: transparent; color: #231f20; border-top: 1px solid #eee;">
-                <i class="fas fa-cog me-2"></i>Settings
-            </a>
-            <a href="{{ url_for('main.end_session') }}" class="logout-link">
-                <i class="fas fa-sign-out-alt me-2"></i>End Session
-            </a>
         </div>
+        {% endif %}
     </div>
-    {% endif %}
 
     <!-- Main Content Area -->
     <main class="main-content">
@@ -667,15 +680,40 @@
     <script>
         (function () {
             const overlay = document.getElementById('pageLoadingOverlay');
+            const statusText = document.getElementById('overlayStatusText');
             if (!overlay) return;
 
-            function showOverlay() {
+            function setStatus(msg) {
+                if (statusText) statusText.textContent = msg;
+            }
+
+            function showOverlay(msg) {
+                setStatus(msg || 'Loading…');
                 overlay.classList.add('show');
                 overlay.setAttribute('aria-hidden', 'false');
             }
 
-            // Expose globally for onclick handlers
-            window.showPageLoadingOverlay = showOverlay;
+            function messageForHref(href) {
+                if (!href) return 'Loading…';
+                if (/\/lease\//.test(href))     return 'Loading cached results from SharePoint…';
+                if (/\/property\//.test(href))  return 'Loading lease data from SharePoint…';
+                if (/\/portfolio/.test(href))   return 'Loading property snapshots from SharePoint…';
+                if (/\/flags/.test(href))       return 'Loading audit flags from SharePoint…';
+                if (/\/bucket/.test(href))      return 'Loading charge detail from SharePoint…';
+                if (/\/settings/.test(href))    return 'Opening settings…';
+                return 'Loading…';
+            }
+
+            function messageForForm(form) {
+                const action = (form && form.action) || '';
+                if (/api_property/.test(action) || /upload_api_property/.test(action)) return 'Calling Entrata API — fetching all leases…';
+                if (/api_lease/.test(action)    || /upload_api_lease/.test(action))    return 'Calling Entrata API — fetching lease data…';
+                if (/upload/.test(action))      return 'Parsing Excel file & saving to SharePoint…';
+                return 'Submitting…';
+            }
+
+            // Expose globally for onclick handlers (can pass optional message)
+            window.showPageLoadingOverlay = function(msg) { showOverlay(msg); };
 
             document.addEventListener('click', function (event) {
                 const link = event.target.closest('a[href]');
@@ -686,11 +724,11 @@
                 if (link.target && link.target !== '_self') return;
                 if (link.hasAttribute('download')) return;
 
-                showOverlay();
+                showOverlay(messageForHref(href));
             });
 
-            document.addEventListener('submit', function () {
-                showOverlay();
+            document.addEventListener('submit', function (event) {
+                showOverlay(messageForForm(event.target));
             });
 
             window.addEventListener('pageshow', function () {

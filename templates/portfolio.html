@@ -2,17 +2,10 @@
 
 {% block title %}Portfolio Overview - Lease Audit{% endblock %}
 
-{% block page_controls %}
-<select class="form-select form-select-sm" id="runSelector" onchange="changeRun(this.value)"
-        style="min-width: 200px; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.4); color: white; border-radius: 8px; font-size: 0.85rem;">
-    <option value="{{ current_run_id }}" selected style="color: #231f20; background: white;">{{ current_run_id }}</option>
-</select>
-{% endblock %}
-
 {% block content %}
 <div class="container-fluid" style="padding-top: 20px;">
-    <!-- Header Row (aligns with user badge) -->
-    <div class="row mb-3">
+    <!-- Header Row -->
+    <div class="row mb-3 align-items-start">
         <div class="col">
             <div class="d-flex align-items-center gap-3 mb-1">
                 <h2 class="mb-0">PeakMade Portfolio</h2>
@@ -29,6 +22,13 @@
                     <br/><strong>Month(s) Audited:</strong> {{ metadata.analysis_period }}
                 {% endif %}
             </p>
+            <div class="mt-2">
+                <select class="form-select form-select-sm" id="runSelector" onchange="changeRun(this.value)"
+                        style="max-width: 260px; font-size: 0.85rem;">
+                    <option value="{{ current_run_id }}" selected>{{ current_run_id }}</option>
+                </select>
+            </div>
+        </div>
             <script>
                 // Convert timestamp to user's local timezone
                 (function() {
@@ -65,7 +65,6 @@
                     }
                 })();
             </script>
-        </div>
     </div>
 
     <!-- Overall Dashboard -->

@@ -2,12 +2,13 @@
 
 {% block title %}Bucket Drilldown - Lease File Audit{% endblock %}
 
+{% block action_buttons %}
+    <a href="{{ url_for('main.property_view', property_id=property_id, run_id=run_id) }}" class="btn btn-secondary btn-sm">
+        <i class="fas fa-arrow-left"></i> Back to Property
+    </a>
+{% endblock %}
+
 {% block content %}
-<!-- Action Buttons (positioned next to user badge) -->
-<div class="action-buttons-container">
-    <a href="{{ url_for('main.property_view', property_id=property_id, run_id=run_id) }}" 
-       class="btn btn-secondary"><i class="fas fa-arrow-left"></i> Back to Property</a>
-</div>
 
 <div class="row mb-3">
     <div class="col">
