@@ -503,7 +503,7 @@
             content += `
                 <div class="mb-3 suggested-fixes ${allResolvedClass}">
                     <h6 class="mb-2"><i class="fas fa-lightbulb"></i> Suggested Fixes ${allResolved ? '<span class="text-muted">(All Resolved)</span>' : ''}</h6>
-                    <div class="d-flex gap-2 flex-wrap" id="suggestedFixButtons">
+                    <div id="suggestedFixButtons">
                         ${buildSuggestedFixButtons(status)}
                     </div>
                     <div class="mt-2">
@@ -800,70 +800,59 @@
     }
     
     function buildSuggestedFixButtons(status) {
+        let options = '';
         if (status === 'SCHEDULED_NOT_BILLED') {
-            return `
-                <button class="btn btn-suggested-primary" onclick="applyFixToSelected(event, 'Post missing charge in Entrata', 'external')">
-                    Post missing charge in Entrata
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Correct schedule dates in Entrata', 'external')">
-                    Correct schedule dates in Entrata
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Lease renewal not yet processed', 'external')">
-                    Lease renewal not yet processed
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Resident moved out \u2013 charge not applicable', 'internal')">
-                    Resident moved out
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Month-to-month \u2013 no active schedule', 'external')">
-                    Month-to-month
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Concession / waiver approved', 'internal')">
-                    Concession / waiver approved
-                </button>
+            options = `
+                <option value="Post missing charge in Entrata|external">Post missing charge in Entrata</option>
+                <option value="Correct schedule dates in Entrata|external">Correct schedule dates in Entrata</option>
+                <option value="Lease renewal not yet processed|external">Lease renewal not yet processed</option>
+                <option value="Resident moved out \u2013 charge not applicable|internal">Resident moved out \u2013 charge not applicable</option>
+                <option value="Month-to-month \u2013 no active schedule|external">Month-to-month \u2013 no active schedule</option>
+                <option value="Concession / waiver approved|internal">Concession / waiver approved</option>
             `;
-        }
-        if (status === 'BILLED_NOT_SCHEDULED') {
-            return `
-                <button class="btn btn-suggested-primary" onclick="applyFixToSelected(event, 'Add recurring charge to schedule', 'external')">
-                    Add recurring charge to schedule
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Reverse incorrect charge', 'external')">
-                    Reverse incorrect charge
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Move-in proration', 'internal')">
-                    Move-in proration
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Backdated / corrected posting', 'internal')">
-                    Backdated / corrected posting
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Mark as one-time charge', 'one_time')">
-                    Mark as one-time charge
-                </button>
+        } else if (status === 'BILLED_NOT_SCHEDULED') {
+            options = `
+                <option value="Add recurring charge to schedule|external">Add recurring charge to schedule</option>
+                <option value="Reverse incorrect charge|external">Reverse incorrect charge</option>
+                <option value="Move-in proration|internal">Move-in proration</option>
+                <option value="Backdated / corrected posting|internal">Backdated / corrected posting</option>
+                <option value="Mark as one-time charge|one_time">Mark as one-time charge</option>
             `;
-        }
-        if (status === 'AMOUNT_MISMATCH') {
-            return `
-                <button class="btn btn-suggested-primary" onclick="applyFixToSelected(event, 'Correct scheduled amount in Entrata', 'external')">
-                    Correct scheduled amount in Entrata
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Lease renewal amount not updated in schedule', 'external')">
-                    Renewal amount not updated
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Adjust posted transaction', 'external')">
-                    Adjust posted transaction
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Proration (move-in or move-out)', 'internal')">
-                    Proration
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Rent concession applied', 'internal')">
-                    Rent concession applied
-                </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Document variance reason', 'internal')">
-                    Document variance reason
-                </button>
+        } else if (status === 'AMOUNT_MISMATCH') {
+            options = `
+                <option value="Correct scheduled amount in Entrata|external">Correct scheduled amount in Entrata</option>
+                <option value="Lease renewal amount not updated in schedule|external">Lease renewal amount not updated in schedule</option>
+                <option value="Adjust posted transaction|external">Adjust posted transaction</option>
+                <option value="Proration (move-in or move-out)|internal">Proration (move-in or move-out)</option>
+                <option value="Rent concession applied|internal">Rent concession applied</option>
+                <option value="Document variance reason|internal">Document variance reason</option>
             `;
+        } else {
+            return `<div class="text-muted">No suggested fixes available for this discrepancy type.</div>`;
         }
-        return `<div class="text-muted">No suggested fixes available for this discrepancy type.</div>`;
+        return `
+            <div class="d-flex gap-2 align-items-center">
+                <select id="resolutionDropdown" class="form-select form-select-sm" style="max-width: 380px;">
+                    <option value="">Select a resolution...</option>
+                    ${options}
+                </select>
+                <button class="btn btn-sm btn-primary" onclick="applySelectedResolution(event)">
+                    <i class="fas fa-check"></i> Apply
+                </button>
+            </div>
+        `;
+    }
+
+    function applySelectedResolution(event) {
+        const dropdown = document.getElementById('resolutionDropdown');
+        if (!dropdown || !dropdown.value) {
+            alert('Please select a resolution from the dropdown.');
+            return;
+        }
+        const separatorIndex = dropdown.value.lastIndexOf('|');
+        const fixLabel = dropdown.value.substring(0, separatorIndex);
+        const actionType = dropdown.value.substring(separatorIndex + 1);
+        applyFixToSelected(event, fixLabel, actionType);
     }
 
     async function applyFixToSelected(event, fixLabel, actionType) {
