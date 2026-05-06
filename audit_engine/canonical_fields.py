@@ -232,6 +232,9 @@ class CanonicalField(str, Enum):
     UNIT_TYPE = "UNIT_TYPE"
     """Unit type (1BR, 2BR, studio, etc.)"""
 
+    LEASE_MODE = "LEASE_MODE"
+    """Lease phase relative to today: 'past', 'active', or 'future'"""
+
 
 # ==================== Field Groups ====================
 

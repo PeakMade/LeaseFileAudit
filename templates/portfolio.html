@@ -101,11 +101,20 @@
                 <div class="card-header bg-light d-flex flex-wrap align-items-center gap-3 py-2">
                     <h5 class="mb-0 me-auto">Properties</h5>
                     <input type="text" id="portfolioSearch" class="form-control form-control-sm" placeholder="Search by property name…" style="width: 210px;">
+                    <select id="auditStatusFilter" class="form-select form-select-sm" style="width: 160px; font-size: 0.85rem;">
+                        <option value="">All statuses</option>
+                        <option value="not_started">Not Started</option>
+                        <option value="in_progress">In Progress</option>
+                        <option value="complete">Complete</option>
+                    </select>
                     <div class="form-check mb-0 d-flex align-items-center gap-1">
                         <input class="form-check-input mt-0" type="checkbox" id="discrepanciesOnly">
                         <label class="form-check-label small text-nowrap" for="discrepanciesOnly" style="cursor: pointer;">Discrepancies only</label>
                     </div>
                     <span id="portfolioCount" class="text-muted small text-nowrap"></span>
+                    <a href="{{ url_for('main.bulk_audit_page') }}" class="btn btn-sm text-nowrap" style="background-color: #ff6600; color: #fff; border: none;">
+                        <i class="fas fa-layer-group me-1"></i>Run Bulk Audit
+                    </a>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
@@ -117,6 +126,12 @@
                                     </th>
                                     <th class="sortable" data-sort="property_id" style="cursor: pointer; user-select: none;">
                                         Property ID <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
+                                    </th>
+                                    <th class="text-center sortable" data-sort="audit_status" style="cursor: pointer; user-select: none;">
+                                        Audit Status <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
+                                    </th>
+                                    <th class="text-center sortable" data-sort="audited_through" style="cursor: pointer; user-select: none;">
+                                        Audited Through <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
                                     </th>
                                     <th class="text-center sortable" data-sort="exceptions" style="cursor: pointer; user-select: none;">
                                         Discrepancies <span class="sort-icon" style="font-size: 1em; color: #000;">↓</span>
@@ -142,9 +157,30 @@
                                     data-undercharge="{{ property.total_undercharge }}"
                                     data-overcharge="{{ property.total_overcharge }}"
                                     data-variance="{{ property.total_variance | abs }}"
+                                    data-audit-status="{{ property.audit_status }}"
+                                    data-audited-through="{{ property.audited_through or '' }}"
                                     onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href='{{ url_for('main.property_view', property_id=property.property_id, run_id=property.run_id) }}'">
                                     <td><strong>{{ property.property_name if property.property_name else '-' }}</strong></td>
                                     <td>{{ property.property_id|int }}</td>
+                                    <td class="text-center">
+                                        {% if property.audit_status == 'complete' %}
+                                            <span class="badge" style="background-color: #198754; font-size: 0.78rem;">Complete</span>
+                                        {% elif property.audit_status == 'in_progress' %}
+                                            <span class="badge" style="background-color: #fd7e14; font-size: 0.78rem;">In Progress</span>
+                                        {% else %}
+                                            <span class="badge" style="background-color: #6c757d; font-size: 0.78rem;">Not Started</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-center">
+                                        {% if property.audited_through %}
+                                            <span class="text-muted small">{{ property.audited_through }}</span>
+                                            {% if property.stale %}
+                                                <i class="fas fa-exclamation-triangle ms-1" style="color: #ffc107;" title="Last audit was more than 45 days ago"></i>
+                                            {% endif %}
+                                        {% else %}
+                                            <span class="text-muted small">—</span>
+                                        {% endif %}
+                                    </td>
                                     <td class="text-center">
                                         {% if property.exception_buckets > 0 %}
                                             <i class="fas fa-exclamation-circle me-1" style="color: #c20068;"></i>{{ property.exception_buckets }}
@@ -271,7 +307,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const allRows = Array.from(tbody.querySelectorAll('tr'));
     const searchInput = document.getElementById('portfolioSearch');
     const discrepanciesOnlyCheck = document.getElementById('discrepanciesOnly');
+    const auditStatusFilter = document.getElementById('auditStatusFilter');
     const countDisplay = document.getElementById('portfolioCount');
+
+    // Audit status sort order: not_started < in_progress < complete
+    const statusOrder = { 'not_started': 0, 'in_progress': 1, 'complete': 2 };
 
     let currentSort = { column: 'exceptions', direction: 'desc' };
 
@@ -290,12 +330,15 @@ document.addEventListener('DOMContentLoaded', function() {
     function applyFiltersAndSort() {
         const term = (searchInput ? searchInput.value : '').trim().toLowerCase();
         const discOnly = discrepanciesOnlyCheck ? discrepanciesOnlyCheck.checked : false;
+        const statusVal = auditStatusFilter ? auditStatusFilter.value : '';
 
         const visible = allRows.filter(row => {
             const name = row.dataset.propertyName || '';
             const exc = parseInt(row.dataset.exceptions || '0');
+            const rowStatus = row.dataset.auditStatus || '';
             if (term && !name.includes(term)) return false;
             if (discOnly && exc === 0) return false;
+            if (statusVal && rowStatus !== statusVal) return false;
             return true;
         });
 
@@ -304,6 +347,16 @@ document.addEventListener('DOMContentLoaded', function() {
             if (column === 'property_name') {
                 const av = a.dataset.propertyName || '';
                 const bv = b.dataset.propertyName || '';
+                return direction === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+            }
+            if (column === 'audit_status') {
+                const av = statusOrder[a.dataset.auditStatus] ?? 0;
+                const bv = statusOrder[b.dataset.auditStatus] ?? 0;
+                return direction === 'asc' ? av - bv : bv - av;
+            }
+            if (column === 'audited_through') {
+                const av = a.dataset.auditedThrough || '';
+                const bv = b.dataset.auditedThrough || '';
                 return direction === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
             }
             const numMap = {
@@ -342,6 +395,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     if (searchInput) searchInput.addEventListener('input', applyFiltersAndSort);
     if (discrepanciesOnlyCheck) discrepanciesOnlyCheck.addEventListener('change', applyFiltersAndSort);
+    if (auditStatusFilter) auditStatusFilter.addEventListener('change', applyFiltersAndSort);
 
     applyFiltersAndSort();
 });

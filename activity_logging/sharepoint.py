@@ -9,21 +9,37 @@ import logging
 import requests
 import os
 import json
-from datetime import datetime
+import threading
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from flask import request, session
 
 logger = logging.getLogger(__name__)
 
+# Module-level token cache: reuse the token until 5 minutes before expiry.
+_token_cache: Dict[str, Any] = {'token': None, 'expires_at': 0.0}
+_token_lock = threading.Lock()
+
 
 def _get_app_only_token() -> Optional[str]:
     """
     Get an app-only access token using client credentials flow.
-    Used for local development when EasyAuth isn't available.
-    
+    The token is cached in memory and reused until 5 minutes before expiry
+    (tokens are valid for ~1 hour), eliminating redundant OAuth round-trips.
+
     Returns:
         Access token string or None if acquisition fails
     """
+    import time
+
+    now = time.monotonic()
+
+    # Fast path: return cached token if still valid (with 5-minute buffer).
+    with _token_lock:
+        if _token_cache['token'] and now < _token_cache['expires_at']:
+            logger.debug("[SHAREPOINT] Returning cached app-only token")
+            return _token_cache['token']
+
     try:
         tenant_id = os.getenv('SHAREPOINT_TENANT_ID')
         client_id = os.getenv('SHAREPOINT_CLIENT_ID')
@@ -41,12 +57,18 @@ def _get_app_only_token() -> Optional[str]:
             'grant_type': 'client_credentials'
         }
         
-        logger.debug("[SHAREPOINT] Requesting app-only token via client credentials")
+        logger.debug("[SHAREPOINT] Requesting new app-only token via client credentials")
         response = requests.post(token_url, data=data, timeout=10)
         
         if response.status_code == 200:
-            token = response.json().get('access_token')
-            logger.debug("[SHAREPOINT] Successfully obtained app-only token")
+            payload = response.json()
+            token = payload.get('access_token')
+            expires_in = int(payload.get('expires_in', 3600))
+            with _token_lock:
+                _token_cache['token'] = token
+                # Subtract 5-minute buffer so we refresh before actual expiry.
+                _token_cache['expires_at'] = time.monotonic() + expires_in - 300
+            logger.debug("[SHAREPOINT] Successfully obtained and cached app-only token")
             return token
         else:
             logger.error(f"[SHAREPOINT] Failed to get app-only token: {response.status_code} - {response.text}")

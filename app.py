@@ -157,18 +157,25 @@ def create_app(config_name='default'):
                 f"(session_id={current_session_id}, idle_minutes={timeout_minutes})"
             )
             if config.auth.can_log_to_sharepoint():
-                log_user_activity(
-                    user_info=user,
-                    activity_type='End Session',
-                    site_url=config.auth.sharepoint_site_url,
-                    list_name=config.auth.sharepoint_list_name,
-                    details={
-                        'page': request.path,
-                        'user_role': 'user',
-                        'session_id': current_session_id,
-                        'session_end_reason': 'timeout'
-                    }
-                )
+                import threading
+                _end_user = dict(user)
+                _end_details = {
+                    'page': request.path,
+                    'user_role': 'user',
+                    'session_id': current_session_id,
+                    'session_end_reason': 'timeout'
+                }
+                threading.Thread(
+                    target=log_user_activity,
+                    kwargs=dict(
+                        user_info=_end_user,
+                        activity_type='End Session',
+                        site_url=config.auth.sharepoint_site_url,
+                        list_name=config.auth.sharepoint_list_name,
+                        details=_end_details,
+                    ),
+                    daemon=True,
+                ).start()
 
             session.pop('session_id', None)
             session.pop('session_started_at', None)
@@ -187,17 +194,24 @@ def create_app(config_name='default'):
                 f"(session_id={current_session_id})"
             )
             if config.auth.can_log_to_sharepoint():
-                log_user_activity(
-                    user_info=user,
-                    activity_type='Start Session',
-                    site_url=config.auth.sharepoint_site_url,
-                    list_name=config.auth.sharepoint_list_name,
-                    details={
-                        'page': request.path,
-                        'user_role': 'user',
-                        'session_id': current_session_id
-                    }
-                )
+                import threading
+                _start_user = dict(user)
+                _start_details = {
+                    'page': request.path,
+                    'user_role': 'user',
+                    'session_id': current_session_id,
+                }
+                threading.Thread(
+                    target=log_user_activity,
+                    kwargs=dict(
+                        user_info=_start_user,
+                        activity_type='Start Session',
+                        site_url=config.auth.sharepoint_site_url,
+                        list_name=config.auth.sharepoint_list_name,
+                        details=_start_details,
+                    ),
+                    daemon=True,
+                ).start()
 
         session['last_activity_at'] = now.isoformat()
         g.session_id = current_session_id

@@ -39,7 +39,7 @@ def generate_month_range(start_date: pd.Timestamp, end_date: pd.Timestamp) -> Li
     return months.tolist()
 
 
-def expand_scheduled_to_months(df: pd.DataFrame) -> pd.DataFrame:
+def expand_scheduled_to_months(df: pd.DataFrame, include_future: bool = False) -> pd.DataFrame:
     """
     Expand scheduled charges into one row per month.
     
@@ -47,10 +47,22 @@ def expand_scheduled_to_months(df: pd.DataFrame) -> pd.DataFrame:
     becomes multiple rows, one for each month in that range.
     
     The AUDIT_MONTH column is set to the month start date.
-    
+
+    Each row is tagged with LEASE_MODE:
+      - 'past'   — AUDIT_MONTH is before the current month
+      - 'active' — AUDIT_MONTH equals the current month
+      - 'future' — AUDIT_MONTH is after the current month
+
+    Args:
+        df: Normalized scheduled charges DataFrame.
+        include_future: When True, include months beyond the current month
+            (tagged as LEASE_MODE='future'). When False (default), future
+            months are excluded to avoid false SCHEDULED_NOT_BILLED flags.
+
     **Important:** Only includes scheduled charges where PERIOD_START is 
-    today or in the past. Future scheduled charges are excluded to prevent
-    false exceptions (since AR transactions won't exist yet).
+    today or in the past (unless include_future=True). Future scheduled
+    charges are excluded by default to prevent false exceptions (since AR
+    transactions won't exist yet).
     """
     # Get current date (start of current month for comparison)
     current_month = pd.Timestamp.now().to_period('M').to_timestamp()
@@ -58,12 +70,11 @@ def expand_scheduled_to_months(df: pd.DataFrame) -> pd.DataFrame:
     expanded_rows = []
     
     for _, row in df.iterrows():
-        # Skip future scheduled charges
+        # Skip future scheduled charges when include_future=False
         start_date = row[CanonicalField.PERIOD_START.value]
         if pd.notna(start_date):
             start_month = start_date.to_period('M').to_timestamp()
-            if start_month > current_month:
-                # This is a future charge - skip it
+            if not include_future and start_month > current_month:
                 continue
         
         months = generate_month_range(
@@ -71,17 +82,25 @@ def expand_scheduled_to_months(df: pd.DataFrame) -> pd.DataFrame:
             row[CanonicalField.PERIOD_END.value]
         )
         
-        # Filter months to only include current month or past
         for month in months:
-            if month <= current_month:
-                expanded_row = row.copy()
-                expanded_row[CanonicalField.AUDIT_MONTH.value] = month
-                expanded_rows.append(expanded_row)
+            if not include_future and month > current_month:
+                continue
+            expanded_row = row.copy()
+            expanded_row[CanonicalField.AUDIT_MONTH.value] = month
+            # Tag each row with its lease phase relative to today
+            if month < current_month:
+                expanded_row[CanonicalField.LEASE_MODE.value] = 'past'
+            elif month == current_month:
+                expanded_row[CanonicalField.LEASE_MODE.value] = 'active'
+            else:
+                expanded_row[CanonicalField.LEASE_MODE.value] = 'future'
+            expanded_rows.append(expanded_row)
     
     if not expanded_rows:
         # Return empty DataFrame with correct columns
         result = df.copy()
         result[CanonicalField.AUDIT_MONTH.value] = pd.NaT
+        result[CanonicalField.LEASE_MODE.value] = pd.NA
         return result.iloc[0:0]
     
     result = pd.DataFrame(expanded_rows)
@@ -94,6 +113,7 @@ def expand_scheduled_to_months(df: pd.DataFrame) -> pd.DataFrame:
         CanonicalField.LEASE_INTERVAL_ID.value,
         CanonicalField.AR_CODE_ID.value,
         CanonicalField.AUDIT_MONTH.value,
+        CanonicalField.LEASE_MODE.value,
         CanonicalField.EXPECTED_AMOUNT.value,
         CanonicalField.PERIOD_START.value,
         CanonicalField.PERIOD_END.value

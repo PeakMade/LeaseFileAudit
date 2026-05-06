@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import logging
 import json
+import re
 from datetime import datetime
 from time import perf_counter
 import tempfile
@@ -37,6 +38,8 @@ from web.auth import require_auth, optional_auth, get_current_user, get_access_t
 from activity_logging.sharepoint import log_user_activity
 from extensions import cache
 import os
+import uuid
+import threading
 
 logger = logging.getLogger(__name__)
 bp = Blueprint('main', __name__)
@@ -317,6 +320,29 @@ def cached_load_lease_exception_months(run_id: str, property_id: int, lease_inte
     return storage.load_lease_exception_months_bulk(run_id, property_id, lease_interval_id)
 
 
+@cache.memoize(timeout=900)  # 15-min TTL: refreshes as resolutions are saved throughout the day
+def cached_load_all_resolved_totals(session_cache_key: str = None):
+    """
+    Cached portfolio-level resolved variance totals from ExceptionMonths SP list.
+    Run-agnostic: aggregates ALL Status=Resolved rows regardless of which audit run they came from.
+    Used for the Historical Undercharge / Overcharge KPIs on the portfolio dashboard.
+    """
+    logger.info("[CACHE] ⏬ Cache MISS: Loading all resolved exception totals from SharePoint")
+    storage = get_storage_service()
+    return storage.load_all_resolved_totals()
+
+
+@cache.memoize(timeout=900)  # 15-min TTL: refreshes as resolutions are saved throughout the day
+def cached_load_property_audit_status_summary(session_cache_key: str = None):
+    """
+    Cached per-property resolved/open exception month counts from ExceptionMonths SP list.
+    Used to derive Not Started / In Progress / Complete audit status on the portfolio dashboard.
+    """
+    logger.info("[CACHE] ⏬ Cache MISS: Loading property audit status summary from SharePoint")
+    storage = get_storage_service()
+    return storage.load_property_audit_status_summary()
+
+
 @cache.memoize(timeout=14400)
 def cached_load_property_name_lookup(run_id: str, session_cache_key: str = None) -> dict[str, str]:
     """Build a run-scoped property id -> property name lookup with normalized keys."""
@@ -458,6 +484,127 @@ def _start_cache_prewarm(app, run_id: str, property_id_int: int, cache_token: st
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     logger.info(f"[CACHE] 🔥 Pre-warming cache in background for run={run_id} property={property_id_int}")
+
+
+def _start_lease_terms_prewarm(
+    app,
+    run_id: str,
+    property_id: int,
+    bucket_results: 'pd.DataFrame',
+    expected_detail: 'pd.DataFrame',
+    actual_detail: 'pd.DataFrame',
+) -> None:
+    """Pre-warm lease terms for all leases in a completed audit run.
+
+    Runs in a daemon thread with a bounded pool (max_workers=3) to avoid
+    hammering the Entrata API. By the time a user clicks into a resident
+    page the terms will already be cached in SharePoint + Flask in-memory cache.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor as _LTPoolExecutor
+
+    # Snapshot lease_interval_ids before spawning thread to avoid shared-state issues.
+    try:
+        lid_col = CanonicalField.LEASE_INTERVAL_ID.value
+        lease_interval_ids = (
+            list(
+                pd.to_numeric(bucket_results[lid_col], errors='coerce')
+                .dropna()
+                .astype(int)
+                .unique()
+            )
+            if not bucket_results.empty and lid_col in bucket_results.columns
+            else []
+        )
+    except Exception:
+        lease_interval_ids = []
+
+    if not lease_interval_ids:
+        return
+
+    # Build lease_interval_id -> lease_id map from detail dataframes.
+    lease_id_map: dict = {lid: None for lid in lease_interval_ids}
+    lid_col = CanonicalField.LEASE_INTERVAL_ID.value
+    leid_col = CanonicalField.LEASE_ID.value
+    for detail_df in (expected_detail, actual_detail):
+        if detail_df is None or detail_df.empty:
+            continue
+        if lid_col not in detail_df.columns or leid_col not in detail_df.columns:
+            continue
+        detail_lids = pd.to_numeric(detail_df[lid_col], errors='coerce')
+        for lid in lease_interval_ids:
+            if lease_id_map.get(lid) is not None:
+                continue
+            subset = detail_df[detail_lids == lid]
+            if subset.empty:
+                continue
+            val = subset[leid_col].iloc[0]
+            if pd.notna(val):
+                try:
+                    lease_id_map[lid] = int(float(val))
+                except Exception:
+                    pass
+
+    # Compute audit period window from bucket results AUDIT_MONTH values.
+    audit_period_start = None
+    audit_period_end = None
+    try:
+        month_col = CanonicalField.AUDIT_MONTH.value
+        if not bucket_results.empty and month_col in bucket_results.columns:
+            months = pd.to_datetime(bucket_results[month_col], errors='coerce').dropna()
+            if not months.empty:
+                audit_period_start = months.min().replace(day=1).isoformat()
+                audit_period_end = (months.max() + pd.offsets.MonthEnd(0)).isoformat()
+    except Exception:
+        pass
+
+    # Take a snapshot of values for the thread closure.
+    _run_id = run_id
+    _property_id = property_id
+    _lease_interval_ids = list(lease_interval_ids)
+    _lease_id_map = dict(lease_id_map)
+    _audit_period_start = audit_period_start
+    _audit_period_end = audit_period_end
+
+    def _run():
+        with app.app_context():
+            _storage = get_storage_service()
+            _refresh_ttl_hours = int(os.getenv('LEASE_TERM_REFRESH_TTL_HOURS', '24'))
+
+            def _prewarm_one(lease_interval_id: int) -> None:
+                _lease_id = _lease_id_map.get(lease_interval_id)
+                try:
+                    result = refresh_lease_terms_for_lease_interval(
+                        storage_service=_storage,
+                        property_id=_property_id,
+                        lease_interval_id=lease_interval_id,
+                        lease_id=_lease_id,
+                        run_id=_run_id,
+                        audit_period_start=_audit_period_start,
+                        audit_period_end=_audit_period_end,
+                        force_refresh=False,
+                        min_recheck_hours=_refresh_ttl_hours,
+                    )
+                    status = result.get('status', 'unknown') if isinstance(result, dict) else 'error'
+                    logger.info(
+                        f"[LEASE TERMS PREWARM] run={_run_id} property={_property_id} "
+                        f"lease_interval={lease_interval_id} status={status}"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"[LEASE TERMS PREWARM] Failed for run={_run_id} property={_property_id} "
+                        f"lease_interval={lease_interval_id}: {exc}"
+                    )
+
+            with _LTPoolExecutor(max_workers=3) as pool:
+                list(pool.map(_prewarm_one, _lease_interval_ids))
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    logger.info(
+        f"[LEASE TERMS PREWARM] 🔥 Starting background lease terms pre-warm for "
+        f"run={run_id} property={property_id} leases={len(lease_interval_ids)}"
+    )
 
 
 def _resident_exclusions_config_path() -> Path:
@@ -1197,22 +1344,25 @@ def calculate_cumulative_metrics(session_cache_key: str = None) -> dict:
             open_exceptions_count = int(current_variances)
             resolved_exceptions_data = []  # No resolved data available
         
-        # Historical metrics - sum across all runs (not deduplicated, but fast)
-        # This is an approximation - true deduplication would require loading all CSVs
+        # Historical metrics — query ExceptionMonths SP list directly for all Resolved rows.
+        # This is run-agnostic and is the source of truth (not affected by run data drift).
+        resolved_totals = cached_load_all_resolved_totals(session_cache_key)
+        historical_undercharge = resolved_totals.get('recovered', 0.0)
+        historical_overcharge = resolved_totals.get('prevented', 0.0)
+        resolved_count = resolved_totals.get('count', 0)
+
+        logger.info(
+            f"[METRICS] Historical (all resolved): "
+            f"recovered=${historical_undercharge:,.2f}, prevented=${historical_overcharge:,.2f}, "
+            f"count={resolved_count}"
+        )
+
+        # Simplified recovery signal: improvement trend vs. historical average
         total_historical_variances = sum(m['total_variances'] for m in all_metrics)
-        total_historical_high_severity = sum(m['high_severity'] for m in all_metrics)
-        
-        # Simplified recovery calculation - compare current vs. historical averages
         avg_variances_per_run = total_historical_variances / len(all_metrics) if all_metrics else 0
-        money_recovered = max(0, avg_variances_per_run - current_variances) * 100  # Rough estimate
-        
+        money_recovered = max(0, avg_variances_per_run - current_variances) * 100  # directional estimate
+
         current_net_variance = current_overcharge - current_undercharge
-        
-        # Calculate historical undercharge/overcharge from resolved exceptions
-        historical_undercharge = sum(abs(exc['variance']) for exc in resolved_exceptions_data if exc['variance'] < 0)
-        historical_overcharge = sum(exc['variance'] for exc in resolved_exceptions_data if exc['variance'] > 0)
-        
-        logger.info(f"[METRICS] Historical undercharge=${historical_undercharge}, overcharge=${historical_overcharge} (from {len(resolved_exceptions_data)} resolved exceptions)")
         
         return {
             'current_undercharge': float(current_undercharge),
@@ -1629,7 +1779,7 @@ def execute_audit_run(
             f"{config.ar_source.name} and/or {config.scheduled_source.name}"
         )
 
-    early_prefilter_enabled = os.getenv('EARLY_AUDIT_WINDOW_PREFILTER', 'false').lower() == 'true'
+    early_prefilter_enabled = os.getenv('EARLY_AUDIT_WINDOW_PREFILTER', 'true').lower() == 'true'
     if early_prefilter_enabled:
         window_start, window_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
         print(
@@ -1778,7 +1928,7 @@ def execute_audit_run(
     print(f"{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] Expanding scheduled charges to monthly buckets...")
     print(f"[EXECUTE_AUDIT_RUN] Input: {scheduled_normalized.shape}")
-    expected_detail = expand_scheduled_to_months(scheduled_normalized)
+    expected_detail = expand_scheduled_to_months(scheduled_normalized, include_future=True)
     print(f"[EXECUTE_AUDIT_RUN] ✓ Expanded to monthly detail: {expected_detail.shape}")
     if not expected_detail.empty and not scheduled_normalized.empty:
         expansion_ratio = len(expected_detail) / len(scheduled_normalized) if len(scheduled_normalized) > 0 else 0
@@ -2348,6 +2498,17 @@ def upload():
                 _start_cache_prewarm(current_app._get_current_object(), run_id, _prewarm_pid, _prewarm_cache_token)
             except Exception:
                 pass
+            try:
+                _start_lease_terms_prewarm(
+                    current_app._get_current_object(),
+                    run_id,
+                    _prewarm_pid,
+                    results.get('bucket_results', pd.DataFrame()),
+                    results.get('expected_detail', pd.DataFrame()),
+                    results.get('actual_detail', pd.DataFrame()),
+                )
+            except Exception:
+                pass
 
 
         cleanup_seconds = 0.0
@@ -2653,6 +2814,17 @@ def upload_api_property():
             _start_cache_prewarm(current_app._get_current_object(), run_id, property_id, _prewarm_cache_token)
         except Exception:
             pass
+        try:
+            _start_lease_terms_prewarm(
+                current_app._get_current_object(),
+                run_id,
+                property_id,
+                results.get('bucket_results', pd.DataFrame()),
+                results.get('expected_detail', pd.DataFrame()),
+                results.get('actual_detail', pd.DataFrame()),
+            )
+        except Exception:
+            pass
 
         cleanup_seconds = 0.0
 
@@ -2723,6 +2895,235 @@ def upload_api_property():
         logger.exception(f"[PROPERTY API UPLOAD] Failed for property {request.form.get('api_property_id')}: {error_msg}")
         flash(f'Error processing API property upload: {error_msg}', 'danger')
         return redirect(url_for('main.index'))
+
+
+# ---------------------------------------------------------------------------
+# Bulk Audit — in-memory job registry
+# ---------------------------------------------------------------------------
+
+# Keyed by job_id (str UUID). Values are plain dicts so they are JSON-serialisable
+# and can be read by the polling endpoint without any extra synchronisation beyond
+# the GIL (each property update is a single dict assignment).
+_BULK_AUDIT_JOBS: dict = {}
+
+
+def _run_bulk_audit_job(app, job_id: str, properties: list, from_date: str, to_date: str) -> None:
+    """Background worker that audits each property sequentially and updates job state."""
+    with app.app_context():
+        job = _BULK_AUDIT_JOBS[job_id]
+
+        for idx, prop in enumerate(properties):
+            # Check for cancellation before each property
+            if job.get('cancelled'):
+                job['status'] = 'cancelled'
+                job['current_property'] = None
+                job['completed_at'] = datetime.utcnow().isoformat()
+                # Mark remaining pending properties as cancelled
+                for remaining in job['properties'][idx:]:
+                    if remaining['status'] == 'pending':
+                        remaining['status'] = 'cancelled'
+                logger.info(f"[BULK AUDIT] Job {job_id} cancelled after {idx}/{job['total']} properties")
+                return
+
+            property_id = prop['property_id']
+            property_name = prop['property_name']
+            job['current_property'] = property_name
+            job['properties'][idx]['status'] = 'running'
+
+            try:
+                run_id = StorageService.generate_run_id()
+                # Fresh storage per property: ensures a current access token and avoids
+                # shared mutable state between the async write sub-threads each save spawns.
+                storage = get_storage_service()
+
+                # Fetch API sources (AR transactions windowed to from_date/to_date)
+                api_sources = fetch_property_api_sources(
+                    property_id=property_id,
+                    transaction_from_date=from_date,
+                    transaction_to_date=to_date,
+                )
+
+                ar_raw = api_sources.get('ar_raw', pd.DataFrame())
+                scheduled_raw = api_sources.get('scheduled_raw', pd.DataFrame())
+
+                # Patch property name from picklist into raw frames
+                resolved_name = property_name or api_sources.get('property_name') or f"Property {property_id}"
+                if 'PROPERTY_NAME' in ar_raw.columns and not ar_raw.empty:
+                    ar_raw = ar_raw.copy()
+                    ar_raw['PROPERTY_NAME'] = resolved_name
+                if 'PROPERTY_NAME' in scheduled_raw.columns and not scheduled_raw.empty:
+                    scheduled_raw = scheduled_raw.copy()
+                    scheduled_raw['PROPERTY_NAME'] = resolved_name
+
+                results = execute_audit_run(
+                    file_path=None,
+                    run_id=run_id,
+                    audit_year=None,
+                    audit_month=None,
+                    scoped_property_ids=[str(property_id)],
+                    preloaded_sources={
+                        config.ar_source.name: ar_raw,
+                        config.scheduled_source.name: scheduled_raw,
+                    },
+                    audit_date_from=from_date,
+                    audit_date_to=to_date,
+                )
+                results['property_name_map'] = {property_id: resolved_name}
+
+                metadata = {
+                    'run_id': run_id,
+                    'timestamp': datetime.now().isoformat(),
+                    'config_version': 'v1',
+                    'file_name': f'bulk_api_{property_id}.json',
+                    'file_hash': '',
+                    'file_size': 0,
+                    'run_scope': {
+                        'type': 'property',
+                        'source': 'bulk_api',
+                        'property_ids': [str(property_id)],
+                        'bulk_job_id': job_id,
+                    },
+                    'api_ingest': {
+                        'property_id': property_id,
+                        'property_name': resolved_name,
+                        'lease_count': int(api_sources.get('lease_count') or 0),
+                    },
+                }
+
+                storage.save_run(
+                    run_id,
+                    results['expected_detail'],
+                    results['actual_detail'],
+                    results['bucket_results'],
+                    results['findings'],
+                    metadata,
+                    results.get('variance_detail'),
+                    None,
+                    property_name_map=results.get('property_name_map'),
+                    write_display_snapshots=True,
+                )
+
+                invalidate_runs_cache()
+                clear_run_cache(run_id)  # clears cached_load_latest_property_snapshots so portfolio reflects new data
+
+                job['properties'][idx].update({'status': 'done', 'run_id': run_id})
+            except Exception as exc:
+                error_msg = str(exc)
+                logger.exception(
+                    f"[BULK AUDIT] Error auditing property {property_id} in job {job_id}: {error_msg}"
+                )
+                job['properties'][idx].update({'status': 'error', 'error': error_msg})
+                job['errors'].append({'property_id': property_id, 'property_name': property_name, 'error': error_msg})
+
+            job['completed'] = idx + 1
+
+        job['status'] = 'complete'
+        job['current_property'] = None
+        job['completed_at'] = datetime.utcnow().isoformat()
+        logger.info(f"[BULK AUDIT] Job {job_id} finished: {job['completed']}/{job['total']} properties")
+
+
+@bp.route('/api/bulk-audit/<job_id>/cancel', methods=['POST'])
+@require_auth
+def cancel_bulk_audit(job_id: str):
+    """Signal a running bulk audit job to stop after the current property finishes."""
+    job = _BULK_AUDIT_JOBS.get(job_id)
+    if job is None:
+        return jsonify({'error': 'Job not found'}), 404
+    if job.get('status') != 'running':
+        return jsonify({'error': 'Job is not running'}), 400
+    job['cancelled'] = True
+    logger.info(f"[BULK AUDIT] Cancellation requested for job {job_id}")
+    return jsonify({'ok': True})
+
+
+@bp.route('/bulk-audit')
+@require_auth
+def bulk_audit_page():
+    """Render the bulk audit form."""
+    try:
+        from audit_engine.api_ingest import get_entrata_environment
+        picklist = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
+    except Exception:
+        picklist = []
+
+    # Find the most recent completed/cancelled job to show on the page
+    last_job = None
+    for job in sorted(
+        _BULK_AUDIT_JOBS.values(),
+        key=lambda j: j.get('started_at') or '',
+        reverse=True,
+    ):
+        if job.get('status') in ('complete', 'cancelled'):
+            last_job = job
+            break
+
+    return render_template('bulk_audit.html', properties=picklist, last_job=last_job)
+
+
+@bp.route('/api/bulk-audit', methods=['POST'])
+@require_auth
+def start_bulk_audit():
+    """Start a bulk audit job and return a job_id for polling."""
+    payload = request.get_json(silent=True) or {}
+    from_date = (payload.get('from_date') or '').strip() or None
+    to_date = (payload.get('to_date') or '').strip() or None
+    property_ids_raw = payload.get('property_ids') or []
+
+    if not property_ids_raw:
+        return jsonify({'error': 'No properties selected.'}), 400
+
+    # Resolve property names from the picklist
+    try:
+        from audit_engine.api_ingest import get_entrata_environment
+        picklist = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
+        name_map = {str(item['property_id']): item.get('property_name', '') for item in picklist}
+    except Exception:
+        name_map = {}
+
+    properties = [
+        {'property_id': int(pid), 'property_name': name_map.get(str(pid), f'Property {pid}')}
+        for pid in property_ids_raw
+    ]
+
+    job_id = str(uuid.uuid4())
+    _BULK_AUDIT_JOBS[job_id] = {
+        'status': 'running',
+        'job_id': job_id,
+        'from_date': from_date,
+        'to_date': to_date,
+        'total': len(properties),
+        'completed': 0,
+        'current_property': None,
+        'errors': [],
+        'properties': [
+            {'property_id': p['property_id'], 'property_name': p['property_name'], 'status': 'pending', 'run_id': None, 'error': None}
+            for p in properties
+        ],
+        'started_at': datetime.utcnow().isoformat(),
+        'completed_at': None,
+    }
+
+    t = threading.Thread(
+        target=_run_bulk_audit_job,
+        args=(current_app._get_current_object(), job_id, properties, from_date, to_date),
+        daemon=True,
+        name=f"bulk-audit-{job_id[:8]}",
+    )
+    t.start()
+
+    logger.info(f"[BULK AUDIT] Job {job_id} started: {len(properties)} properties from={from_date} to={to_date}")
+    return jsonify({'job_id': job_id})
+
+
+@bp.route('/api/bulk-audit/<job_id>')
+@require_auth
+def bulk_audit_status(job_id: str):
+    """Return current status of a bulk audit job."""
+    job = _BULK_AUDIT_JOBS.get(job_id)
+    if job is None:
+        return jsonify({'error': 'Job not found'}), 404
+    return jsonify(job)
 
 
 @bp.route('/upload-api-lease', methods=['POST'])
@@ -2915,36 +3316,15 @@ def portfolio(run_id: str = None):
         # Load latest snapshot for each property across ALL runs
         property_snapshots = cached_load_latest_property_snapshots(cache_token)
 
-        # Single-lease API runs are drill-down scope and should not appear as
-        # property-level portfolio rows across runs.
-        # Pre-fetch all unique run metadata in parallel to avoid 30+ sequential SharePoint calls.
-        metadata_by_run: dict[str, dict] = {}
-        unique_run_ids = {s.get('run_id') for s in property_snapshots if s.get('run_id')}
-        if unique_run_ids:
-            from concurrent.futures import ThreadPoolExecutor
-            def _fetch_meta(rid):
-                try:
-                    return rid, cached_load_metadata(rid, cache_token) or {}
-                except Exception:
-                    return rid, {}
-            with ThreadPoolExecutor(max_workers=min(len(unique_run_ids), 10)) as _pool:
-                for _rid, _meta in _pool.map(_fetch_meta, unique_run_ids):
-                    metadata_by_run[_rid] = _meta
-
-        filtered_property_snapshots = []
+        # Single-lease API runs are drill-down scope — filter them out using the
+        # RunScopeType field stored in the snapshot row (no metadata fetch needed).
         excluded_lease_scoped = 0
+        filtered_property_snapshots = []
         for snapshot in property_snapshots:
-            snapshot_run_id = snapshot.get('run_id')
-            if not snapshot_run_id:
-                filtered_property_snapshots.append(snapshot)
-                continue
-
-            run_scope = (metadata_by_run.get(snapshot_run_id) or {}).get('run_scope') or {}
-            if str(run_scope.get('type') or '').strip().lower() == 'lease':
+            if str(snapshot.get('run_scope_type') or '').strip().lower() == 'lease':
                 excluded_lease_scoped += 1
-                continue
-
-            filtered_property_snapshots.append(snapshot)
+            else:
+                filtered_property_snapshots.append(snapshot)
 
         if excluded_lease_scoped:
             logger.info(
@@ -3014,6 +3394,13 @@ def portfolio(run_id: str = None):
             f"overcharge={total_overcharge}, match_rate={match_rate:.2f}%"
         )
 
+        # Load per-property audit status summary (resolved/open exception month counts)
+        try:
+            audit_status_summary = cached_load_property_audit_status_summary(cache_token)
+        except Exception as _ase:
+            logger.debug(f"[PORTFOLIO] Could not load audit status summary: {_ase}")
+            audit_status_summary = {}
+
         # Build a picklist lookup to resolve property names missing from snapshots
         picklist_name_map: dict[int, str] = {}
         try:
@@ -3042,14 +3429,36 @@ def portfolio(run_id: str = None):
             property_run_id = snapshot_row.get('run_id')
 
             property_id_int = _normalize_property_id_token(property_id)
-            resolved_name = (
-                _clean_property_name(snapshot_row.get('property_name'))
-                or (picklist_name_map.get(property_id_int) if property_id_int is not None else None)
-            )
+            snapshot_name = _clean_property_name(snapshot_row.get('property_name'))
+            # Reject fallback placeholder names like "Property 12345" baked in during old runs
+            if snapshot_name and re.match(r'^property\s+\d+$', snapshot_name.strip(), re.IGNORECASE):
+                snapshot_name = None
+            resolved_name = snapshot_name or (picklist_name_map.get(property_id_int) if property_id_int is not None else None)
             # Skip properties with no resolved name — stale/sandbox entries with no real identity
             if not resolved_name:
                 logger.debug(f"[PORTFOLIO] Skipping unnamed property_id={property_id}")
                 continue
+            prop_status_counts = audit_status_summary.get(property_id_int) or {}
+            resolved_months = int(prop_status_counts.get('resolved_months', 0))
+            open_months = int(prop_status_counts.get('open_months', 0))
+            if exception_count == 0:
+                audit_status = 'complete'
+            elif resolved_months == 0:
+                audit_status = 'not_started'
+            elif open_months > 0:
+                audit_status = 'in_progress'
+            else:
+                audit_status = 'complete'
+
+            audited_through = snapshot_row.get('audited_through') or None
+            stale = False
+            if audited_through:
+                try:
+                    through_dt = datetime.fromisoformat(audited_through)
+                    stale = (datetime.utcnow() - through_dt).days > 45
+                except Exception:
+                    pass
+
             properties.append({
                 'property_name': resolved_name,
                 'property_id': property_id,
@@ -3059,6 +3468,11 @@ def portfolio(run_id: str = None):
                 'total_undercharge': undercharge,
                 'total_overcharge': overcharge,
                 'total_variance': float(snapshot_row.get('total_variance', undercharge + overcharge) or (undercharge + overcharge)),
+                'audit_status': audit_status,
+                'resolved_months': resolved_months,
+                'open_months': open_months,
+                'audited_through': audited_through,
+                'stale': stale,
             })
 
         properties.sort(key=lambda p: p.get('exception_buckets', 0), reverse=True)
@@ -3696,6 +4110,7 @@ def _get_status_label(status: str) -> str:
         "BILLED_NOT_SCHEDULED": "Billed Without Schedule",
         "AMOUNT_MISMATCH": "Amount Mismatch",
         "REVERSED_BILLING": "Reversal",
+        "SCHEDULED_ONLY": "Future Lease (Scheduled Only)",
     }
     return labels.get(status, status)
 
@@ -3738,6 +4153,7 @@ def _get_status_color(status: str) -> str:
         "BILLED_NOT_SCHEDULED": "secondary",  # grey
         "AMOUNT_MISMATCH": "secondary",  # grey
         "REVERSED_BILLING": "warning",  # orange/yellow
+        "SCHEDULED_ONLY": "info",  # blue — future, not an error
     }
     return colors.get(status, "secondary")
 
@@ -3791,10 +4207,15 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                 flash('No audit runs available', 'warning')
                 return redirect(url_for('main.index'))
 
+        normalized_property_id = int(float(property_id))
+        normalized_lease_interval_id = int(float(lease_interval_id))
+
+        # Use property-scoped cache key (pre-warmed by property_view parallel prefetch).
+        # Filtering in memory is instant vs a new SharePoint round-trip for each resident.
         bucket_results = cached_load_bucket_results(
             run_id,
-            property_id=int(float(property_id)),
-            lease_interval_id=int(float(lease_interval_id)),
+            property_id=normalized_property_id,
+            lease_interval_id=None,
             session_cache_key=cache_token
         )
         bucket_read_source = _df_read_source(bucket_results)
@@ -3805,6 +4226,13 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             CanonicalField.PROPERTY_ID.value,
             CanonicalField.LEASE_INTERVAL_ID.value,
         }
+        # Filter property-scoped results down to this lease in memory (cache hit from property_view prefetch).
+        if isinstance(bucket_results, pd.DataFrame) and not bucket_results.empty and required_bucket_cols.issubset(set(bucket_results.columns)):
+            bucket_results = bucket_results[
+                bucket_results[CanonicalField.LEASE_INTERVAL_ID.value] == normalized_lease_interval_id
+            ].copy()
+            bucket_read_source = f"{bucket_read_source}_lease_filtered"
+
         if bucket_results is None or bucket_results.empty or not required_bucket_cols.issubset(set(bucket_results.columns)):
             logger.warning(
                 "[LEASE_VIEW] Scoped bucket query returned empty/malformed data; "
@@ -3820,8 +4248,6 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             fallback_bucket_read_reason = _df_read_reason(fallback_bucket_results)
             fallback_bucket_results = _ensure_bucket_results_dataframe(fallback_bucket_results)
             if isinstance(fallback_bucket_results, pd.DataFrame) and not fallback_bucket_results.empty:
-                normalized_property_id = int(float(property_id))
-                normalized_lease_interval_id = int(float(lease_interval_id))
                 if required_bucket_cols.issubset(set(fallback_bucket_results.columns)):
                     bucket_results = fallback_bucket_results[
                         (fallback_bucket_results[CanonicalField.PROPERTY_ID.value] == normalized_property_id)
@@ -3844,13 +4270,11 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         except Exception:
             run_metadata = {'timestamp': 'Unknown'}
 
-        lease_snapshot = cached_load_run_display_snapshot(
-            run_id=run_id,
-            scope_type='lease',
-            property_id=int(float(property_id)),
-            lease_interval_id=int(float(lease_interval_id)),
-            session_cache_key=cache_token
+        # Use property-scoped snapshots dict (pre-warmed by property_view) to avoid per-resident SharePoint call.
+        _property_lease_snapshots = cached_load_run_display_snapshots_for_property(
+            run_id, normalized_property_id, 'lease', cache_token
         )
+        lease_snapshot = _property_lease_snapshots.get(normalized_lease_interval_id) if _property_lease_snapshots else None
         if lease_snapshot:
             logger.info(
                 f"[SNAPSHOT][LEASE] Using RunDisplaySnapshots for run {run_id}, property {property_id}, "
@@ -3884,9 +4308,16 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         else:
             print(f"[DISPLAY FILTER DEBUG] AR_CODE_ID column NOT found in bucket_results")
 
-        # Get all buckets for this lease - exceptions and matches separately
+        # Get all buckets for this lease — exceptions and matches separately.
+        # SCHEDULED_ONLY = future lease months (billing not started), treated as informational, not exceptions.
+        non_exception_statuses = {config.reconciliation.status_matched, 'SCHEDULED_ONLY'}
         lease_buckets = bucket_results[
-            (bucket_results[CanonicalField.STATUS.value] != config.reconciliation.status_matched)
+            ~bucket_results[CanonicalField.STATUS.value].isin(non_exception_statuses)
+        ].copy()
+        
+        # Future lease buckets (SCHEDULED_ONLY)
+        future_buckets = bucket_results[
+            bucket_results[CanonicalField.STATUS.value] == 'SCHEDULED_ONLY'
         ].copy()
         
         # Get matched buckets for this lease
@@ -3899,30 +4330,44 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         logger.info(f"[LEASE_VIEW] Found {len(lease_buckets)} exception buckets for lease {lease_interval_id} (including any resolved)")
         
         # Get expected and actual detail for this lease
-        lease_expected = expected_detail[
-            expected_detail[CanonicalField.LEASE_INTERVAL_ID.value] == float(lease_interval_id)
-        ]
-        lease_actual = actual_detail[
-            actual_detail[CanonicalField.LEASE_INTERVAL_ID.value] == float(lease_interval_id)
-        ]
-        
+        _lid_col = CanonicalField.LEASE_INTERVAL_ID.value
+        if _lid_col in expected_detail.columns:
+            lease_expected = expected_detail[
+                expected_detail[_lid_col] == float(lease_interval_id)
+            ]
+        else:
+            lease_expected = pd.DataFrame()
+        if _lid_col in actual_detail.columns:
+            lease_actual = actual_detail[
+                actual_detail[_lid_col] == float(lease_interval_id)
+            ]
+        else:
+            lease_actual = pd.DataFrame()
+
+        # Pre-group by (ar_code, audit_month) for O(1) lookups inside loops below.
+        # Avoids repeated full-DataFrame scans on every bucket iteration.
+        from collections import defaultdict as _dd
+        _exp_groups: dict = _dd(list)
+        for _, _r in lease_expected.iterrows():
+            _exp_groups[(_r[CanonicalField.AR_CODE_ID.value], _r[CanonicalField.AUDIT_MONTH.value])].append(_r)
+        _act_groups: dict = _dd(list)
+        for _, _r in lease_actual.iterrows():
+            _act_groups[(_r[CanonicalField.AR_CODE_ID.value], _r[CanonicalField.AUDIT_MONTH.value])].append(_r)
+
+        def _rows_to_df(rows):
+            if not rows:
+                return pd.DataFrame()
+            return pd.DataFrame(rows)
+
         # Build detailed exception list with actual dates
         exceptions = []
         for _, bucket in lease_buckets.iterrows():
             ar_code = bucket[CanonicalField.AR_CODE_ID.value]
             audit_month = bucket[CanonicalField.AUDIT_MONTH.value]
-            
-            # Get expected records for this bucket
-            expected_records = lease_expected[
-                (lease_expected[CanonicalField.AR_CODE_ID.value] == ar_code) &
-                (lease_expected[CanonicalField.AUDIT_MONTH.value] == audit_month)
-            ]
-            
-            # Get actual records for this bucket
-            actual_records = lease_actual[
-                (lease_actual[CanonicalField.AR_CODE_ID.value] == ar_code) &
-                (lease_actual[CanonicalField.AUDIT_MONTH.value] == audit_month)
-            ]
+
+            # O(1) lookup instead of full DataFrame scan per iteration
+            expected_records = _rows_to_df(_exp_groups.get((ar_code, audit_month), []))
+            actual_records = _rows_to_df(_act_groups.get((ar_code, audit_month), []))
             
             # Extract dates
             charge_start = None
@@ -4204,17 +4649,10 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         for _, bucket in matched_buckets.iterrows():
             ar_code = bucket[CanonicalField.AR_CODE_ID.value]
             audit_month = bucket[CanonicalField.AUDIT_MONTH.value]
-            
-            # Get expected and actual records for this match
-            expected_records = lease_expected[
-                (lease_expected[CanonicalField.AR_CODE_ID.value] == ar_code) &
-                (lease_expected[CanonicalField.AUDIT_MONTH.value] == audit_month)
-            ]
-            
-            actual_records = lease_actual[
-                (lease_actual[CanonicalField.AR_CODE_ID.value] == ar_code) &
-                (lease_actual[CanonicalField.AUDIT_MONTH.value] == audit_month)
-            ]
+
+            # O(1) lookup using pre-built groups
+            expected_records = _rows_to_df(_exp_groups.get((ar_code, audit_month), []))
+            actual_records = _rows_to_df(_act_groups.get((ar_code, audit_month), []))
             
             # Get AR code name
             ar_code_name = None
@@ -4404,6 +4842,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     monthly['month_resolved_at'] = month_state.get('resolved_at', '')
                     monthly['month_resolved_by'] = month_state.get('resolved_by', '')
                     monthly['month_resolved_by_name'] = month_state.get('resolved_by_name', '')
+                    monthly['month_notes'] = month_state.get('notes', '')
                     monthly['is_historical'] = month_state.get('is_historical', False)
                     monthly['resolution_run_id'] = month_state.get('run_id', '')
                     logger.info(f"[LEASE_VIEW] Applied state to {audit_month}: status={monthly['month_status']}, fix={monthly['month_fix_label']}, historical={monthly.get('is_historical', False)}")
@@ -4419,6 +4858,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     monthly['month_resolved_at'] = ''
                     monthly['month_resolved_by'] = ''
                     monthly['month_resolved_by_name'] = ''
+                    monthly['month_notes'] = ''
                     monthly['is_historical'] = False
                     monthly['resolution_run_id'] = ''
             
@@ -4539,8 +4979,14 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
 
         lease_only_expectations = []
         lease_mapping_diagnostics = {}
-        try:
-            lease_key = f"{int(float(property_id))}:{int(float(lease_interval_id))}"
+        lease_terms_api_url = url_for(
+            'main.api_lease_terms',
+            run_id=run_id,
+            property_id=property_id,
+            lease_interval_id=lease_interval_id,
+        )
+        if False:  # noqa — lease terms are now loaded async; body preserved for reference
+            _lease_key_unused = f"{int(float(property_id))}:{int(float(lease_interval_id))}"
 
             lease_term_period_start = None
             lease_term_period_end = None
@@ -4583,19 +5029,44 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             refresh_ttl_hours = int(os.getenv('LEASE_TERM_REFRESH_TTL_HOURS', '24'))
             force_refresh = os.getenv('LEASE_TERM_FORCE_REFRESH', 'false').lower() == 'true'
 
-            refresh_result = refresh_lease_terms_for_lease_interval(
-                storage_service=storage,
-                property_id=int(float(property_id)),
-                lease_interval_id=int(float(lease_interval_id)),
-                lease_id=lease_id,
-                run_id=run_id,
-                audit_period_start=lease_term_period_start.isoformat() if lease_term_period_start is not None else None,
-                audit_period_end=lease_term_period_end.isoformat() if lease_term_period_end is not None else None,
-                force_refresh=force_refresh,
-                min_recheck_hours=refresh_ttl_hours,
-            )
+            _flask_lease_term_cache_key = f"lease_terms_result:{lease_key}:{run_id}"
+            refresh_result = cache.get(_flask_lease_term_cache_key)
+            if refresh_result is None or force_refresh:
+                from concurrent.futures import ThreadPoolExecutor as _LeaseTermTPE, TimeoutError as _FuturesTimeout
+                _lease_term_timeout = int(os.getenv('LEASE_TERM_REFRESH_TIMEOUT_SECONDS', '20'))
+                try:
+                    with _LeaseTermTPE(max_workers=1) as _lt_pool:
+                        _lt_future = _lt_pool.submit(
+                            refresh_lease_terms_for_lease_interval,
+                            storage_service=storage,
+                            property_id=int(float(property_id)),
+                            lease_interval_id=int(float(lease_interval_id)),
+                            lease_id=lease_id,
+                            run_id=run_id,
+                            audit_period_start=lease_term_period_start.isoformat() if lease_term_period_start is not None else None,
+                            audit_period_end=lease_term_period_end.isoformat() if lease_term_period_end is not None else None,
+                            force_refresh=force_refresh,
+                            min_recheck_hours=refresh_ttl_hours,
+                        )
+                        refresh_result = _lt_future.result(timeout=_lease_term_timeout)
+                except _FuturesTimeout:
+                    logger.warning(
+                        "[LEASE_VIEW] refresh_lease_terms_for_lease_interval timed out after %ds for lease_key=%s; "
+                        "falling back to cached SharePoint data",
+                        _lease_term_timeout, lease_key,
+                    )
+                    refresh_result = None
+                except Exception as _lt_err:
+                    logger.warning(
+                        "[LEASE_VIEW] refresh_lease_terms_for_lease_interval failed for lease_key=%s: %s; "
+                        "falling back to cached SharePoint data",
+                        lease_key, _lt_err,
+                    )
+                    refresh_result = None
+                if isinstance(refresh_result, dict):
+                    cache.set(_flask_lease_term_cache_key, refresh_result, timeout=3600)
 
-            lease_terms_df = refresh_result.get('terms_df')
+            lease_terms_df = refresh_result.get('terms_df') if isinstance(refresh_result, dict) else None
             if isinstance(lease_terms_df, pd.DataFrame) and not lease_terms_df.empty:
                 lease_term_records = lease_terms_df.to_dict(orient='records')
             else:
@@ -4657,8 +5128,6 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             all_ar_codes = overlay.get('ar_groups', all_ar_codes)
             lease_only_expectations = overlay.get('lease_only_expectations', [])
             lease_mapping_diagnostics = overlay.get('mapping_diagnostics', {})
-        except Exception as lease_overlay_error:
-            logger.warning(f"[LEASE_VIEW] Lease expectation overlay skipped: {lease_overlay_error}")
 
         # Recalculate lease summary totals from unresolved exception months only.
         # Keep undercharge and overcharge independent (do not net them).
@@ -4713,6 +5182,29 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         grouped_list = sanitize_for_json(grouped_list)
         matched_list = sanitize_for_json(matched_list)
         
+        # Build future_months list for future lease display (informational, not exceptions)
+        future_months_list = []
+        for _, fb in future_buckets.iterrows():
+            ar_code = fb[CanonicalField.AR_CODE_ID.value]
+            audit_month = fb[CanonicalField.AUDIT_MONTH.value]
+            audit_month_str = audit_month.strftime('%Y-%m-%d') if isinstance(audit_month, pd.Timestamp) else audit_month
+            expected_records = _rows_to_df(_exp_groups.get((ar_code, audit_month), []))
+            ar_code_name = None
+            if not expected_records.empty and 'AR_CODE_NAME' in expected_records.columns:
+                v = expected_records['AR_CODE_NAME'].iloc[0]
+                if pd.notna(v):
+                    ar_code_name = v
+            future_months_list.append({
+                'ar_code_id': ar_code,
+                'ar_code_name': ar_code_name,
+                'audit_month': audit_month_str,
+                'expected_total': float(fb[CanonicalField.EXPECTED_TOTAL.value]),
+                'status': 'SCHEDULED_ONLY',
+                'status_label': 'Future Lease (Scheduled Only)',
+                'status_color': 'info',
+            })
+        future_months_list = sanitize_for_json(sorted(future_months_list, key=lambda x: x['audit_month']))
+        
         # Build Entrata URL using LEASE_ID (not LEASE_INTERVAL_ID)
         entrata_url = build_entrata_url(lease_id, customer_id)
         has_customer_id = customer_id is not None and lease_id is not None
@@ -4720,12 +5212,12 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         return render_template(
             'lease.html',
             run_id=run_id,
-            property_id=property_id,
+            property_id=normalized_property_id,
             property_name=property_name,
             customer_name=customer_name,
             customer_id=customer_id,
             lease_id=lease_id,
-            lease_interval_id=lease_interval_id,
+            lease_interval_id=normalized_lease_interval_id,
             entrata_url=entrata_url,
             has_customer_id=has_customer_id,
             metadata=run_metadata,
@@ -4736,11 +5228,13 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             all_ar_codes=all_ar_codes,
             lease_only_expectations=lease_only_expectations,
             lease_mapping_diagnostics=lease_mapping_diagnostics,
+            lease_terms_api_url=lease_terms_api_url,
             total_variance=total_variance,
             total_expected=total_expected,
             total_actual=total_actual,
             total_undercharge=total_undercharge,
-            total_overcharge=total_overcharge
+            total_overcharge=total_overcharge,
+            future_months=future_months_list,
         )
     except Exception as e:
         import traceback
@@ -4748,6 +5242,133 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         print(traceback.format_exc())
         flash(f'Error loading lease: {str(e)}', 'danger')
         return redirect(url_for('main.property_view', run_id=run_id, property_id=property_id))
+
+
+@bp.route('/api/lease-terms/<run_id>/<property_id>/<lease_interval_id>')
+@require_auth
+def api_lease_terms(run_id: str, property_id: str, lease_interval_id: str):
+    """Async JSON endpoint: fetch lease terms for a specific lease interval."""
+    try:
+        storage = get_storage_service()
+        cache_token = _session_cache_token()
+
+        expected_detail = cached_load_expected_detail(run_id, cache_token)
+        actual_detail = cached_load_actual_detail(run_id, cache_token)
+        try:
+            run_metadata = cached_load_metadata(run_id, cache_token)
+        except Exception:
+            run_metadata = {}
+
+        _lid_col = CanonicalField.LEASE_INTERVAL_ID.value
+        lease_expected = expected_detail[
+            expected_detail[_lid_col] == float(lease_interval_id)
+        ] if _lid_col in expected_detail.columns else pd.DataFrame()
+        lease_actual = actual_detail[
+            actual_detail[_lid_col] == float(lease_interval_id)
+        ] if _lid_col in actual_detail.columns else pd.DataFrame()
+
+        # Resolve lease_id
+        lease_id = None
+        for _frame in (lease_actual, lease_expected):
+            if _frame.empty:
+                continue
+            if CanonicalField.LEASE_ID.value in _frame.columns:
+                _val = _frame[CanonicalField.LEASE_ID.value].iloc[0]
+                if pd.notna(_val):
+                    lease_id = int(_val)
+                    break
+
+        # Collect AR code IDs present for this lease
+        ar_code_ids = set()
+        for _frame in (lease_expected, lease_actual):
+            if _frame.empty or CanonicalField.AR_CODE_ID.value not in _frame.columns:
+                continue
+            ar_code_ids.update(_frame[CanonicalField.AR_CODE_ID.value].dropna().unique().tolist())
+        minimal_ar_codes = [{"ar_code_id": str(c)} for c in ar_code_ids]
+
+        # Build audit period
+        lease_term_period_start = None
+        lease_term_period_end = None
+        audit_period_meta = run_metadata.get('audit_period') if isinstance(run_metadata, dict) else None
+        if isinstance(audit_period_meta, dict):
+            try:
+                _yr = int(audit_period_meta['year']) if audit_period_meta.get('year') else None
+                _mo = int(audit_period_meta['month']) if audit_period_meta.get('month') else None
+                if _yr and _mo:
+                    lease_term_period_start = pd.Timestamp(year=_yr, month=_mo, day=1)
+                    lease_term_period_end = lease_term_period_start + pd.offsets.MonthEnd(1)
+                elif _yr:
+                    lease_term_period_start = pd.Timestamp(year=_yr, month=1, day=1)
+                    lease_term_period_end = pd.Timestamp(year=_yr, month=12, day=31)
+            except Exception:
+                pass
+        if lease_term_period_start is None:
+            _months = []
+            for _frame in (lease_expected, lease_actual):
+                if _frame.empty or CanonicalField.AUDIT_MONTH.value not in _frame.columns:
+                    continue
+                _months.append(_frame[CanonicalField.AUDIT_MONTH.value])
+            if _months:
+                _parsed = pd.to_datetime(pd.concat(_months, ignore_index=True), errors='coerce').dropna()
+                if not _parsed.empty:
+                    lease_term_period_start = _parsed.min().replace(day=1)
+                    lease_term_period_end = _parsed.max() + pd.offsets.MonthEnd(0)
+
+        lease_key = f"{int(float(property_id))}:{int(float(lease_interval_id))}"
+        refresh_ttl_hours = int(os.getenv('LEASE_TERM_REFRESH_TTL_HOURS', '24'))
+        force_refresh = os.getenv('LEASE_TERM_FORCE_REFRESH', 'false').lower() == 'true'
+
+        _flask_cache_key = f"lease_terms_result:{lease_key}:{run_id}"
+        refresh_result = cache.get(_flask_cache_key)
+        if refresh_result is None or force_refresh:
+            refresh_result = refresh_lease_terms_for_lease_interval(
+                storage_service=storage,
+                property_id=int(float(property_id)),
+                lease_interval_id=int(float(lease_interval_id)),
+                lease_id=lease_id,
+                run_id=run_id,
+                audit_period_start=lease_term_period_start.isoformat() if lease_term_period_start is not None else None,
+                audit_period_end=lease_term_period_end.isoformat() if lease_term_period_end is not None else None,
+                force_refresh=force_refresh,
+                min_recheck_hours=refresh_ttl_hours,
+            )
+            if isinstance(refresh_result, dict):
+                cache.set(_flask_cache_key, refresh_result, timeout=3600)
+
+        lease_terms_df = (refresh_result or {}).get('terms_df') if isinstance(refresh_result, dict) else None
+        if isinstance(lease_terms_df, pd.DataFrame) and not lease_terms_df.empty:
+            lease_term_records = lease_terms_df.to_dict(orient='records')
+        else:
+            _fallback = storage.load_lease_terms_for_lease_key_from_sharepoint_list(lease_key)
+            lease_term_records = _fallback.to_dict(orient='records') if isinstance(_fallback, pd.DataFrame) and not _fallback.empty else []
+
+        if not lease_term_records:
+            lease_term_records = (
+                run_metadata.get('lease_terms_extracted')
+                or run_metadata.get('lease_terms')
+                or run_metadata.get('entrata_lease_terms')
+                or []
+            )
+        if isinstance(lease_term_records, str):
+            try:
+                lease_term_records = json.loads(lease_term_records)
+            except Exception:
+                lease_term_records = []
+
+        overlay = build_lease_expectation_overlay(minimal_ar_codes, lease_term_records)
+        ar_code_expectations = {
+            str(group['ar_code_id']): group.get('lease_expectation')
+            for group in overlay.get('ar_groups', [])
+            if group.get('lease_expectation')
+        }
+
+        return jsonify({
+            'lease_only_expectations': overlay.get('lease_only_expectations', []),
+            'ar_code_expectations': ar_code_expectations,
+        })
+    except Exception as e:
+        logger.exception('[API_LEASE_TERMS] Error: %s', e)
+        return jsonify({'error': str(e), 'lease_only_expectations': [], 'ar_code_expectations': {}}), 500
 
 
 @bp.route('/bucket/<run_id>/<property_id>/<lease_interval_id>/<ar_code_id>/<audit_month>')

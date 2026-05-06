@@ -593,6 +593,47 @@ class StorageService:
             )
             return default_name
 
+    def _ensure_list_column_exists(self, site_id: str, list_id: str, column_name: str, column_type: str = 'text') -> bool:
+        """Create a column on a SharePoint list via Graph API if it does not already exist.
+        Returns True if the column already existed or was successfully created."""
+        try:
+            column_names = self._get_snapshot_column_names(site_id, list_id)
+            if column_names and column_name in column_names:
+                return True  # already exists
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+            }
+            columns_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/columns"
+
+            if column_type == 'text':
+                body = {'name': column_name, 'text': {}}
+            elif column_type == 'number':
+                body = {'name': column_name, 'number': {}}
+            elif column_type == 'dateTime':
+                body = {'name': column_name, 'dateTime': {'format': 'dateOnly'}}
+            else:
+                body = {'name': column_name, 'text': {}}
+
+            response = requests.post(columns_url, headers=headers, json=body, timeout=30)
+            if response.status_code in (200, 201):
+                logger.info(f"[STORAGE] Created SharePoint column '{column_name}' on list {list_id}")
+                # Bust the column name cache so subsequent writes see the new column
+                cache_key = f"{site_id}|{list_id}"
+                with self._GLOBAL_SNAPSHOT_COLUMNS_CACHE_LOCK:
+                    self._GLOBAL_SNAPSHOT_COLUMNS_CACHE.pop(cache_key, None)
+                return True
+            else:
+                logger.warning(
+                    f"[STORAGE] Could not create column '{column_name}': "
+                    f"{response.status_code} - {response.text}"
+                )
+                return False
+        except Exception as e:
+            logger.warning(f"[STORAGE] Failed ensuring column '{column_name}' exists: {e}")
+            return False
+
     def _resolve_snapshot_optional_field_names(self, site_id: str, list_id: str) -> Dict[str, Optional[str]]:
         """Resolve optional snapshot fields used by snapshot-only portfolio rendering."""
         field_candidates = {
@@ -631,6 +672,8 @@ class StorageService:
         actual_detail: Optional[pd.DataFrame] = None,
         expected_detail: Optional[pd.DataFrame] = None,
         property_name_map: Optional[Dict[int, str]] = None,
+        full_bucket_results: Optional[pd.DataFrame] = None,
+        run_scope_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Build static snapshot rows for portfolio/property/lease display scopes."""
         rows: List[Dict[str, Any]] = []
@@ -644,6 +687,32 @@ class StorageService:
 
         property_column = 'PROPERTY_ID' if 'PROPERTY_ID' in bucket_results.columns else 'property_id'
         lease_column = 'LEASE_INTERVAL_ID' if 'LEASE_INTERVAL_ID' in bucket_results.columns else 'lease_interval_id'
+
+        # Precompute per-property max AUDIT_MONTH from the FULL (unfiltered) bucket results
+        # so that resolved months are not excluded from the "audited through" date.
+        _source_for_months = full_bucket_results if (full_bucket_results is not None and not full_bucket_results.empty) else bucket_results
+        _audit_month_col = 'AUDIT_MONTH'
+        _property_max_audit_month: Dict[int, str] = {}
+        _portfolio_max_audit_month: Optional[str] = None
+        if _audit_month_col in _source_for_months.columns and not _source_for_months.empty:
+            try:
+                _months_series = pd.to_datetime(_source_for_months[_audit_month_col], errors='coerce')
+                _overall_max = _months_series.max()
+                if pd.notna(_overall_max):
+                    _portfolio_max_audit_month = _overall_max.strftime('%Y-%m-%d')
+                _prop_col = 'PROPERTY_ID' if 'PROPERTY_ID' in _source_for_months.columns else 'property_id'
+                if _prop_col in _source_for_months.columns:
+                    _grouped = _source_for_months.copy()
+                    _grouped['_month_dt'] = _months_series
+                    for _pid, _grp in _grouped.groupby(_prop_col, dropna=False):
+                        _pid_int = self._safe_int(_pid)
+                        if _pid_int is None:
+                            continue
+                        _max = _grp['_month_dt'].max()
+                        if pd.notna(_max):
+                            _property_max_audit_month[_pid_int] = _max.strftime('%Y-%m-%d')
+            except Exception:
+                pass
 
         resolved_property_name_map: Dict[int, str] = {}
 
@@ -696,11 +765,21 @@ class StorageService:
 
             total_lease_intervals = int(subset[lease_column].nunique()) if lease_column in subset.columns else 0
 
+            # Use the precomputed max AUDIT_MONTH from the full (unfiltered) bucket results
+            # so resolved months are not excluded from the "audited through" date.
+            if scope_type == 'portfolio':
+                audited_through_value = _portfolio_max_audit_month
+            elif scope_type == 'property' and property_id_int is not None:
+                audited_through_value = _property_max_audit_month.get(property_id_int)
+            else:
+                audited_through_value = None
+
             row_payload = {
                 'Title': title,
                 'SnapshotKey': snapshot_key,
                 'RunId': run_id,
                 'ScopeType': scope_type,
+                'RunScopeType': run_scope_type or '',
                 'PropertyId': property_id_int,
                 'LeaseIntervalId': lease_interval_id_int,
                 exception_count_field_name: metrics['exception_count'],
@@ -709,6 +788,7 @@ class StorageService:
                 'MatchRateStatic': metrics['match_rate'],
                 'TotalBucketsStatic': metrics['total_buckets'],
                 'MatchedBucketsStatic': metrics['matched_buckets'],
+                'AuditedThrough': audited_through_value or '',
                 'CreatedAt': datetime.utcnow().isoformat(),
             }
 
@@ -756,6 +836,7 @@ class StorageService:
         expected_detail: Optional[pd.DataFrame] = None,
         property_name_map: Optional[Dict[int, str]] = None,
         stage_timers: Optional[Dict[str, float]] = None,
+        run_scope_type: Optional[str] = None,
     ) -> bool:
         """Persist static portfolio/property/lease display snapshots to RunDisplaySnapshots list."""
         if not self._can_use_sharepoint_lists():
@@ -786,6 +867,11 @@ class StorageService:
 
             exception_count_field_name = self._resolve_snapshot_exception_count_field_name(site_id, list_id)
             optional_field_names = self._resolve_snapshot_optional_field_names(site_id, list_id)
+
+            # Ensure AuditedThrough and RunScopeType columns exist
+            self._ensure_list_column_exists(site_id, list_id, 'AuditedThrough', column_type='text')
+            self._ensure_list_column_exists(site_id, list_id, 'RunScopeType', column_type='text')
+
             snapshot_rows = self._build_run_display_snapshot_rows(
                 run_id,
                 filtered_bucket_results,
@@ -794,6 +880,8 @@ class StorageService:
                 actual_detail=actual_detail,
                 expected_detail=expected_detail,
                 property_name_map=property_name_map,
+                full_bucket_results=bucket_results,
+                run_scope_type=run_scope_type,
             )
             
             # Log snapshot details
@@ -1300,6 +1388,7 @@ class StorageService:
         expected_detail: Optional[pd.DataFrame] = None,
         property_name_map: Optional[Dict[int, str]] = None,
         snapshot_validation_async: bool = True,
+        run_scope_type: Optional[str] = None,
     ) -> None:
         """Background wrapper for RunDisplaySnapshots persistence and optional validation."""
         try:
@@ -1316,6 +1405,7 @@ class StorageService:
                 expected_detail=expected_detail,
                 property_name_map=property_name_map,
                 stage_timers=snapshot_stage_timers,
+                run_scope_type=run_scope_type,
             )
             if snapshot_write_ok:
                 logger.info(
@@ -1701,6 +1791,7 @@ class StorageService:
                     'snapshot_key': fields.get('SnapshotKey'),
                     'run_id': fields.get('RunId'),
                     'scope_type': 'property',
+                    'run_scope_type': fields.get('RunScopeType') or None,
                     'property_id': property_id_int,
                     'property_name': fields.get('PropertyNameStatic') or fields.get('PropertyName'),
                     'exception_count': int(float(exception_count or 0)),
@@ -1710,7 +1801,8 @@ class StorageService:
                     'match_rate': float(fields.get('MatchRateStatic') or 0),
                     'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
                     'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
-                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalStatic') or 0))
+                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalStatic') or 0)),
+                    'audited_through': fields.get('AuditedThrough') or None,
                 }
             
             snapshot_rows = list(latest_by_property.values())
@@ -2893,6 +2985,7 @@ class StorageService:
                     'resolved_at': fields.get('ResolvedAt', ''),
                     'resolved_by': fields.get('ResolvedBy', ''),
                     'resolved_by_name': fields.get('ResolvedByName', ''),
+                    'notes': fields.get('Notes', ''),
                     'updated_at': fields.get('UpdatedAt', ''),
                     'updated_by': fields.get('UpdatedBy', ''),
                     'is_historical': record_run_id != run_id,  # Flag if from a previous run
@@ -3030,6 +3123,7 @@ class StorageService:
                     'resolved_at': fields.get('ResolvedAt', ''),
                     'resolved_by': fields.get('ResolvedBy', ''),
                     'resolved_by_name': fields.get('ResolvedByName', ''),
+                    'notes': fields.get('Notes', ''),
                     'updated_at': fields.get('UpdatedAt', ''),
                     'updated_by': fields.get('UpdatedBy', ''),
                     'is_historical': record_run_id != run_id,
@@ -3144,6 +3238,7 @@ class StorageService:
                     'resolved_at': fields.get('ResolvedAt', ''),
                     'resolved_by': fields.get('ResolvedBy', ''),
                     'resolved_by_name': fields.get('ResolvedByName', ''),
+                    'notes': fields.get('Notes', ''),
                     'updated_at': fields.get('UpdatedAt', ''),
                     'updated_by': fields.get('UpdatedBy', ''),
                     'is_historical': record_run_id != run_id,
@@ -3178,6 +3273,165 @@ class StorageService:
         except Exception as e:
             logger.error(f"[STORAGE] Error in lease bulk fetch: {e}", exc_info=True)
             return {}
+
+    def load_property_audit_status_summary(self) -> Dict[int, Dict[str, int]]:
+        """
+        Query the ExceptionMonths SharePoint list for all rows and return per-property
+        counts of resolved and open exception months.
+
+        Used to derive property-level audit status on the portfolio dashboard:
+          - No records (and exception_count > 0) → Not Started
+          - resolved_months > 0, open_months > 0 → In Progress
+          - resolved_months > 0, open_months == 0 → Complete (all actioned)
+
+        Returns:
+            Dict keyed by property_id (int):
+                { 'resolved_months': int, 'open_months': int }
+        """
+        if not self._can_use_sharepoint_lists():
+            return {}
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return {}
+
+            list_id = self._get_sharepoint_list_id("ExceptionMonths")
+            if not list_id:
+                logger.warning("[STORAGE] ExceptionMonths list not found for audit status summary")
+                return {}
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            params = {
+                '$expand': 'fields($select=PropertyId,Status)',
+                '$top': 5000,
+            }
+
+            summary: Dict[int, Dict[str, int]] = {}
+            next_url = items_url
+
+            while next_url:
+                if next_url == items_url:
+                    response = requests.get(next_url, headers=headers, params=params, timeout=30)
+                else:
+                    response = requests.get(next_url, headers=headers, timeout=30)
+
+                if response.status_code != 200:
+                    logger.error(
+                        f"[STORAGE] ❌ load_property_audit_status_summary failed: "
+                        f"{response.status_code} - {response.text}"
+                    )
+                    break
+
+                data = response.json()
+                for item in data.get('value', []):
+                    fields = item.get('fields', {})
+                    prop_id = self._safe_int(fields.get('PropertyId'))
+                    if prop_id is None:
+                        continue
+                    status = str(fields.get('Status', 'Open')).strip()
+                    if prop_id not in summary:
+                        summary[prop_id] = {'resolved_months': 0, 'open_months': 0}
+                    if status == 'Resolved':
+                        summary[prop_id]['resolved_months'] += 1
+                    else:
+                        summary[prop_id]['open_months'] += 1
+
+                next_url = data.get('@odata.nextLink')
+
+            logger.info(f"[STORAGE] ✅ Loaded audit status summary for {len(summary)} properties")
+            return summary
+
+        except Exception as e:
+            logger.error(f"[STORAGE] Error loading property audit status summary: {e}", exc_info=True)
+            return {}
+
+    def load_all_resolved_totals(self) -> Dict[str, float]:
+        """
+        Query the ExceptionMonths SharePoint list for ALL Status='Resolved' rows
+        and return aggregate variance totals.
+
+        This is the source-of-truth calculation for historical recovery/impact metrics
+        on the portfolio dashboard — it is run-agnostic and does not require matching
+        resolutions against a specific audit run's bucket data.
+
+        Returns:
+            {
+                'recovered':  total absolute value of resolved undercharge variances (billed < scheduled),
+                'prevented':  total of resolved overcharge variances (billed > scheduled),
+                'count':      total number of resolved exception months
+            }
+        """
+        if not self._can_use_sharepoint_lists():
+            logger.debug("[STORAGE] SharePoint list not configured, returning zero resolved totals")
+            return {'recovered': 0.0, 'prevented': 0.0, 'count': 0}
+
+        try:
+            logger.info("[STORAGE] 📊 load_all_resolved_totals: querying ExceptionMonths for Status=Resolved")
+            site_id = self._get_site_id()
+            if not site_id:
+                return {'recovered': 0.0, 'prevented': 0.0, 'count': 0}
+
+            list_id = self._get_sharepoint_list_id("ExceptionMonths")
+            if not list_id:
+                logger.warning("[STORAGE] ExceptionMonths list not found")
+                return {'recovered': 0.0, 'prevented': 0.0, 'count': 0}
+
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json'
+            }
+
+            recovered = 0.0
+            prevented = 0.0
+            count = 0
+            next_url = items_url
+            params = {
+                '$expand': 'fields($select=Variance,Status)',
+                '$filter': "fields/Status eq 'Resolved'",
+                '$top': 5000
+            }
+
+            while next_url:
+                if next_url == items_url:
+                    response = requests.get(next_url, headers=headers, params=params, timeout=30)
+                else:
+                    response = requests.get(next_url, headers=headers, timeout=30)
+
+                if response.status_code != 200:
+                    logger.error(f"[STORAGE] ❌ load_all_resolved_totals failed: {response.status_code} - {response.text}")
+                    break
+
+                data = response.json()
+                for item in data.get('value', []):
+                    variance = item.get('fields', {}).get('Variance', 0) or 0
+                    try:
+                        variance = float(variance)
+                    except (TypeError, ValueError):
+                        variance = 0.0
+                    if variance < 0:
+                        recovered += abs(variance)   # undercharge: we were billing too little
+                    elif variance > 0:
+                        prevented += variance         # overcharge: we caught overbilling
+                    count += 1
+
+                next_url = data.get('@odata.nextLink')
+
+            logger.info(
+                f"[STORAGE] load_all_resolved_totals: "
+                f"recovered=${recovered:,.2f}, prevented=${prevented:,.2f}, count={count}"
+            )
+            return {'recovered': recovered, 'prevented': prevented, 'count': count}
+
+        except Exception as e:
+            logger.error(f"[STORAGE] Error in load_all_resolved_totals: {e}", exc_info=True)
+            return {'recovered': 0.0, 'prevented': 0.0, 'count': 0}
 
     def upsert_exception_month_to_sharepoint_list(self, month_data: Dict[str, Any]) -> bool:
         """
@@ -3249,6 +3503,7 @@ class StorageService:
                 'ResolvedAt': month_data.get('resolved_at', ''),
                 'ResolvedBy': month_data.get('resolved_by', ''),
                 'ResolvedByName': month_data.get('resolved_by_name', ''),
+                'Notes': month_data.get('notes', ''),
                 'UpdatedAt': month_data.get('updated_at', ''),
                 'UpdatedBy': month_data.get('updated_by', '')
             }
@@ -3845,6 +4100,7 @@ class StorageService:
                 if write_snapshots_async and can_write_sharepoint_lists:
                     snapshot_dispatch_started = perf_counter()
                     print(f"[STORAGE] 🚀 Dispatching async display snapshot write...")
+                    _run_scope_type = str((metadata.get('run_scope') or {}).get('type') or '')
                     snapshot_thread = threading.Thread(
                         target=self._write_run_display_snapshots_async,
                         args=(run_id, bucket_results),
@@ -3853,6 +4109,7 @@ class StorageService:
                             'expected_detail': expected_detail,
                             'property_name_map': property_name_map,
                             'snapshot_validation_async': snapshot_validation_async,
+                            'run_scope_type': _run_scope_type,
                         },
                         daemon=True,
                         name=f"snapshot-write-{run_id}",
@@ -3868,6 +4125,7 @@ class StorageService:
                         expected_detail=expected_detail,
                         property_name_map=property_name_map,
                         stage_timers=stage_timers,
+                        run_scope_type=str((metadata.get('run_scope') or {}).get('type') or ''),
                     )
                     if snapshot_write_ok:
                         print(f"[STORAGE] ✓ Display snapshots written successfully")

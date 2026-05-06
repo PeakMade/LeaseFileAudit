@@ -270,7 +270,20 @@ def reconcile_buckets(
         reconciled[CanonicalField.EXPECTED_TOTAL.value]
     )
     
-    # Classify status
+    # Carry LEASE_MODE from expected_detail to bucket results.
+    # Use the mode of the first row per bucket (all rows in the same bucket share the same month).
+    lease_mode_col = CanonicalField.LEASE_MODE.value
+    if lease_mode_col in expected_detail.columns:
+        mode_agg = (
+            expected_detail.groupby(BUCKET_KEY_COLUMNS)[lease_mode_col]
+            .first()
+            .reset_index()
+        )
+        reconciled = reconciled.merge(mode_agg, on=BUCKET_KEY_COLUMNS, how='left')
+    else:
+        reconciled[lease_mode_col] = 'active'
+
+    # Classify status — future buckets use SCHEDULED_ONLY instead of SCHEDULED_NOT_BILLED
     reconciled[CanonicalField.STATUS.value] = reconciled.apply(
         lambda row: _classify_status(row, recon_config),
         axis=1
@@ -288,7 +301,9 @@ def _classify_status(row: pd.Series, config: ReconciliationConfig) -> str:
     
     Rules:
     - MATCHED if abs(variance) <= tolerance
-    - SCHEDULED_NOT_BILLED if expected != 0 and actual == 0
+    - SCHEDULED_ONLY if lease_mode='future' and expected != 0 and actual == 0
+      (billing hasn't started yet — not a discrepancy)
+    - SCHEDULED_NOT_BILLED if expected != 0 and actual == 0 (past/active)
     - BILLED_NOT_SCHEDULED if expected == 0 and actual != 0
     - AMOUNT_MISMATCH otherwise
     
@@ -298,6 +313,7 @@ def _classify_status(row: pd.Series, config: ReconciliationConfig) -> str:
     expected = row[CanonicalField.EXPECTED_TOTAL.value]
     actual = row[CanonicalField.ACTUAL_TOTAL.value]
     variance = row[CanonicalField.VARIANCE.value]
+    lease_mode = row.get(CanonicalField.LEASE_MODE.value) or 'active'
     
     # Check for match within tolerance
     if abs(variance) <= config.amount_tolerance:
@@ -310,7 +326,11 @@ def _classify_status(row: pd.Series, config: ReconciliationConfig) -> str:
     if expected != 0 and abs(actual) <= config.amount_tolerance and (has_reversal or has_deleted):
         return config.status_matched
     
-    # Check for scheduled not billed
+    # Future lease: scheduled charge exists but billing hasn't started — not a discrepancy
+    if lease_mode == 'future' and expected != 0 and actual == 0:
+        return 'SCHEDULED_ONLY'
+
+    # Check for scheduled not billed (past/active)
     if expected != 0 and actual == 0:
         return config.status_scheduled_not_billed
     

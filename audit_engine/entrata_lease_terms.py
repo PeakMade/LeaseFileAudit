@@ -9,6 +9,7 @@ their own API helper, PDF parser, and field extraction logic.
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from datetime import timedelta
 import hashlib
@@ -59,8 +60,31 @@ def _load_pdfplumber_if_available():
 
 
 _load_dotenv_if_available()
-fitz = _load_pymupdf_if_available()
-pdfplumber = _load_pdfplumber_if_available()
+
+
+class _LazyModule:
+    """Defers a heavy module import until the first attribute access."""
+    def __init__(self, loader):
+        self._loader = loader
+        self._mod = None
+
+    def _load(self):
+        if self._mod is None:
+            self._mod = self._loader()
+        return self._mod
+
+    def __bool__(self):
+        return self._load() is not None
+
+    def __getattr__(self, name):
+        mod = self._load()
+        if mod is None:
+            raise AttributeError(name)
+        return getattr(mod, name)
+
+
+fitz = _LazyModule(_load_pymupdf_if_available)
+pdfplumber = _LazyModule(_load_pdfplumber_if_available)
 logger = logging.getLogger(__name__)
 
 
@@ -474,7 +498,7 @@ def parse_pdf_to_text_pack(pdf_source: str | bytes | bytearray) -> dict:
         "pages": []
     }
 
-    if fitz is None:
+    if not fitz:
         message = "PyMuPDF (fitz) is not installed in the active environment"
         logger.error(message)
         result["error"] = message
@@ -1221,7 +1245,7 @@ def download_lease_document(
     primary_path, primary_filename = save_pdf_bytes_locally(primary_pdf_bytes, f"{title}_{doc_id}.pdf")
     primary_sharepoint_path = upload_pdf_bytes_to_sharepoint(primary_pdf_bytes, primary_filename)
     primary_page_count: int | None = None
-    if fitz is not None:
+    if fitz:
         try:
             with fitz.open(stream=primary_pdf_bytes, filetype="pdf") as primary_doc:
                 primary_page_count = len(primary_doc)
@@ -1263,7 +1287,7 @@ def download_lease_document(
     combined_sharepoint_path = None
 
     if addenda_saved:
-        if fitz is None:
+        if not fitz:
             logger.warning("PyMuPDF unavailable; skipping merge of packet + addenda and returning primary PDF")
         else:
             merged_filename = safe_filename(f"{title}_{doc_id}_with_addenda.pdf")
@@ -1293,7 +1317,7 @@ def download_lease_document(
         "included_addenda_count": len(addenda_saved),
         "included_addenda": addenda_saved,
         "source_packet_path": primary_path,
-        "combined_path": out_path if addenda_saved and fitz is not None else None,
+        "combined_path": out_path if addenda_saved and fitz else None,
         "source_packet_sharepoint_path": primary_sharepoint_path,
         "combined_sharepoint_path": combined_sharepoint_path,
         "primary_page_count": primary_page_count,
@@ -2202,7 +2226,7 @@ def _extract_basic_terms_from_text_pack(text_pack: Mapping[str, Any], doc_info: 
         return None, None, None
 
     def _pdfplumber_anchor_monthly_rent() -> tuple[float | None, str | None, str | None, list[dict[str, Any]]]:
-        if pdfplumber is None:
+        if not pdfplumber:
             return None, None, None, []
 
         pdf_path = str(doc_info.get("source_packet_path") or "").strip()
@@ -3020,15 +3044,17 @@ def refresh_lease_terms_for_lease_interval(
 
     cached_term_set = {}
     cached_terms_df = pd.DataFrame()
-    try:
-        cached_term_set = storage_service.load_lease_term_set_for_lease_key(lease_key) or {}
-    except Exception:
-        cached_term_set = {}
-
-    try:
-        cached_terms_df = storage_service.load_lease_terms_for_lease_key_from_sharepoint_list(lease_key)
-    except Exception:
-        cached_terms_df = pd.DataFrame()
+    with ThreadPoolExecutor(max_workers=2) as _pool:
+        _fut_term_set = _pool.submit(storage_service.load_lease_term_set_for_lease_key, lease_key)
+        _fut_terms_df = _pool.submit(storage_service.load_lease_terms_for_lease_key_from_sharepoint_list, lease_key)
+        try:
+            cached_term_set = _fut_term_set.result() or {}
+        except Exception:
+            cached_term_set = {}
+        try:
+            cached_terms_df = _fut_terms_df.result()
+        except Exception:
+            cached_terms_df = pd.DataFrame()
 
     cached_run_id_last_seen = str(cached_term_set.get("run_id_last_seen") or "").strip()
     current_run_id = str(run_id or "").strip()
@@ -3044,7 +3070,6 @@ def refresh_lease_terms_for_lease_interval(
             if (
                 age <= timedelta(hours=max(1, int(min_recheck_hours)))
                 and existing_doc_list_fingerprint
-                and not is_new_run_context
             ):
                 return {
                     "lease_key": lease_key,

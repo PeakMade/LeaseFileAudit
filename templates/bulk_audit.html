@@ -1,0 +1,396 @@
+{% extends "base.html" %}
+
+{% block title %}Bulk Audit — Lease File Audit{% endblock %}
+
+{% block content %}
+<div style="width: 100%; padding: 20px 40px;">
+    <div style="max-width: 1100px; margin: 0 auto;">
+
+        <!-- Header -->
+        <div class="d-flex align-items-center gap-3 mb-4">
+            <a href="{{ url_for('main.portfolio') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="fas fa-arrow-left me-1"></i>Back to Portfolio
+            </a>
+            <h4 class="mb-0"><i class="fas fa-layer-group me-2" style="color: #00a8c8;"></i>Run Bulk Audit</h4>
+        </div>
+
+        <!-- Setup card (shown before job starts) -->
+        <div id="setupPanel">
+
+            {% if last_job %}
+            <!-- Last Bulk Audit Summary -->
+            <div class="card mb-4" style="border-left: 4px solid #00a8c8;">
+                <div class="card-header bg-light d-flex align-items-center justify-content-between">
+                    <h5 class="mb-0"><i class="fas fa-history me-2" style="color:#00a8c8;"></i>Last Bulk Audit</h5>
+                    <div class="d-flex align-items-center gap-2">
+                        {% if last_job.status == 'complete' %}
+                            <span class="badge bg-success">Complete</span>
+                        {% else %}
+                            <span class="badge bg-secondary">Stopped</span>
+                        {% endif %}
+                        <button class="btn btn-sm btn-outline-secondary" type="button"
+                                data-bs-toggle="collapse" data-bs-target="#lastJobDetails">
+                            <i class="fas fa-chevron-down"></i> Details
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body pb-2">
+                    <div class="row g-3 mb-2">
+                        <div class="col-auto">
+                            <span class="text-muted small">Date Range</span><br>
+                            <strong>{{ last_job.from_date or 'All time' }} → {{ last_job.to_date or 'today' }}</strong>
+                        </div>
+                        <div class="col-auto">
+                            <span class="text-muted small">Started</span><br>
+                            <strong>{{ last_job.started_at[:19].replace('T', ' ') if last_job.started_at else '—' }}</strong>
+                        </div>
+                        <div class="col-auto">
+                            <span class="text-muted small">Properties</span><br>
+                            <strong>{{ last_job.completed }} / {{ last_job.total }} completed</strong>
+                        </div>
+                        {% if last_job.errors %}
+                        <div class="col-auto">
+                            <span class="text-muted small">Errors</span><br>
+                            <strong class="text-danger">{{ last_job.errors | length }}</strong>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="collapse" id="lastJobDetails">
+                    <div class="card-body pt-0">
+                        <table class="table table-sm mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Property Name</th>
+                                    <th style="width:110px;">Property ID</th>
+                                    <th style="width:120px;" class="text-center">Status</th>
+                                    <th>Run</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for prop in last_job.properties %}
+                                <tr>
+                                    <td>{{ prop.property_name or '—' }}</td>
+                                    <td class="text-muted">{{ prop.property_id }}</td>
+                                    <td class="text-center">
+                                        {% if prop.status == 'done' %}
+                                            <span class="badge" style="background:#198754">Done</span>
+                                        {% elif prop.status == 'error' %}
+                                            <span class="badge bg-danger">Error</span>
+                                        {% elif prop.status == 'cancelled' %}
+                                            <span class="badge bg-secondary">Cancelled</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary">{{ prop.status }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if prop.run_id %}
+                                            <a href="{{ url_for('main.property_view', property_id=prop.property_id, run_id=prop.run_id) }}"
+                                               class="font-monospace small">{{ prop.run_id }}</a>
+                                        {% elif prop.error %}
+                                            <span class="text-danger small">{{ prop.error }}</span>
+                                        {% else %}
+                                            <span class="text-muted">—</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            <div class="card mb-4">
+                <div class="card-header bg-light">
+                    <h5 class="mb-0">Audit Period</h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">
+                        Select the date range to audit. AR transactions will be fetched within this window;
+                        scheduled charges will be windowed to the same period automatically.
+                    </p>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">From Date</label>
+                            <input type="date" class="form-control" id="fromDate" name="from_date">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">To Date</label>
+                            <input type="date" class="form-control" id="toDate" name="to_date">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-header bg-light d-flex align-items-center justify-content-between">
+                    <h5 class="mb-0">Properties <span class="badge bg-secondary ms-2" id="selectedCount">{{ properties | length }} selected</span></h5>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="selectAll">Select All</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="deselectAll">Deselect All</button>
+                    </div>
+                </div>
+                <div class="card-body p-2">
+                    <div class="mb-2 px-2">
+                        <input type="text" class="form-control form-control-sm" id="propSearch" placeholder="Filter properties…">
+                    </div>
+                    <div style="max-height: 340px; overflow-y: auto;">
+                        <table class="table table-sm table-hover mb-0" id="propertyCheckTable">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th style="width: 40px;"></th>
+                                    <th>Property Name</th>
+                                    <th style="width: 110px;">Property ID</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for prop in properties %}
+                                <tr class="prop-row" data-name="{{ (prop.property_name or '') | lower | e }}">
+                                    <td class="text-center">
+                                        <input class="form-check-input prop-check" type="checkbox"
+                                               value="{{ prop.property_id }}"
+                                               data-name="{{ prop.property_name | e }}"
+                                               checked>
+                                    </td>
+                                    <td>{{ prop.property_name or '—' }}</td>
+                                    <td class="text-muted">{{ prop.property_id }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex gap-3 align-items-center">
+                <button type="button" class="btn btn-primary px-4" id="startBtn">
+                    <i class="fas fa-play me-2"></i>Start Bulk Audit
+                </button>
+                <span class="text-muted small" id="startHint"></span>
+            </div>
+        </div>
+
+        <!-- Progress panel (shown after job starts) -->
+        <div id="progressPanel" style="display: none;">
+            <div class="card mb-4">
+                <div class="card-header bg-light d-flex align-items-center justify-content-between">
+                    <h5 class="mb-0" id="progressTitle">Running Bulk Audit…</h5>
+                    <span id="progressBadge" class="badge bg-primary">Running</span>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span id="progressLabel">Starting…</span>
+                            <span id="progressFraction">0 / 0</span>
+                        </div>
+                        <div class="progress" style="height: 18px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+                                 id="progressBar" role="progressbar" style="width: 0%;">0%</div>
+                        </div>
+                    </div>
+                    <div id="errorAlert" class="alert alert-warning d-none mb-3"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header bg-light">
+                    <h5 class="mb-0">Per-Property Status</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0" id="statusTable">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Property Name</th>
+                                    <th style="width: 110px;">Property ID</th>
+                                    <th style="width: 120px;" class="text-center">Status</th>
+                                    <th>Run ID</th>
+                                </tr>
+                            </thead>
+                            <tbody id="statusBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-3 d-flex gap-3 align-items-center">
+                <a href="{{ url_for('main.portfolio') }}" class="btn btn-outline-primary" id="portfolioBtn">
+                    <i class="fas fa-th-large me-1"></i>View Portfolio
+                </a>
+                <button type="button" class="btn btn-outline-danger" id="stopBtn">
+                    <i class="fas fa-stop me-1"></i>Stop Audit
+                </button>
+                <button type="button" class="btn btn-outline-secondary" id="runAnotherBtn" style="display: none;">
+                    <i class="fas fa-redo me-1"></i>Run Another Bulk Audit
+                </button>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+
+    // ---- date defaults: first of current month → today ----
+    const today = new Date();
+    const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    function fmtDate(d) {
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+    document.getElementById('fromDate').value = fmtDate(firstOfMonth);
+    document.getElementById('toDate').value = fmtDate(today);
+
+    // ---- property filter + select all / deselect all ----
+    const propSearch = document.getElementById('propSearch');
+    const allRows = Array.from(document.querySelectorAll('#propertyCheckTable .prop-row'));
+    const allChecks = Array.from(document.querySelectorAll('.prop-check'));
+    const selectedCount = document.getElementById('selectedCount');
+    const startHint = document.getElementById('startHint');
+
+    function updateCount() {
+        const n = allChecks.filter(c => c.checked).length;
+        selectedCount.textContent = n + ' selected';
+        startHint.textContent = n === 0 ? 'Select at least one property to continue.' : '';
+    }
+    allChecks.forEach(c => c.addEventListener('change', updateCount));
+    updateCount();
+
+    propSearch.addEventListener('input', function () {
+        const term = propSearch.value.trim().toLowerCase();
+        allRows.forEach(row => {
+            row.style.display = (!term || row.dataset.name.includes(term)) ? '' : 'none';
+        });
+    });
+
+    document.getElementById('selectAll').addEventListener('click', function () {
+        allChecks.forEach(c => { c.checked = true; });
+        updateCount();
+    });
+    document.getElementById('deselectAll').addEventListener('click', function () {
+        allChecks.forEach(c => { c.checked = false; });
+        updateCount();
+    });
+
+    // ---- start job ----
+    document.getElementById('startBtn').addEventListener('click', function () {
+        const selectedIds = allChecks.filter(c => c.checked).map(c => parseInt(c.value));
+        if (selectedIds.length === 0) {
+            alert('Please select at least one property.');
+            return;
+        }
+
+        const fromDate = document.getElementById('fromDate').value;
+        const toDate = document.getElementById('toDate').value;
+
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting…';
+
+        fetch('{{ url_for("main.start_bulk_audit") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from_date: fromDate, to_date: toDate, property_ids: selectedIds }),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { alert(data.error); this.disabled = false; return; }
+            showProgressPanel(data.job_id, selectedIds.length);
+        })
+        .catch(err => { alert('Failed to start bulk audit: ' + err); this.disabled = false; });
+    });
+
+    // ---- progress panel ----
+    function showProgressPanel(jobId, total) {
+        document.getElementById('setupPanel').style.display = 'none';
+        document.getElementById('progressPanel').style.display = '';
+
+        const statusBody = document.getElementById('statusBody');
+        const progressBar = document.getElementById('progressBar');
+        const progressLabel = document.getElementById('progressLabel');
+        const progressFraction = document.getElementById('progressFraction');
+        const progressBadge = document.getElementById('progressBadge');
+        const progressTitle = document.getElementById('progressTitle');
+        const errorAlert = document.getElementById('errorAlert');
+        const runAnotherBtn = document.getElementById('runAnotherBtn');
+
+        let pollInterval = null;
+
+        function poll() {
+            fetch('{{ url_for("main.bulk_audit_status", job_id="__JOB_ID__") }}'.replace('__JOB_ID__', jobId))
+            .then(r => r.json())
+            .then(job => {
+                // Update progress bar
+                const pct = job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
+                progressBar.style.width = pct + '%';
+                progressBar.textContent = pct + '%';
+                progressFraction.textContent = job.completed + ' / ' + job.total;
+
+                if (job.current_property) {
+                    progressLabel.textContent = 'Auditing: ' + job.current_property;
+                } else if (job.status === 'complete') {
+                    progressLabel.textContent = 'Finished';
+                }
+
+                // Rebuild per-property table
+                statusBody.innerHTML = '';
+                (job.properties || []).forEach(function (prop) {
+                    const tr = document.createElement('tr');
+                    let badge = '';
+                    if (prop.status === 'done') badge = '<span class="badge" style="background:#198754">Done</span>';
+                    else if (prop.status === 'running') badge = '<span class="badge bg-primary">Running</span>';
+                    else if (prop.status === 'error') badge = '<span class="badge bg-danger">Error</span>';
+                    else if (prop.status === 'cancelled') badge = '<span class="badge bg-secondary">Cancelled</span>';
+                    else badge = '<span class="badge bg-secondary">Pending</span>';
+
+                    const runIdCell = prop.run_id
+                        ? '<a href="/property/' + prop.property_id + '?run_id=' + encodeURIComponent(prop.run_id) + '" class="font-monospace small">' + prop.run_id + '</a>'
+                        : (prop.error ? '<span class="text-danger small">' + prop.error + '</span>' : '<span class="text-muted">—</span>');
+
+                    tr.innerHTML = '<td>' + (prop.property_name || '—') + '</td>'
+                                 + '<td class="text-muted">' + prop.property_id + '</td>'
+                                 + '<td class="text-center">' + badge + '</td>'
+                                 + '<td>' + runIdCell + '</td>';
+                    statusBody.appendChild(tr);
+                });
+
+                if (job.errors && job.errors.length > 0) {
+                    errorAlert.classList.remove('d-none');
+                    errorAlert.textContent = job.errors.length + ' propert' + (job.errors.length === 1 ? 'y' : 'ies') + ' encountered errors. See the table below for details.';
+                }
+
+                if (job.status === 'complete' || job.status === 'cancelled') {
+                    clearInterval(pollInterval);
+                    progressBar.classList.remove('progress-bar-animated');
+                    const wasCancelled = job.status === 'cancelled';
+                    progressBar.classList.add(wasCancelled ? 'bg-secondary' : (job.errors.length > 0 ? 'bg-warning' : 'bg-success'));
+                    progressBadge.className = 'badge ' + (wasCancelled ? 'bg-secondary' : (job.errors.length > 0 ? 'bg-warning text-dark' : 'bg-success'));
+                    progressBadge.textContent = wasCancelled ? 'Stopped' : 'Complete';
+                    progressTitle.textContent = wasCancelled ? 'Bulk Audit Stopped' : 'Bulk Audit Complete';
+                    document.getElementById('stopBtn').style.display = 'none';
+                    runAnotherBtn.style.display = '';
+                }
+            })
+            .catch(function () { /* silently skip on transient network errors */ });
+        }
+
+        poll();
+        pollInterval = setInterval(poll, 2000);
+
+        document.getElementById('stopBtn').addEventListener('click', function () {
+            if (!confirm('Stop the bulk audit? Properties already completed will be saved. The current property will finish before stopping.')) return;
+            this.disabled = true;
+            this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Stopping…';
+            fetch('{{ url_for("main.cancel_bulk_audit", job_id="__JOB_ID__") }}'.replace('__JOB_ID__', jobId), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            }).catch(function () {});
+        });
+    }
+
+    document.getElementById('runAnotherBtn').addEventListener('click', function () {
+        window.location.reload();
+    });
+});
+</script>
+{% endblock %}

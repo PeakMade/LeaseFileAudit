@@ -41,6 +41,7 @@ Property managers need to ensure that all scheduled rent and fee charges are bil
 - **Portfolio Dashboard**: Aggregated view showing latest audit data for each property across all runs with real-time KPIs
 - **Immutable Audit History**: Each property upload creates a new run preserving complete audit trail
 - **Drill-Down Views**: Property → Lease → Exception detail hierarchy
+- **Date-Smart Lease Audit**: Distinguishes past, active, and future lease intervals; future months are included for visibility but do not generate false discrepancies
 - **Azure AD Authentication**: Secure, role-based access using Microsoft accounts
 
 ---
@@ -239,9 +240,14 @@ LeaseFileAudit/
       → One-time charge (single month)
     Else:
       → Recurring charge (expand from PERIOD_START to PERIOD_END)
-      → Create one row per month
+      → Create one row per month (including future months when include_future=True)
   ```
 - **Output**: Every scheduled charge becomes one or more monthly buckets
+- **`include_future` flag** (added 2026-05-04): When `True`, months beyond today are included and tagged `LEASE_MODE='future'`. The audit always runs with `include_future=True` so future lease intervals are visible without generating false discrepancies.
+- **`LEASE_MODE` tagging**: Every expanded row is tagged:
+  - `'past'` — month is before current month
+  - `'active'` — month equals current month
+  - `'future'` — month is after current month
 
 #### Step 5: Reconciliation (THE CORE ALGORITHM)
 - **File**: `audit_engine/reconcile.py`
@@ -386,6 +392,7 @@ class CanonicalField(Enum):
     AUDIT_MONTH = "AUDIT_MONTH"
     ACTUAL_AMOUNT = "ACTUAL_AMOUNT"      # From AR Transactions
     EXPECTED_AMOUNT = "EXPECTED_AMOUNT"  # From Scheduled Charges
+    LEASE_MODE = "LEASE_MODE"           # 'past', 'active', or 'future' (added 2026-05-04)
     # ... etc
 ```
 
@@ -472,6 +479,8 @@ StorageService:
 **Design Guardrail**:
 - Does **not** modify reconciliation status calculation (`MATCHED`, `SCHEDULED_NOT_BILLED`, etc.)
 - Runs as a sidecar enrichment for lease-level display
+
+**Lazy-loading (added 2026-05-04)**: `fitz` (PyMuPDF) and `pdfplumber` are no longer imported at module load time. Both are wrapped in a `_LazyModule` proxy that defers DLL initialization until the first PDF operation. This eliminated a ~3-minute startup hang on Windows caused by DLL initialization at import time.
 
 **Major Responsibilities**:
 - Entrata API helper (`post_entrata`) and lease picklist caching (`fetch_lease_picklist`)
@@ -611,9 +620,31 @@ Performance: 10,000 + 50,000 = 60,000 operations ✅
 | Status | Meaning | Financial Impact |
 |--------|---------|------------------|
 | `MATCHED` | Expected = Actual | None |
-| `SCHEDULED_NOT_BILLED` | Charge scheduled but not posted | Undercharge (revenue loss) |
+| `SCHEDULED_NOT_BILLED` | Charge scheduled but not posted (past/active lease) | Undercharge (revenue loss) |
 | `BILLED_NOT_SCHEDULED` | Transaction posted without schedule | Potential overcharge |
 | `AMOUNT_MISMATCH` | Posted amount ≠ scheduled amount | Under or overcharge |
+| `SCHEDULED_ONLY` | Future lease month — billing hasn't started yet | Informational only (not a discrepancy) |
+
+### Date-Smart Lease Audit (added 2026-05-04)
+
+The reconciliation engine is date-aware across three lease phases:
+
+- **Past** (`LEASE_MODE='past'`): Month is before today's month. Standard discrepancy rules apply — missing billing is `SCHEDULED_NOT_BILLED`.
+- **Active** (`LEASE_MODE='active'`): Current month. Standard rules apply.
+- **Future** (`LEASE_MODE='future'`): Month is after today. Billing hasn't started yet. A scheduled charge with no actual transaction returns `SCHEDULED_ONLY` instead of `SCHEDULED_NOT_BILLED`, so it is not counted as a discrepancy.
+
+**`SCHEDULED_ONLY` treatment**:
+- Not counted in `exception_buckets` in KPIs (treated same as `MATCHED` for counts)
+- Shown in a separate **Future Lease — Scheduled Charges** informational table on the lease page (blue badge, "Scheduled Only" label)
+- Does not affect AR code status (Open/Resolved/Passed)
+
+**Files involved**:
+- `audit_engine/canonical_fields.py` — `LEASE_MODE` field
+- `audit_engine/expand.py` — `include_future` param + `LEASE_MODE` tagging
+- `audit_engine/reconcile.py` — `LEASE_MODE` carried to bucket results; `_classify_status()` returns `SCHEDULED_ONLY` for future
+- `audit_engine/metrics.py` — `SCHEDULED_ONLY` excluded from exception counts
+- `web/views.py` — `future_buckets` separated; `future_months` passed to template
+- `templates/lease.html` — Future Lease info card rendered separately
 
 ---
 
@@ -1017,6 +1048,8 @@ Flat array (excluded codes only, legacy — still accepted):
 ```
 
 **`allowed_ar_codes` behavior**: When non-empty, acts as a whitelist — audit processing is restricted to only those AR codes. Startup logs: `[AR CODE WHITELIST] Restricting to N allowed AR code(s): [...]`. When empty or absent, all codes not in `api_posted_ar_codes` are processed normally.
+
+**Current value (as of 2026-05-04)**: `[154771]` — base rent only.
 
 **Safe fallback**: defaults to empty set if file is missing or malformed — audit continues without API-posted classification.
 

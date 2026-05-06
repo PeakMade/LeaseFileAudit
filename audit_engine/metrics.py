@@ -50,10 +50,11 @@ def calculate_kpis(
             "total_impact": 0.0
         }
     
-    # Status counts
+    # Status counts — SCHEDULED_ONLY is future-lease informational, not a discrepancy
     from config import config
+    non_exception_statuses = {config.reconciliation.status_matched, 'SCHEDULED_ONLY'}
     matched_buckets = len(bucket_results[
-        bucket_results[CanonicalField.STATUS.value] == config.reconciliation.status_matched
+        bucket_results[CanonicalField.STATUS.value].isin(non_exception_statuses)
     ])
     exception_buckets = total_buckets - matched_buckets
     match_rate = (matched_buckets / total_buckets) * 100 if total_buckets > 0 else 0.0

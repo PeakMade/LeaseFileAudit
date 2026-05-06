@@ -601,6 +601,13 @@ def _build_scheduled_df(property_id: int, property_name: str, details_payload: d
                 else:
                     charge_end = lease_end
 
+                # For open-ended recurring charges on MTM leases, both chargeEndDate
+                # (sentinel like "End During Move-Out") and leaseEndDate are unparseable.
+                # Fall back to postedThrough so the charge expands across all posted months
+                # instead of collapsing to a single one-time bucket.
+                if not charge_end and not is_one_time:
+                    charge_end = _to_mmddyyyy(posted_through_value)
+
                 # Guard bad upstream ranges: recurring charges with end before start
                 # should default to lease_end rather than collapsing/vanishing.
                 start_dt = pd.to_datetime(charge_start, errors="coerce")

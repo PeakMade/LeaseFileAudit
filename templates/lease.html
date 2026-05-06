@@ -50,20 +50,24 @@
         </div>
     </div>
 
-    {% if lease_only_expectations %}
-    <div class="row mb-3">
+    <!-- Lease-only expectations: populated async -->
+    <div class="row mb-3" id="leaseOnlyExpectationsRow" style="display:none;">
         <div class="col-12">
-            <div class="alert alert-warning border" role="alert">
+            <div class="alert alert-warning border" role="alert" id="leaseOnlyExpectationsBanner">
                 <strong>Expected in Lease, no scheduled charges or transactions matched:</strong>
-                <ul class="mb-0 mt-2">
-                    {% for item in lease_only_expectations %}
-                    <li>{{ item.message if item.message else (item.term_label or 'Unmapped lease term') }}</li>
-                    {% endfor %}
-                </ul>
+                <ul class="mb-0 mt-2" id="leaseOnlyExpectationsList"></ul>
             </div>
         </div>
     </div>
-    {% endif %}
+    <!-- Lease terms loading indicator -->
+    <div class="row mb-2" id="leaseTermsLoadingRow">
+        <div class="col-12">
+            <span class="text-muted small">
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                Loading lease terms…
+            </span>
+        </div>
+    </div>
 
     <!-- Unified AR Codes Table -->
     <div class="row">
@@ -130,6 +134,49 @@
         </div>
     </div>
 
+    {% if future_months %}
+    <!-- Future Lease Scheduled Charges -->
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card border-info">
+                <div class="card-header bg-info bg-opacity-10 d-flex align-items-center gap-2">
+                    <h5 class="mb-0 text-info"><i class="fas fa-calendar-alt"></i> Future Lease — Scheduled Charges</h5>
+                    <span class="badge bg-info">{{ future_months|length }} month{{ 's' if future_months|length != 1 }}</span>
+                </div>
+                <div class="card-body p-0">
+                    <div class="alert alert-info m-3 mb-0" role="alert">
+                        <small><strong>Informational:</strong> These charges are scheduled for future billing periods. Billing has not started yet, so no discrepancy is raised.</small>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>AR Code</th>
+                                    <th>AR Code Name</th>
+                                    <th>Month</th>
+                                    <th class="text-end">Expected Amount</th>
+                                    <th class="text-center">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for fm in future_months %}
+                                <tr>
+                                    <td><strong>{{ fm.ar_code_id|int }}</strong></td>
+                                    <td>{{ fm.ar_code_name if fm.ar_code_name else '-' }}</td>
+                                    <td>{{ fm.audit_month }}</td>
+                                    <td class="text-end">${{ "%.2f"|format(fm.expected_total) }}</td>
+                                    <td class="text-center"><span class="badge bg-info text-white">Scheduled Only</span></td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Side Drawer for AR Code Details -->
     <div id="drawerOverlay" class="drawer-overlay" onclick="closeDrawer()"></div>
     <div id="detailsDrawer" class="drawer">
@@ -147,6 +194,8 @@
     <!-- Hidden data for drawer content -->
     <script>
     const arCodeData = {{ all_ar_codes|tojson|safe }};
+    const futureMonthsData = {{ future_months|tojson|safe }};
+    const leaseTermsApiUrl = {{ lease_terms_api_url|tojson|safe }};
     let currentDrawerData = null;  // Track currently open drawer data
     let currentArCodeId = null;    // Track currently open AR code ID
     const exceptionState = {};
@@ -199,6 +248,42 @@
     document.addEventListener('DOMContentLoaded', () => {
         // Status calculation happens on the backend based on SharePoint month data
         // The status_label in the HTML is already correct, don't override it
+
+        // Async lease terms fetch
+        fetch(leaseTermsApiUrl)
+            .then(r => r.json())
+            .then(data => {
+                // Hide loading indicator
+                const loadingRow = document.getElementById('leaseTermsLoadingRow');
+                if (loadingRow) loadingRow.style.display = 'none';
+
+                // Populate lease-only expectations banner
+                const leaseOnlyExpectations = data.lease_only_expectations || [];
+                if (leaseOnlyExpectations.length > 0) {
+                    const list = document.getElementById('leaseOnlyExpectationsList');
+                    if (list) {
+                        list.innerHTML = leaseOnlyExpectations.map(item => {
+                            const text = item.message || item.term_label || 'Unmapped lease term';
+                            return `<li>${text}</li>`;
+                        }).join('');
+                    }
+                    const row = document.getElementById('leaseOnlyExpectationsRow');
+                    if (row) row.style.display = '';
+                }
+
+                // Inject lease_expectation into arCodeData so drawer shows terms
+                const arCodeExpectations = data.ar_code_expectations || {};
+                arCodeData.forEach(ar => {
+                    const expectation = arCodeExpectations[String(ar.ar_code_id)];
+                    if (expectation) {
+                        ar.lease_expectation = expectation;
+                    }
+                });
+            })
+            .catch(() => {
+                const loadingRow = document.getElementById('leaseTermsLoadingRow');
+                if (loadingRow) loadingRow.style.display = 'none';
+            });
     });
     
     function openDrawer(index) {
@@ -421,6 +506,9 @@
                     <div class="d-flex gap-2 flex-wrap" id="suggestedFixButtons">
                         ${buildSuggestedFixButtons(status)}
                     </div>
+                    <div class="mt-2">
+                        <textarea id="resolutionNotes" class="form-control form-control-sm" rows="2" placeholder="Optional: notes on actions taken in Entrata or reasoning (saved with resolution)..."></textarea>
+                    </div>
                 </div>
             `;
         }
@@ -454,7 +542,8 @@
                             const resolvedByName = month.month_resolved_by_name || month.month_resolved_by || 'Unknown';
                             resolvedInfo = `<br/><small style="font-size: 0.7rem; color: #6c757d;">${formatDateTime(month.month_resolved_at)} by ${resolvedByName}</small>`;
                         }
-                        fixCell.innerHTML = `<span class="badge bg-success">✓</span> ${month.month_fix_label}${resolvedInfo}`;
+                        const notesHtmlLoad = month.month_notes ? `<br/><small style="font-size: 0.7rem; color: #6c757d;"><i class="fas fa-sticky-note"></i> ${month.month_notes}</small>` : '';
+                        fixCell.innerHTML = `<span class="badge bg-success">✓</span> ${month.month_fix_label}${resolvedInfo}${notesHtmlLoad}`;
                     }
                 } else if (month.month_status === 'Open') {
                     // Month is still open - show the original placeholder text
@@ -503,25 +592,61 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix mb-2" data-fix-label="Correct schedule dates" onclick="selectFix(this, 1)">
+                <div class="suggested-fix mb-2" data-fix-label="Correct schedule dates in Entrata" onclick="selectFix(this, 1)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">2</span>
                         <div class="flex-grow-1">
-                            <strong>Correct schedule dates</strong>
-                            <p class="mb-1 text-muted small">The schedule may have incorrect start/end dates. Review and adjust the recurring charge schedule.</p>
-                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Correct schedule dates', 'external')">
+                            <strong>Correct schedule dates in Entrata</strong>
+                            <p class="mb-1 text-muted small">The schedule has incorrect start/end dates. Update the recurring charge schedule in Entrata.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Correct schedule dates in Entrata', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix" data-fix-label="Mark as expected discrepancy" onclick="selectFix(this, 2)">
+                <div class="suggested-fix mb-2" data-fix-label="Lease renewal not yet processed" onclick="selectFix(this, 2)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">3</span>
                         <div class="flex-grow-1">
-                            <strong>Mark as expected discrepancy</strong>
-                            <p class="mb-1 text-muted small">This may be expected (move-out, MTM, concession, etc.). Document the reason and mark as resolved.</p>
-                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Mark as expected discrepancy', 'one_time')">
+                            <strong>Lease renewal not yet processed</strong>
+                            <p class="mb-1 text-muted small">Resident renewed but the new lease interval hasn't been set up in Entrata yet.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Lease renewal not yet processed', 'external')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix mb-2" data-fix-label="Resident moved out – charge not applicable" onclick="selectFix(this, 3)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">4</span>
+                        <div class="flex-grow-1">
+                            <strong>Resident moved out – charge not applicable</strong>
+                            <p class="mb-1 text-muted small">Resident vacated during this period. The scheduled charge should not apply.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Resident moved out – charge not applicable', 'internal')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix mb-2" data-fix-label="Month-to-month – no active schedule" onclick="selectFix(this, 4)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">5</span>
+                        <div class="flex-grow-1">
+                            <strong>Month-to-month – no active schedule</strong>
+                            <p class="mb-1 text-muted small">Lease converted to MTM and no recurring charge schedule exists. Create or verify MTM schedule.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Month-to-month – no active schedule', 'external')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix" data-fix-label="Concession / waiver approved" onclick="selectFix(this, 5)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">6</span>
+                        <div class="flex-grow-1">
+                            <strong>Concession / waiver approved</strong>
+                            <p class="mb-1 text-muted small">Management approved a concession or waiver for this charge. Document and mark as resolved.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Concession / waiver approved', 'internal')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
@@ -555,12 +680,36 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix" data-fix-label="Mark as one-time charge" onclick="selectFix(this, 2)">
+                <div class="suggested-fix mb-2" data-fix-label="Move-in proration" onclick="selectFix(this, 2)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">3</span>
                         <div class="flex-grow-1">
+                            <strong>Move-in proration</strong>
+                            <p class="mb-1 text-muted small">Prorated charge posted for a partial first month. This is expected and does not require a schedule match.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Move-in proration', 'internal')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix mb-2" data-fix-label="Backdated / corrected posting" onclick="selectFix(this, 3)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">4</span>
+                        <div class="flex-grow-1">
+                            <strong>Backdated / corrected posting</strong>
+                            <p class="mb-1 text-muted small">A correction or backdated charge was posted outside the normal schedule cycle.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Backdated / corrected posting', 'internal')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix" data-fix-label="Mark as one-time charge" onclick="selectFix(this, 4)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">5</span>
+                        <div class="flex-grow-1">
                             <strong>Mark as one-time charge</strong>
-                            <p class="mb-1 text-muted small">This is a legitimate one-time charge. Document and mark as resolved.</p>
+                            <p class="mb-1 text-muted small">This is a legitimate one-time charge not tied to a recurring schedule. Document and mark as resolved.</p>
                             <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Mark as one-time charge', 'one_time')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
@@ -571,21 +720,33 @@
         }
         if (status === 'AMOUNT_MISMATCH') {
             return `
-                <div class="suggested-fix mb-2" data-fix-label="Correct scheduled amount" onclick="selectFix(this, 0)">
+                <div class="suggested-fix mb-2" data-fix-label="Correct scheduled amount in Entrata" onclick="selectFix(this, 0)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">1</span>
                         <div class="flex-grow-1">
-                            <strong>Correct scheduled amount</strong>
+                            <strong>Correct scheduled amount in Entrata</strong>
                             <p class="mb-1 text-muted small">The recurring charge schedule has the wrong amount. Update it in Entrata.</p>
-                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'Correct scheduled amount', 'external')">
+                            <button class="btn btn-sm btn-suggested-primary mt-1" onclick="applyFix(event, 'Correct scheduled amount in Entrata', 'external')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix mb-2" data-fix-label="Adjust posted transaction" onclick="selectFix(this, 1)">
+                <div class="suggested-fix mb-2" data-fix-label="Lease renewal amount not updated in schedule" onclick="selectFix(this, 1)">
                     <div class="d-flex align-items-start">
                         <span class="rank-badge">2</span>
+                        <div class="flex-grow-1">
+                            <strong>Lease renewal amount not updated in schedule</strong>
+                            <p class="mb-1 text-muted small">Resident renewed at a new rate but the scheduled charge was not updated. Correct in Entrata.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Lease renewal amount not updated in schedule', 'external')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix mb-2" data-fix-label="Adjust posted transaction" onclick="selectFix(this, 2)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">3</span>
                         <div class="flex-grow-1">
                             <strong>Adjust posted transaction</strong>
                             <p class="mb-1 text-muted small">The posted amount is incorrect. Reverse and repost with correct amount.</p>
@@ -595,12 +756,36 @@
                         </div>
                     </div>
                 </div>
-                <div class="suggested-fix" data-fix-label="Document variance reason" onclick="selectFix(this, 2)">
+                <div class="suggested-fix mb-2" data-fix-label="Proration (move-in or move-out)" onclick="selectFix(this, 3)">
                     <div class="d-flex align-items-start">
-                        <span class="rank-badge">3</span>
+                        <span class="rank-badge">4</span>
+                        <div class="flex-grow-1">
+                            <strong>Proration (move-in or move-out)</strong>
+                            <p class="mb-1 text-muted small">The amount difference is due to a prorated month. This variance is expected.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Proration (move-in or move-out)', 'internal')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix mb-2" data-fix-label="Rent concession applied" onclick="selectFix(this, 4)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">5</span>
+                        <div class="flex-grow-1">
+                            <strong>Rent concession applied</strong>
+                            <p class="mb-1 text-muted small">A rent concession reduced the billed amount. Verify the concession is properly documented in Entrata.</p>
+                            <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Rent concession applied', 'internal')">
+                                <i class="fas fa-check"></i> Apply as Plan
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="suggested-fix" data-fix-label="Document variance reason" onclick="selectFix(this, 5)">
+                    <div class="d-flex align-items-start">
+                        <span class="rank-badge">6</span>
                         <div class="flex-grow-1">
                             <strong>Document variance reason</strong>
-                            <p class="mb-1 text-muted small">Amount difference is expected (proration, adjustment, etc.). Document and resolve.</p>
+                            <p class="mb-1 text-muted small">Amount difference is expected (other adjustment, rounding, etc.). Document the reason and mark as resolved.</p>
                             <button class="btn btn-sm btn-suggested-outline mt-2" onclick="applyFix(event, 'Document variance reason', 'internal')">
                                 <i class="fas fa-check"></i> Apply as Plan
                             </button>
@@ -620,11 +805,20 @@
                 <button class="btn btn-suggested-primary" onclick="applyFixToSelected(event, 'Post missing charge in Entrata', 'external')">
                     Post missing charge in Entrata
                 </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Correct schedule dates', 'external')">
-                    Correct schedule dates
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Correct schedule dates in Entrata', 'external')">
+                    Correct schedule dates in Entrata
                 </button>
-                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Mark as expected discrepancy', 'one_time')">
-                    Mark as expected discrepancy
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Lease renewal not yet processed', 'external')">
+                    Lease renewal not yet processed
+                </button>
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Resident moved out \u2013 charge not applicable', 'internal')">
+                    Resident moved out
+                </button>
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Month-to-month \u2013 no active schedule', 'external')">
+                    Month-to-month
+                </button>
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Concession / waiver approved', 'internal')">
+                    Concession / waiver approved
                 </button>
             `;
         }
@@ -636,6 +830,12 @@
                 <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Reverse incorrect charge', 'external')">
                     Reverse incorrect charge
                 </button>
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Move-in proration', 'internal')">
+                    Move-in proration
+                </button>
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Backdated / corrected posting', 'internal')">
+                    Backdated / corrected posting
+                </button>
                 <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Mark as one-time charge', 'one_time')">
                     Mark as one-time charge
                 </button>
@@ -643,11 +843,20 @@
         }
         if (status === 'AMOUNT_MISMATCH') {
             return `
-                <button class="btn btn-suggested-primary" onclick="applyFixToSelected(event, 'Correct scheduled amount', 'external')">
-                    Correct scheduled amount
+                <button class="btn btn-suggested-primary" onclick="applyFixToSelected(event, 'Correct scheduled amount in Entrata', 'external')">
+                    Correct scheduled amount in Entrata
+                </button>
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Lease renewal amount not updated in schedule', 'external')">
+                    Renewal amount not updated
                 </button>
                 <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Adjust posted transaction', 'external')">
                     Adjust posted transaction
+                </button>
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Proration (move-in or move-out)', 'internal')">
+                    Proration
+                </button>
+                <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Rent concession applied', 'internal')">
+                    Rent concession applied
                 </button>
                 <button class="btn btn-suggested-outline" onclick="applyFixToSelected(event, 'Document variance reason', 'internal')">
                     Document variance reason
@@ -672,6 +881,10 @@
 
         const arCodeId = drawerTitle.textContent.split(' - ')[0];
         const resolvedAt = new Date().toISOString();
+
+        // Capture notes from the textarea
+        const notesTextarea = document.getElementById('resolutionNotes');
+        const notes = notesTextarea ? notesTextarea.value.trim() : '';
         
         // Save each selected month to SharePoint individually
         for (const checkbox of selectedCheckboxes) {
@@ -693,6 +906,7 @@
                 status: 'Resolved',
                 fix_label: fixLabel,
                 action_type: actionType,
+                notes: notes,
                 variance: monthData.variance || 0,
                 expected_total: monthData.expected_total || 0,
                 actual_total: monthData.actual_total || 0,
@@ -714,7 +928,8 @@
                 
                 if (fixCell) {
                     const resolvedInfo = `<br/><small style="font-size: 0.7rem; color: #6c757d;">${formatDateTime(resolvedAt)} by ${currentUserName}</small>`;
-                    fixCell.innerHTML = `<span class="badge bg-success">✓</span> ${fixLabel}${resolvedInfo}`;
+                    const notesHtmlSave = notes ? `<br/><small style="font-size: 0.7rem; color: #6c757d;"><i class="fas fa-sticky-note"></i> ${notes}</small>` : '';
+                    fixCell.innerHTML = `<span class="badge bg-success">✓</span> ${fixLabel}${resolvedInfo}${notesHtmlSave}`;
                 }
                 
                 // Uncheck and disable checkbox (gray it out to show resolved)
@@ -730,6 +945,8 @@
                 }
             }
         }
+        // Clear notes textarea after all saves
+        if (notesTextarea) notesTextarea.value = '';
     }
     
     function applyFix(event, fixLabel, actionType) {
