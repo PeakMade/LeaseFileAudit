@@ -1204,6 +1204,14 @@ def get_latest_run(session_cache_key: str = None) -> dict:
     }
 
 
+@cache.memoize(timeout=60)  # Short TTL: recent runs list for upload page
+def cached_list_recent_runs(session_cache_key: str = None) -> list:
+    """Cached recent runs list for upload page. 60s TTL so new runs appear promptly."""
+    logger.info("[CACHE] ⏬ Cache MISS: Loading recent runs list")
+    storage = get_storage_service()
+    return storage.list_runs(limit=5)
+
+
 def invalidate_runs_cache() -> None:
     """Invalidate run-picker caches. Call only when runs are added/removed."""
     cache_token = _session_cache_token()
@@ -1215,6 +1223,10 @@ def invalidate_runs_cache() -> None:
         cache.delete_memoized(get_latest_run, cache_token)
     except Exception as e:
         logger.warning(f"[CACHE] Failed to clear latest run cache: {e}")
+    try:
+        cache.delete_memoized(cached_list_recent_runs, cache_token)
+    except Exception as e:
+        logger.warning(f"[CACHE] Failed to clear recent runs cache: {e}")
 
 
 @bp.route('/api/runs', methods=['GET'])
@@ -1223,6 +1235,19 @@ def get_available_runs_api():
     """Return available runs for lazy-loaded run pickers."""
     runs = get_available_runs(_session_cache_token())
     return jsonify({'runs': runs})
+
+
+@bp.route('/api/property-picklist', methods=['GET'])
+@require_auth
+def get_property_picklist_api():
+    """Return Entrata property picklist for async loading on upload page."""
+    try:
+        from audit_engine.api_ingest import get_entrata_environment
+        picklist = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
+        return jsonify({'properties': picklist})
+    except Exception as e:
+        logger.warning(f"[PICKLIST API] Failed: {e}")
+        return jsonify({'properties': []})
 
 
 @cache.memoize(timeout=3600)  # Cache metrics for 1 hour per session
@@ -2305,14 +2330,11 @@ def index():
     import logging
     logger = logging.getLogger(__name__)
     
-    storage = get_storage_service()
-    recent_runs = storage.list_runs(limit=5)
-    api_property_options = []
+    recent_runs = []
     try:
-        from audit_engine.api_ingest import get_entrata_environment
-        api_property_options = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
+        recent_runs = cached_list_recent_runs(_session_cache_token())
     except Exception as e:
-        logger.warning(f"[INDEX] Failed loading Entrata property picklist: {e}")
+        logger.warning(f"[INDEX] Failed loading recent runs: {e}")
     user = get_current_user()
     
     # Session lifecycle logging (Start/timeout End) is handled centrally in app.before_request.
@@ -2328,7 +2350,7 @@ def index():
         'upload.html',
         recent_runs=recent_runs,
         user=user,
-        api_property_options=api_property_options,
+        api_property_options=[],
     )
 
 
@@ -3365,11 +3387,16 @@ def portfolio(run_id: str = None):
         matched_buckets = sum(p.get('matched_buckets', 0) for p in property_snapshots)
         match_rate = (matched_buckets / total_buckets * 100) if total_buckets > 0 else 0
 
+        # Fetch historical recovery / prevented-impact totals from resolved ExceptionMonths rows.
+        resolved_totals = cached_load_all_resolved_totals(cache_token)
+        historical_undercharge = resolved_totals.get('recovered', 0.0)
+        historical_overcharge = resolved_totals.get('prevented', 0.0)
+
         kpis = {
             'current_undercharge': float(total_undercharge),
-            'historical_undercharge': 0.0,
+            'historical_undercharge': float(historical_undercharge),
             'current_overcharge': float(total_overcharge),
-            'historical_overcharge': 0.0,
+            'historical_overcharge': float(historical_overcharge),
             'open_exceptions': int(total_exceptions),
             'match_rate': float(match_rate),
             'total_runs': 0,
@@ -3452,9 +3479,23 @@ def portfolio(run_id: str = None):
 
             audited_through = snapshot_row.get('audited_through') or None
             stale = False
-            if audited_through:
+            # Derive run date from run_id (format: run_YYYYMMDD_HHMMSS)
+            run_date_display = None
+            run_date_iso = None
+            if property_run_id:
+                try:
+                    _parts = property_run_id.replace('run_', '').split('_')
+                    _run_dt = datetime.strptime(_parts[0] + _parts[1], '%Y%m%d%H%M%S')
+                    run_date_display = _run_dt.strftime('%b %#d, %Y')
+                    run_date_iso = _run_dt.isoformat()
+                    stale = (datetime.utcnow() - _run_dt).days > 45
+                except Exception:
+                    pass
+            if not run_date_display and audited_through:
                 try:
                     through_dt = datetime.fromisoformat(audited_through)
+                    run_date_display = through_dt.strftime('%b %#d, %Y')
+                    run_date_iso = through_dt.isoformat()
                     stale = (datetime.utcnow() - through_dt).days > 45
                 except Exception:
                     pass
@@ -3471,7 +3512,8 @@ def portfolio(run_id: str = None):
                 'audit_status': audit_status,
                 'resolved_months': resolved_months,
                 'open_months': open_months,
-                'audited_through': audited_through,
+                'audited_through': run_date_display,
+                'audited_through_iso': run_date_iso,
                 'stale': stale,
             })
 
@@ -3852,8 +3894,10 @@ def property_view(property_id: str, run_id: str = None):
         stage_started = perf_counter()
         
         # Filter to only exceptions for grouping
+        # Exclude both MATCHED and SCHEDULED_ONLY (future lease months are informational, not discrepancies)
+        _non_exception_statuses = {config.reconciliation.status_matched, 'SCHEDULED_ONLY'}
         property_buckets = all_property_buckets[
-            all_property_buckets[CanonicalField.STATUS.value] != config.reconciliation.status_matched
+            ~all_property_buckets[CanonicalField.STATUS.value].isin(_non_exception_statuses)
         ].copy()
         
         # 🚀 BULK FETCH: Load all exception months for this property in ONE call

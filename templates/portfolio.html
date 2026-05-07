@@ -158,7 +158,7 @@
                                     data-overcharge="{{ property.total_overcharge }}"
                                     data-variance="{{ property.total_variance | abs }}"
                                     data-audit-status="{{ property.audit_status }}"
-                                    data-audited-through="{{ property.audited_through or '' }}"
+                                    data-audited-through="{{ property.audited_through_iso or '' }}"
                                     onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href='{{ url_for('main.property_view', property_id=property.property_id, run_id=property.run_id) }}'">
                                     <td><strong>{{ property.property_name if property.property_name else '-' }}</strong></td>
                                     <td>{{ property.property_id|int }}</td>

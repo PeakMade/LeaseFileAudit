@@ -966,8 +966,8 @@ class StorageService:
             f"effective_batch_size={batch_size} source={batch_size_source}"
         )
 
-        batch_concurrency = 2
-        batch_concurrency_source = 'default:2'
+        batch_concurrency = 1
+        batch_concurrency_source = 'default:1'
         try:
             concurrency_env_key = None
             if 'auditruns' in context_lower:
@@ -1190,6 +1190,9 @@ class StorageService:
                 batch_response_parse_seconds += float(perf_counter() - response_parse_started)
                 response_map = {item.get('id'): item for item in response_items}
 
+                throttled_items: List[tuple[int, Dict[str, Any], int]] = []  # (row_idx, payload, retry_after)
+                other_failed_items: List[tuple[int, Dict[str, Any], int, Any]] = []  # (row_idx, payload, status, body)
+
                 for offset, payload in enumerate(chunk):
                     row_idx = start + offset
                     response_item = response_map.get(str(row_idx))
@@ -1198,8 +1201,7 @@ class StorageService:
                             f"[STORAGE] Missing batch response for {context_label} row {row_idx}; "
                             "falling back to single post"
                         )
-                        if _post_single_local(payload, row_idx):
-                            created_local += 1
+                        other_failed_items.append((row_idx, payload, None, None))
                         continue
 
                     status_code = response_item.get('status')
@@ -1207,10 +1209,79 @@ class StorageService:
                         created_local += 1
                         continue
 
+                    if status_code == 429:
+                        retry_after = 5
+                        item_headers_resp = response_item.get('headers') or {}
+                        ra_str = item_headers_resp.get('Retry-After') or item_headers_resp.get('retry-after')
+                        if ra_str:
+                            try:
+                                retry_after = int(ra_str)
+                            except (ValueError, TypeError):
+                                pass
+                        throttled_items.append((row_idx, payload, retry_after))
+                    else:
+                        logger.warning(
+                            f"[STORAGE] Batch item failed for {context_label} row {row_idx}: "
+                            f"{status_code} - {response_item.get('body')}; retrying individually"
+                        )
+                        other_failed_items.append((row_idx, payload, status_code, response_item.get('body')))
+
+                # Re-submit throttled items as a new batch after honouring Retry-After
+                if throttled_items:
+                    max_wait = max(ra for _, _, ra in throttled_items)
                     logger.warning(
-                        f"[STORAGE] Batch item failed for {context_label} row {row_idx}: "
-                        f"{status_code} - {response_item.get('body')}; retrying individually"
+                        f"[STORAGE] {len(throttled_items)} batch item(s) throttled for {context_label}; "
+                        f"waiting {max_wait}s then re-batching"
                     )
+                    sleep(max_wait)
+                    throttled_batch_count_local += 1
+                    batch_retry_count_local += 1
+                    retry_requests = [
+                        {
+                            'id': str(row_idx),
+                            'method': 'POST',
+                            'url': f"/sites/{site_id}/lists/{list_id}/items",
+                            'headers': {'Content-Type': 'application/json'},
+                            'body': payload,
+                        }
+                        for row_idx, payload, _ in throttled_items
+                    ]
+                    try:
+                        batch_http_requests_local += 1
+                        http_wait_started = perf_counter()
+                        retry_response = http_session.post(
+                            batch_url,
+                            headers=batch_headers,
+                            json={'requests': retry_requests},
+                            timeout=120,
+                        )
+                        batch_http_wait_seconds += float(perf_counter() - http_wait_started)
+                        if retry_response.status_code == 200:
+                            retry_map = {item.get('id'): item for item in retry_response.json().get('responses', [])}
+                            for row_idx, payload, _ in throttled_items:
+                                ri = retry_map.get(str(row_idx))
+                                if ri and ri.get('status') in [200, 201]:
+                                    created_local += 1
+                                else:
+                                    rs = ri.get('status') if ri else None
+                                    logger.warning(
+                                        f"[STORAGE] Batch retry failed for {context_label} row {row_idx}: "
+                                        f"{rs} - {ri.get('body') if ri else 'no response'}; retrying individually"
+                                    )
+                                    if _post_single_local(payload, row_idx):
+                                        created_local += 1
+                        else:
+                            for row_idx, payload, _ in throttled_items:
+                                if _post_single_local(payload, row_idx):
+                                    created_local += 1
+                    except Exception as e:
+                        logger.warning(f"[STORAGE] Batch retry request failed for {context_label}: {e}")
+                        for row_idx, payload, _ in throttled_items:
+                            if _post_single_local(payload, row_idx):
+                                created_local += 1
+
+                # Fall back to single posts for non-throttle failures
+                for row_idx, payload, _status, _body in other_failed_items:
                     if _post_single_local(payload, row_idx):
                         created_local += 1
             else:
@@ -2382,32 +2453,6 @@ class StorageService:
         )
         if bucket_results is not None:
             list_results = self._normalize_loaded_dataframe(bucket_results)
-
-            csv_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
-            if csv_results is not None:
-                if property_id is not None and 'PROPERTY_ID' in csv_results.columns:
-                    csv_results = csv_results[csv_results['PROPERTY_ID'] == float(property_id)]
-                if lease_interval_id is not None and 'LEASE_INTERVAL_ID' in csv_results.columns:
-                    csv_results = csv_results[csv_results['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
-
-                csv_results = self._normalize_loaded_dataframe(csv_results.copy())
-                if len(list_results) < len(csv_results):
-                    logger.warning(
-                        f"[CSV FALLBACK][bucket_results] Partial list-backed bucket_results for run={run_id} "
-                        f"(list_rows={len(list_results)}, csv_rows={len(csv_results)}); "
-                        "falling back to CSV for complete view"
-                    )
-                    csv_results.attrs['read_source'] = 'csv'
-                    csv_results.attrs['read_reason'] = 'partial_list'
-                    csv_results.attrs['read_scope'] = scope
-                    csv_results.attrs['list_rows'] = len(list_results)
-                    csv_results.attrs['csv_rows'] = len(csv_results)
-                    logger.info(
-                        f"[READ SOURCE][bucket_results] source=csv reason=partial_list scope=({scope}) "
-                        f"list_rows={len(list_results)} csv_rows={len(csv_results)}"
-                    )
-                    return csv_results
-
             list_results.attrs['read_source'] = 'sharepoint_list'
             list_results.attrs['read_reason'] = 'preferred'
             list_results.attrs['read_scope'] = scope
@@ -2416,7 +2461,6 @@ class StorageService:
                 f"[READ SOURCE][bucket_results] source=sharepoint_list reason=preferred scope=({scope}) "
                 f"rows={len(list_results)}"
             )
-
             return list_results
 
         bucket_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
@@ -2462,39 +2506,6 @@ class StorageService:
         )
         if findings is not None:
             list_findings = self._normalize_loaded_dataframe(findings)
-
-            csv_findings = self._load_dataframe(run_id, "outputs/findings.csv")
-            if csv_findings is not None:
-                if property_id is not None:
-                    if 'property_id' in csv_findings.columns:
-                        csv_findings = csv_findings[csv_findings['property_id'] == float(property_id)]
-                    elif 'PROPERTY_ID' in csv_findings.columns:
-                        csv_findings = csv_findings[csv_findings['PROPERTY_ID'] == float(property_id)]
-
-                if lease_interval_id is not None:
-                    if 'lease_interval_id' in csv_findings.columns:
-                        csv_findings = csv_findings[csv_findings['lease_interval_id'] == float(lease_interval_id)]
-                    elif 'LEASE_INTERVAL_ID' in csv_findings.columns:
-                        csv_findings = csv_findings[csv_findings['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
-
-                csv_findings = self._normalize_loaded_dataframe(csv_findings.copy())
-                if len(list_findings) < len(csv_findings):
-                    logger.warning(
-                        f"[CSV FALLBACK][findings] Partial list-backed findings for run={run_id} "
-                        f"(list_rows={len(list_findings)}, csv_rows={len(csv_findings)}); "
-                        "falling back to CSV for complete view"
-                    )
-                    csv_findings.attrs['read_source'] = 'csv'
-                    csv_findings.attrs['read_reason'] = 'partial_list'
-                    csv_findings.attrs['read_scope'] = scope
-                    csv_findings.attrs['list_rows'] = len(list_findings)
-                    csv_findings.attrs['csv_rows'] = len(csv_findings)
-                    logger.info(
-                        f"[READ SOURCE][findings] source=csv reason=partial_list scope=({scope}) "
-                        f"list_rows={len(list_findings)} csv_rows={len(csv_findings)}"
-                    )
-                    return csv_findings
-
             list_findings.attrs['read_source'] = 'sharepoint_list'
             list_findings.attrs['read_reason'] = 'preferred'
             list_findings.attrs['read_scope'] = scope
@@ -2502,7 +2513,6 @@ class StorageService:
             logger.info(
                 f"[READ SOURCE][findings] source=sharepoint_list reason=preferred scope=({scope}) rows={len(list_findings)}"
             )
-
             return list_findings
 
         findings = self._load_dataframe(run_id, "outputs/findings.csv")

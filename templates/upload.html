@@ -21,15 +21,17 @@
                                     <div class="row g-3">
                                         <div class="col-md-12">
                                             <label class="form-label fw-bold">Property</label>
-                                            {% if api_property_options %}
                                             <!-- Hidden input that actually submits -->
                                             <input type="hidden" id="api_property_id" name="api_property_id" required>
-                                            <!-- Custom dropdown -->
+                                            <!-- Custom dropdown (populated async) -->
                                             <div class="property-picker" id="propertyPicker">
                                                 <div class="property-picker-input form-control d-flex align-items-center justify-content-between"
                                                      id="propertyPickerTrigger" role="combobox" aria-expanded="false"
                                                      style="cursor: pointer; user-select: none;">
-                                                    <span id="propertyPickerLabel" style="color: #6c757d;">Select Property…</span>
+                                                    <span id="propertyPickerLabel" style="color: #6c757d;">
+                                                        <span class="spinner-border spinner-border-sm me-1" role="status" style="width:.75rem;height:.75rem;border-width:2px;"></span>
+                                                        Loading properties…
+                                                    </span>
                                                     <i class="fas fa-chevron-down ms-2" style="font-size: 0.75rem; color: #aaa;"></i>
                                                 </div>
                                                 <div class="property-picker-dropdown" id="propertyPickerDropdown">
@@ -38,15 +40,6 @@
                                                                id="propertyPickerSearch" placeholder="Search properties…" autocomplete="off">
                                                     </div>
                                                     <ul class="property-picker-list" id="propertyPickerList">
-                                                        {% for property in api_property_options %}
-                                                        <li class="property-picker-item"
-                                                            data-value="{{ property.property_id }}"
-                                                            data-name="{{ property.property_name }}"
-                                                            data-search="{{ property.property_name | lower }} {{ property.property_id }}">
-                                                            <span class="prop-name">{{ property.property_name }}</span>
-                                                            <span class="prop-id">{{ property.property_id }}</span>
-                                                        </li>
-                                                        {% endfor %}
                                                     </ul>
                                                 </div>
                                             </div>
@@ -95,8 +88,10 @@
                                                 const list        = document.getElementById('propertyPickerList');
                                                 const label       = document.getElementById('propertyPickerLabel');
                                                 const hiddenInput = document.getElementById('api_property_id');
+                                                let pickerReady = false;
 
                                                 function openDropdown() {
+                                                    if (!pickerReady) return;
                                                     dropdown.classList.add('open');
                                                     trigger.classList.add('open');
                                                     trigger.setAttribute('aria-expanded', 'true');
@@ -118,7 +113,7 @@
                                                 }
                                                 function selectItem(item) {
                                                     hiddenInput.value = item.dataset.value;
-                                                    label.textContent = item.dataset.name + ' (' + item.dataset.value + ')';
+                                                    label.innerHTML = item.dataset.name + ' (' + item.dataset.value + ')';
                                                     label.style.color = '#231f20';
                                                     list.querySelectorAll('.property-picker-item').forEach(i => i.classList.remove('selected'));
                                                     item.classList.add('selected');
@@ -150,12 +145,46 @@
                                                     trigger.classList.remove('is-invalid');
                                                     trigger.style.borderColor = '';
                                                 });
+
+                                                // Load property list asynchronously so the page renders instantly
+                                                fetch('/api/property-picklist')
+                                                    .then(r => r.json())
+                                                    .then(data => {
+                                                        const props = data.properties || [];
+                                                        if (props.length > 0) {
+                                                            list.innerHTML = props.map(p =>
+                                                                `<li class="property-picker-item"
+                                                                     data-value="${p.property_id}"
+                                                                     data-name="${p.property_name}"
+                                                                     data-search="${p.property_name.toLowerCase()} ${p.property_id}">
+                                                                    <span class="prop-name">${p.property_name}</span>
+                                                                    <span class="prop-id">${p.property_id}</span>
+                                                                </li>`
+                                                            ).join('');
+                                                            label.innerHTML = '<span style="color:#6c757d;">Select Property…</span>';
+                                                            pickerReady = true;
+                                                        } else {
+                                                            label.innerHTML = '<span style="color:#6c757d;">No properties available</span>';
+                                                        }
+                                                    })
+                                                    .catch(() => {
+                                                        label.innerHTML = '<span style="color:#dc3545;">Failed to load properties — enter ID manually</span>';
+                                                        // Fallback: convert to plain number input
+                                                        hiddenInput.type = 'number';
+                                                        hiddenInput.removeAttribute('type');
+                                                        picker.style.display = 'none';
+                                                        const fallback = document.createElement('input');
+                                                        fallback.type = 'number';
+                                                        fallback.step = '1';
+                                                        fallback.className = 'form-control';
+                                                        fallback.name = 'api_property_id';
+                                                        fallback.required = true;
+                                                        fallback.placeholder = 'Enter Property ID';
+                                                        picker.parentNode.insertBefore(fallback, picker.nextSibling);
+                                                        hiddenInput.removeAttribute('name');
+                                                    });
                                             })();
                                             </script>
-                                            {% else %}
-                                            <input type="number" step="1" class="form-control" id="api_property_id" name="api_property_id" required>
-                                            <small class="text-muted">Property picklist unavailable; enter Property ID manually.</small>
-                                            {% endif %}
                                         </div>
                                         <div class="col-md-6">
                                             <label for="api_from_date" class="form-label">Transaction From Date</label>
