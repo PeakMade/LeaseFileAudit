@@ -141,7 +141,8 @@ def get_storage_service() -> StorageService:
         use_sharepoint=config.storage.is_sharepoint_configured(),
         sharepoint_site_url=sharepoint_site_url,
         library_name=config.storage.sharepoint_library_name,
-        access_token=access_token
+        access_token=access_token,
+        audit_results_list_name=config.auth.audit_results_list_name,
     )
 
 
@@ -428,6 +429,7 @@ def _clear_run_scoped_caches(run_id: str, property_id=None, lease_interval_id=No
     _safe_delete(cached_load_run_display_snapshot, run_id, 'portfolio', None, None, session_cache_key)
     _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'property', session_cache_key)
     _safe_delete(cached_load_run_display_snapshots_for_run, run_id, 'lease', session_cache_key)
+    _safe_delete(cached_load_property_audit_status_summary, session_cache_key)
 
     if property_id is not None:
         property_id_int = int(float(property_id))
@@ -468,7 +470,10 @@ def _start_cache_prewarm(app, run_id: str, property_id_int: int, cache_token: st
                 (cached_load_expected_detail, (run_id, cache_token)),
                 (cached_load_property_exception_months, (run_id, property_id_int, cache_token)),
                 (cached_load_findings, (run_id, property_id_int, None, cache_token)),
-                (cached_load_latest_property_snapshots, (cache_token,)),
+                # NOTE: cached_load_latest_property_snapshots is intentionally NOT pre-warmed here.
+                # The RunDisplaySnapshots write is async and may not have finished by the time
+                # this pre-warm runs, which would cache empty/stale portfolio data for 5 minutes.
+                # The 5-minute TTL ensures the portfolio sees fresh data on the next page load.
             ]
 
             def _safe(task):
@@ -1164,7 +1169,14 @@ def get_available_runs(session_cache_key: str = None) -> list:
     """Get all available runs sorted by date (most recent first)."""
     logger.info("[CACHE] ⏬ Cache MISS: Loading available runs list from SharePoint")
     storage = get_storage_service()
-    runs = storage.list_runs(limit=50)  # Only load 50 most recent runs
+    try:
+        # Default to 50 runs to keep portfolio page load time reasonable
+        # Users can override with RUN_PICKER_MAX_RUNS env var for batch operations
+        run_limit = int(os.getenv('RUN_PICKER_MAX_RUNS', '50'))
+    except Exception:
+        run_limit = 50
+    runs = storage.list_runs(limit=max(1, run_limit))
+    logger.info(f"[CACHE] 📋 storage.list_runs() returned {len(runs)} runs")
     
     # Format runs for dropdown
     formatted_runs = []
@@ -1182,7 +1194,7 @@ def get_available_runs(session_cache_key: str = None) -> list:
         }
         formatted_runs.append(run_info)
     
-    logger.info(f"[CACHE] ✅ Loaded {len(formatted_runs)} available runs")
+    logger.info(f"[CACHE] ✅ Loaded {len(formatted_runs)} available runs (formatted)")
     return formatted_runs
 
 
@@ -1235,6 +1247,22 @@ def get_available_runs_api():
     """Return available runs for lazy-loaded run pickers."""
     runs = get_available_runs(_session_cache_token())
     return jsonify({'runs': runs})
+
+
+@bp.route('/api/admin/clear-cache', methods=['POST'])
+@require_auth
+def clear_cache_api():
+    """Clear Flask memoized cache from within the running app process."""
+    payload = request.get_json(silent=True) or {}
+    run_id = (payload.get('run_id') or '').strip() or None
+
+    clear_run_cache(run_id)
+
+    return jsonify({
+        'ok': True,
+        'scope': 'run' if run_id else 'all',
+        'run_id': run_id,
+    })
 
 
 @bp.route('/api/property-picklist', methods=['GET'])
@@ -2328,13 +2356,35 @@ def execute_audit_run(
 def index():
     """Upload form and recent runs."""
     import logging
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
     logger = logging.getLogger(__name__)
     
     recent_runs = []
+    pool = None
     try:
-        recent_runs = cached_list_recent_runs(_session_cache_token())
+        recent_runs_timeout = max(1, int(os.getenv('INDEX_RECENT_RUNS_TIMEOUT_SECONDS', '4')))
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(cached_list_recent_runs, _session_cache_token())
+        recent_runs = future.result(timeout=recent_runs_timeout)
+        pool.shutdown(wait=False, cancel_futures=True)
+        pool = None
+    except TimeoutError:
+        logger.warning(
+            f"[INDEX] Timed out loading recent runs after {recent_runs_timeout}s; rendering page without recent runs"
+        )
+        try:
+            future.cancel()
+        except Exception:
+            pass
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+            pool = None
+        recent_runs = []
     except Exception as e:
         logger.warning(f"[INDEX] Failed loading recent runs: {e}")
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+            pool = None
     user = get_current_user()
     
     # Session lifecycle logging (Start/timeout End) is handled centrally in app.before_request.
@@ -2809,7 +2859,6 @@ def upload_api_property():
             results.get("variance_detail"),
             None,
             property_name_map=results.get("property_name_map"),
-            write_display_snapshots=True,
         )
         save_run_seconds = perf_counter() - save_run_started
         logger.info(
@@ -3022,7 +3071,6 @@ def _run_bulk_audit_job(app, job_id: str, properties: list, from_date: str, to_d
                     results.get('variance_detail'),
                     None,
                     property_name_map=results.get('property_name_map'),
-                    write_display_snapshots=True,
                 )
 
                 invalidate_runs_cache()
@@ -3069,6 +3117,17 @@ def bulk_audit_page():
     except Exception:
         picklist = []
 
+    # Find the most recent running job so the page can resume it after navigation.
+    active_job = None
+    for job in sorted(
+        _BULK_AUDIT_JOBS.values(),
+        key=lambda j: j.get('started_at') or '',
+        reverse=True,
+    ):
+        if job.get('status') == 'running':
+            active_job = job
+            break
+
     # Find the most recent completed/cancelled job to show on the page
     last_job = None
     for job in sorted(
@@ -3080,7 +3139,12 @@ def bulk_audit_page():
             last_job = job
             break
 
-    return render_template('bulk_audit.html', properties=picklist, last_job=last_job)
+    return render_template(
+        'bulk_audit.html',
+        properties=picklist,
+        last_job=last_job,
+        active_job=active_job,
+    )
 
 
 @bp.route('/api/bulk-audit', methods=['POST'])
@@ -3327,57 +3391,83 @@ def upload_api_lease():
 @bp.route('/portfolio/<run_id>')
 @require_auth
 def portfolio(run_id: str = None):
-    """Portfolio view - Aggregated latest data for each property across all runs."""
+    """Portfolio view - aggregated property data for selected run or latest-per-property."""
     try:
         route_started = perf_counter()
         cache_token = _session_cache_token()
         storage = get_storage_service()
         snapshot_source = 'latest_property_snapshots_across_runs'
         snapshot_reason = 'preferred'
-        
-        # Load latest snapshot for each property across ALL runs
-        property_snapshots = cached_load_latest_property_snapshots(cache_token)
 
-        # Single-lease API runs are drill-down scope — filter them out using the
-        # RunScopeType field stored in the snapshot row (no metadata fetch needed).
-        excluded_lease_scoped = 0
-        filtered_property_snapshots = []
-        for snapshot in property_snapshots:
-            if str(snapshot.get('run_scope_type') or '').strip().lower() == 'lease':
-                excluded_lease_scoped += 1
-            else:
-                filtered_property_snapshots.append(snapshot)
-
-        if excluded_lease_scoped:
-            logger.info(
-                f"[PORTFOLIO_VIEW] Excluded {excluded_lease_scoped} lease-scoped property snapshots "
-                f"from cross-run aggregation"
-            )
-
-        property_snapshots = filtered_property_snapshots
-        
-        # If no properties found, fall back to showing latest run
-        if not property_snapshots:
+        # When a run is selected, the portfolio must be run-scoped so property drill-down
+        # numbers align with the exact run the user selected.
+        if run_id:
             snapshot_source = 'run_scoped_snapshots'
-            snapshot_reason = 'latest_across_runs_empty'
-            if not run_id:
-                latest_run = get_latest_run(cache_token)
-                run_id = latest_run.get('run_id')
-                if not run_id:
-                    flash('No audit runs available', 'warning')
-                    return redirect(url_for('main.index'))
-            
+            snapshot_reason = 'selected_run'
             property_snapshots = cached_load_run_display_snapshots_for_run(
                 run_id=run_id,
                 scope_type='property',
                 session_cache_key=cache_token
             )
+        else:
+            # Default portfolio landing: latest snapshot for each property across runs.
+            property_snapshots = cached_load_latest_property_snapshots(cache_token)
+
+            # Single-lease API runs are drill-down scope — filter them out using the
+            # RunScopeType field stored in the snapshot row (no metadata fetch needed).
+            excluded_lease_scoped = 0
+            filtered_property_snapshots = []
+            for snapshot in property_snapshots:
+                if str(snapshot.get('run_scope_type') or '').strip().lower() == 'lease':
+                    excluded_lease_scoped += 1
+                else:
+                    filtered_property_snapshots.append(snapshot)
+
+            if excluded_lease_scoped:
+                logger.info(
+                    f"[PORTFOLIO_VIEW] Excluded {excluded_lease_scoped} lease-scoped property snapshots "
+                    f"from cross-run aggregation"
+                )
+
+            property_snapshots = filtered_property_snapshots
+
+            # If no cross-run properties found, fall back to latest run scoped snapshots.
+            if not property_snapshots:
+                snapshot_source = 'run_scoped_snapshots'
+                snapshot_reason = 'latest_across_runs_empty'
+                latest_run = get_latest_run(cache_token)
+                run_id = latest_run.get('run_id')
+                if not run_id:
+                    flash('No audit runs available', 'warning')
+                    return redirect(url_for('main.index'))
+
+                property_snapshots = cached_load_run_display_snapshots_for_run(
+                    run_id=run_id,
+                    scope_type='property',
+                    session_cache_key=cache_token
+                )
 
         logger.info(
             f"[READ SUMMARY][PORTFOLIO_VIEW] run_id={run_id} "
             f"snapshot_source={snapshot_source} snapshot_reason={snapshot_reason} "
             f"property_snapshot_count={len(property_snapshots)}"
         )
+
+        # Load available runs for selector (use cached function to avoid slow metadata loads)
+        try:
+            run_limit = int(os.getenv('RUN_PICKER_MAX_RUNS', '50'))  # Default to 50 to avoid slow portfolio load
+        except Exception:
+            run_limit = 50
+        available_runs = []
+        for run in get_available_runs(cache_token):
+            available_runs.append({
+                'run_id': run.get('run_id'),
+                'timestamp': run.get('timestamp', 'Unknown'),
+                'audit_period': run.get('audit_period', {}),
+                'run_type': run.get('run_type', 'Manual')
+            })
+            if len(available_runs) >= run_limit:
+                break
 
         # Aggregate KPIs from all property snapshots
         total_exceptions = sum(p.get('exception_count', 0) for p in property_snapshots)
@@ -3399,17 +3489,20 @@ def portfolio(run_id: str = None):
             'historical_overcharge': float(historical_overcharge),
             'open_exceptions': int(total_exceptions),
             'match_rate': float(match_rate),
-            'total_runs': 0,
+            'total_runs': len(available_runs),
             'most_recent_run': None,
         }
         
-        # Get metadata from the most recent run_id in property snapshots
+        selected_run_id = run_id
+
+        # Get metadata from selected run when scoped, else most recent run in snapshots.
         if property_snapshots:
             # Find the most recent run_id from the snapshots
             most_recent_run_id = max(p.get('run_id') for p in property_snapshots if p.get('run_id'))
             kpis['most_recent_run'] = {'run_id': most_recent_run_id}
+            metadata_run_id = selected_run_id or most_recent_run_id
             try:
-                metadata = cached_load_metadata(most_recent_run_id, cache_token)
+                metadata = cached_load_metadata(metadata_run_id, cache_token)
             except Exception:
                 metadata = {'timestamp': 'Unknown'}
         else:
@@ -3452,8 +3545,8 @@ def portfolio(run_id: str = None):
             overcharge = float(snapshot_row.get('overcharge', 0) or 0)
             exception_count = int(snapshot_row.get('exception_count', 0) or 0)
             
-            # Use run_id from this specific property's snapshot (for drill-down links)
-            property_run_id = snapshot_row.get('run_id')
+            # Keep drill-down links pinned to selected run when present.
+            property_run_id = selected_run_id or snapshot_row.get('run_id')
 
             property_id_int = _normalize_property_id_token(property_id)
             snapshot_name = _clean_property_name(snapshot_row.get('property_name'))
@@ -3519,8 +3612,8 @@ def portfolio(run_id: str = None):
 
         properties.sort(key=lambda p: p.get('exception_buckets', 0), reverse=True)
         
-        # Use the most recent run_id for the render (if available)
-        display_run_id = kpis['most_recent_run']['run_id'] if kpis.get('most_recent_run') else None
+        # Render/run selector should reflect the selected run when present.
+        display_run_id = selected_run_id or (kpis['most_recent_run']['run_id'] if kpis.get('most_recent_run') else None)
         
         response = render_template(
             'portfolio.html',
@@ -3529,7 +3622,8 @@ def portfolio(run_id: str = None):
             kpis=kpis,
             properties=properties,
             total_runs=kpis['total_runs'],
-            current_run_id=run_id,
+            current_run_id=selected_run_id,
+            available_runs=available_runs,
         )
         _log_and_clear_pending_upload_timing(
             run_id=run_id,
@@ -4001,7 +4095,7 @@ def property_view(property_id: str, run_id: str = None):
             if static_exception_count == 0:
                 status_label = 'Passed'
                 status_color = 'success'
-            elif unresolved_exception_count == 0:
+            elif static_exception_count > 0 and unresolved_exception_count == 0:
                 status_label = 'Resolved'
                 status_color = 'success'
             else:
@@ -4096,15 +4190,23 @@ def property_view(property_id: str, run_id: str = None):
             property_id=None  # Already filtered, don't filter again
         )
 
-        property_exception_count = len(property_buckets)
+        # Keep property KPI cards aligned with portfolio totals by using the same
+        # property snapshot source when available for this run/property.
         if property_snapshot:
-            property_exception_count = int(property_snapshot.get('exception_count', property_exception_count) or 0)
-            property_kpis['total_undercharge'] = float(
-                property_snapshot.get('undercharge', property_kpis.get('total_undercharge', 0)) or 0
-            )
-            property_kpis['total_overcharge'] = float(
-                property_snapshot.get('overcharge', property_kpis.get('total_overcharge', 0)) or 0
-            )
+            property_kpis['total_undercharge'] = float(property_snapshot.get('undercharge', 0) or 0)
+            property_kpis['total_overcharge'] = float(property_snapshot.get('overcharge', 0) or 0)
+        elif not property_buckets.empty and CanonicalField.VARIANCE.value in property_buckets.columns:
+            variance_series = pd.to_numeric(
+                property_buckets[CanonicalField.VARIANCE.value],
+                errors='coerce'
+            ).fillna(0.0)
+            property_kpis['total_undercharge'] = abs(float(variance_series[variance_series < 0].sum()))
+            property_kpis['total_overcharge'] = float(variance_series[variance_series > 0].sum())
+
+        # Keep the KPI card aligned with the lease table's discrepancy column.
+        property_exception_count = int(
+            sum(int(lease.get('exception_count', 0) or 0) for lease in lease_summary)
+        )
         
         response = render_template(
             'property.html',

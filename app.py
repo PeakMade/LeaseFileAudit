@@ -11,7 +11,8 @@ from extensions import cache
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    # Prefer workspace .env over inherited shell/env values for local runs.
+    load_dotenv(override=True)
 except Exception:
     pass
 

@@ -10,7 +10,7 @@
             <div class="d-flex align-items-center gap-3 mb-1">
                 <h2 class="mb-0">PeakMade Portfolio</h2>
                 <a href="{{ url_for('main.index') }}" class="btn btn-sm btn-outline-secondary">
-                    <i class="fas fa-arrow-left"></i> Back to Upload
+                    <i class="fas fa-arrow-left"></i> Back to Home
                 </a>
             </div>
             <p class="text-muted small mb-0">
@@ -25,7 +25,23 @@
             <div class="mt-2">
                 <select class="form-select form-select-sm" id="runSelector" onchange="changeRun(this.value)"
                         style="max-width: 260px; font-size: 0.85rem;">
-                    <option value="{{ current_run_id }}" selected>{{ current_run_id }}</option>
+                    {% if available_runs %}
+                        {% for run in available_runs %}
+                            <option value="{{ run.run_id }}" {% if run.run_id == current_run_id %}selected{% endif %}>
+                                {% if run.timestamp and run.timestamp != 'Unknown' and run.timestamp|length >= 10 %}
+                                    {{ run.timestamp[5:7] }}/{{ run.timestamp[8:10] }}/{{ run.timestamp[0:4] }} - {{ run.run_type or 'Manual' }}
+                                {% elif run.audit_period and run.audit_period.month and run.audit_period.year %}
+                                    {{ "%02d"|format(run.audit_period.month) }}/{{ run.audit_period.year }} - {{ run.run_type or 'Manual' }}
+                                {% else %}
+                                    {{ run.run_id }} - {{ run.run_type or 'Manual' }}
+                                {% endif %}
+                            </option>
+                        {% endfor %}
+                    {% elif current_run_id %}
+                        <option value="{{ current_run_id }}" selected>{{ current_run_id }}</option>
+                    {% else %}
+                        <option value="" selected>No runs available</option>
+                    {% endif %}
                 </select>
             </div>
         </div>
@@ -159,7 +175,7 @@
                                     data-variance="{{ property.total_variance | abs }}"
                                     data-audit-status="{{ property.audit_status }}"
                                     data-audited-through="{{ property.audited_through_iso or '' }}"
-                                    onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href='{{ url_for('main.property_view', property_id=property.property_id, run_id=property.run_id) }}'">
+                                    onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay(); window.location.href='{{ url_for('main.property_view', property_id=property.property_id, run_id=(property.run_id or current_run_id)) }}'">
                                     <td><strong>{{ property.property_name if property.property_name else '-' }}</strong></td>
                                     <td>{{ property.property_id|int }}</td>
                                     <td class="text-center">
@@ -292,6 +308,9 @@ async function loadRunsForPicker() {
 document.addEventListener('DOMContentLoaded', function() {
     const selector = document.getElementById('runSelector');
     if (selector) {
+        if (selector.options && selector.options.length > 1) {
+            runsLoaded = true;
+        }
         setTimeout(loadRunsForPicker, 0);
         selector.addEventListener('focus', loadRunsForPicker, { once: true });
         selector.addEventListener('mousedown', loadRunsForPicker, { once: true });

@@ -64,7 +64,7 @@
         <div class="col-12">
             <span class="text-muted small">
                 <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                Loading lease terms…
+                Refreshing lease documents from Entrata API…
             </span>
         </div>
     </div>
@@ -857,11 +857,14 @@
 
     async function applyFixToSelected(event, fixLabel, actionType) {
         event.stopPropagation();
-        
-        // Get selected exception rows (exclude already disabled/resolved ones)
-        const selectedCheckboxes = document.querySelectorAll('.exception-row-checkbox:checked:not(:disabled)');
-        if (selectedCheckboxes.length === 0) {
-            alert('Please select at least one discrepancy row to apply the fix.');
+
+        // Prefer user-selected rows; if none are selected, apply to all unresolved rows.
+        let targetCheckboxes = Array.from(document.querySelectorAll('.exception-row-checkbox:checked:not(:disabled)'));
+        if (targetCheckboxes.length === 0) {
+            targetCheckboxes = Array.from(document.querySelectorAll('.exception-row-checkbox:not(:disabled)'));
+        }
+        if (targetCheckboxes.length === 0) {
+            alert('No open discrepancy rows are available to apply this fix.');
             return;
         }
 
@@ -874,16 +877,23 @@
         // Capture notes from the textarea
         const notesTextarea = document.getElementById('resolutionNotes');
         const notes = notesTextarea ? notesTextarea.value.trim() : '';
-        
-        // Save each selected month to SharePoint individually
-        for (const checkbox of selectedCheckboxes) {
+
+        let savedCount = 0;
+        let failedCount = 0;
+        const failureReasons = [];
+
+        // Save each target month to SharePoint individually
+        for (const checkbox of targetCheckboxes) {
             const monthIndex = checkbox.dataset.monthIndex;
             const auditMonth = checkbox.dataset.auditMonth;
-            
+
             // Get month data from the current drawer data
             const monthData = currentDrawerData?.monthly_details?.[monthIndex];
-            if (!monthData) continue;
-            
+            if (!monthData) {
+                failedCount += 1;
+                continue;
+            }
+
             // Prepare month record for SharePoint
             const monthRecord = {
                 run_id: '{{ run_id }}',
@@ -904,27 +914,29 @@
                 resolved_by_name: '{{ user.name if user else "Unknown" }}',
                 exception_count: currentDrawerData?.total_exception_count || currentDrawerData?.exception_count || 0
             };
-            
+
             // Save to SharePoint
             const result = await saveExceptionMonth(monthRecord);
-            
+
             if (result.ok) {
+                savedCount += 1;
+
                 // Update UI for this month - determine which cell based on exception type
                 const isBilledNotScheduled = monthData.status === 'BILLED_NOT_SCHEDULED';
-                const fixCell = isBilledNotScheduled 
+                const fixCell = isBilledNotScheduled
                     ? document.getElementById(`expectedFix-${monthIndex}`)
                     : document.getElementById(`actualFix-${monthIndex}`);
-                
+
                 if (fixCell) {
                     const resolvedInfo = `<br/><small style="font-size: 0.7rem; color: #6c757d;">${formatDateTime(resolvedAt)} by ${currentUserName}</small>`;
                     const notesHtmlSave = notes ? `<br/><small style="font-size: 0.7rem; color: #6c757d;"><i class="fas fa-sticky-note"></i> ${notes}</small>` : '';
                     fixCell.innerHTML = `<span class="badge bg-success">✓</span> ${fixLabel}${resolvedInfo}${notesHtmlSave}`;
                 }
-                
+
                 // Uncheck and disable checkbox (gray it out to show resolved)
                 checkbox.checked = false;
                 checkbox.disabled = true;
-                
+
                 // Mark the entire row as resolved visually
                 const row = checkbox.closest('tr');
                 if (row) {
@@ -932,10 +944,25 @@
                     row.classList.add('table-secondary');
                     row.style.opacity = '0.6';
                 }
+            } else {
+                failedCount += 1;
+                if (result && result.error) {
+                    failureReasons.push(`${auditMonth}: ${result.error}`);
+                } else {
+                    failureReasons.push(`${auditMonth}: unknown save error`);
+                }
             }
         }
-        // Clear notes textarea after all saves
+
+        // Clear notes textarea after saves complete.
         if (notesTextarea) notesTextarea.value = '';
+
+        if (failedCount > 0) {
+            const detail = failureReasons.length > 0
+                ? `\n\nFirst failure: ${failureReasons[0]}`
+                : '';
+            alert(`Applied to ${savedCount} row(s); ${failedCount} row(s) failed to save. Please retry.${detail}`);
+        }
     }
     
     function applyFix(event, fixLabel, actionType) {
@@ -1079,14 +1106,36 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(monthData)
             });
-            
-            const result = await response.json();
+
+            const responseType = (response.headers.get('content-type') || '').toLowerCase();
+            let result;
+
+            if (responseType.includes('application/json')) {
+                result = await response.json();
+            } else {
+                const responseText = await response.text();
+                const shortText = (responseText || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+                return {
+                    ok: false,
+                    error: `Unexpected response (${response.status} ${response.statusText}): ${shortText || 'non-JSON response from server'}`
+                };
+            }
+
+            if (!response.ok) {
+                const errorText = result?.error || result?.message || `${response.status} ${response.statusText}`;
+                return { ok: false, error: errorText };
+            }
             
             if (result.ok && result.ar_code_status) {
                 // Update the AR code row badge with new status
                 updateArCodeStatusFromServer(result.ar_code_status);
             }
             
+            if (!result.ok) {
+                const errorText = result?.error || result?.message || 'Save failed';
+                return { ok: false, error: errorText };
+            }
+
             return result;
         } catch (err) {
             console.error('Failed to save exception month', err);

@@ -21,167 +21,78 @@
                                     <div class="row g-3">
                                         <div class="col-md-12">
                                             <label class="form-label fw-bold">Property</label>
-                                            <!-- Hidden input that actually submits -->
+                                            <input
+                                                type="text"
+                                                class="form-control"
+                                                id="api_property_search"
+                                                list="api_property_options"
+                                                autocomplete="off"
+                                                placeholder="Loading properties from Entrata API..."
+                                                required
+                                            >
+                                            <datalist id="api_property_options"></datalist>
                                             <input type="hidden" id="api_property_id" name="api_property_id" required>
-                                            <!-- Custom dropdown (populated async) -->
-                                            <div class="property-picker" id="propertyPicker">
-                                                <div class="property-picker-input form-control d-flex align-items-center justify-content-between"
-                                                     id="propertyPickerTrigger" role="combobox" aria-expanded="false"
-                                                     style="cursor: pointer; user-select: none;">
-                                                    <span id="propertyPickerLabel" style="color: #6c757d;">
-                                                        <span class="spinner-border spinner-border-sm me-1" role="status" style="width:.75rem;height:.75rem;border-width:2px;"></span>
-                                                        Loading properties…
-                                                    </span>
-                                                    <i class="fas fa-chevron-down ms-2" style="font-size: 0.75rem; color: #aaa;"></i>
-                                                </div>
-                                                <div class="property-picker-dropdown" id="propertyPickerDropdown">
-                                                    <div class="property-picker-search-wrap">
-                                                        <input type="text" class="form-control form-control-sm"
-                                                               id="propertyPickerSearch" placeholder="Search properties…" autocomplete="off">
-                                                    </div>
-                                                    <ul class="property-picker-list" id="propertyPickerList">
-                                                    </ul>
-                                                </div>
-                                            </div>
-                                            <style>
-                                            .property-picker { position: relative; }
-                                            .property-picker-input { min-height: 38px; background: #fff; }
-                                            .property-picker-input:focus-within,
-                                            .property-picker-input.open { border-color: #00a8c8; box-shadow: 0 0 0 0.2rem rgba(0,168,200,0.2); }
-                                            .property-picker-dropdown {
-                                                display: none;
-                                                position: absolute;
-                                                top: calc(100% + 4px);
-                                                left: 0; right: 0;
-                                                background: #fff;
-                                                border: 1px solid #dee2e6;
-                                                border-radius: 8px;
-                                                box-shadow: 0 6px 20px rgba(0,0,0,0.12);
-                                                z-index: 1050;
-                                                overflow: hidden;
-                                            }
-                                            .property-picker-dropdown.open { display: block; }
-                                            .property-picker-search-wrap { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
-                                            .property-picker-list {
-                                                list-style: none; margin: 0; padding: 0;
-                                                max-height: 280px; overflow-y: auto;
-                                            }
-                                            .property-picker-item {
-                                                display: flex; flex-direction: column;
-                                                padding: 8px 14px; cursor: pointer;
-                                                border-bottom: 1px solid #f8f8f8;
-                                                transition: background 0.1s;
-                                            }
-                                            .property-picker-item:hover,
-                                            .property-picker-item.highlighted { background: #e6f7fb; }
-                                            .property-picker-item.selected { background: #d0f0f7; }
-                                            .prop-name { font-weight: 600; color: #231f20; font-size: 0.9rem; }
-                                            .prop-id { font-size: 0.78rem; color: #00a8c8; margin-top: 1px; }
-                                            .property-picker-item.hidden { display: none; }
-                                            </style>
                                             <script>
                                             (function() {
-                                                const picker      = document.getElementById('propertyPicker');
-                                                const trigger     = document.getElementById('propertyPickerTrigger');
-                                                const dropdown    = document.getElementById('propertyPickerDropdown');
-                                                const search      = document.getElementById('propertyPickerSearch');
-                                                const list        = document.getElementById('propertyPickerList');
-                                                const label       = document.getElementById('propertyPickerLabel');
-                                                const hiddenInput = document.getElementById('api_property_id');
-                                                let pickerReady = false;
+                                                const propertySearch = document.getElementById('api_property_search');
+                                                const propertyOptions = document.getElementById('api_property_options');
+                                                const propertyIdField = document.getElementById('api_property_id');
+                                                const propertyLabelToId = new Map();
 
-                                                function openDropdown() {
-                                                    if (!pickerReady) return;
-                                                    dropdown.classList.add('open');
-                                                    trigger.classList.add('open');
-                                                    trigger.setAttribute('aria-expanded', 'true');
-                                                    search.value = '';
-                                                    filterItems('');
-                                                    setTimeout(() => search.focus(), 50);
-                                                }
-                                                function closeDropdown() {
-                                                    dropdown.classList.remove('open');
-                                                    trigger.classList.remove('open');
-                                                    trigger.setAttribute('aria-expanded', 'false');
-                                                }
-                                                function filterItems(query) {
-                                                    const q = query.trim().toLowerCase();
-                                                    list.querySelectorAll('.property-picker-item').forEach(item => {
-                                                        const match = !q || item.dataset.search.includes(q);
-                                                        item.classList.toggle('hidden', !match);
-                                                    });
-                                                }
-                                                function selectItem(item) {
-                                                    hiddenInput.value = item.dataset.value;
-                                                    label.innerHTML = item.dataset.name + ' (' + item.dataset.value + ')';
-                                                    label.style.color = '#231f20';
-                                                    list.querySelectorAll('.property-picker-item').forEach(i => i.classList.remove('selected'));
-                                                    item.classList.add('selected');
-                                                    closeDropdown();
-                                                }
-
-                                                trigger.addEventListener('click', function(e) {
-                                                    dropdown.classList.contains('open') ? closeDropdown() : openDropdown();
-                                                });
-                                                search.addEventListener('input', function() { filterItems(this.value); });
-                                                list.addEventListener('click', function(e) {
-                                                    const item = e.target.closest('.property-picker-item');
-                                                    if (item) selectItem(item);
-                                                });
-                                                document.addEventListener('click', function(e) {
-                                                    if (!picker.contains(e.target)) closeDropdown();
-                                                });
-
-                                                // Validate on form submit
-                                                trigger.closest('form').addEventListener('submit', function(e) {
-                                                    if (!hiddenInput.value) {
-                                                        e.preventDefault();
-                                                        trigger.classList.add('is-invalid');
-                                                        trigger.style.borderColor = '#dc3545';
-                                                        openDropdown();
+                                                function syncHiddenId() {
+                                                    const typed = (propertySearch.value || '').trim();
+                                                    const mappedId = propertyLabelToId.get(typed);
+                                                    if (mappedId) {
+                                                        propertyIdField.value = String(mappedId);
+                                                        propertySearch.setCustomValidity('');
+                                                        return;
                                                     }
-                                                });
-                                                hiddenInput.addEventListener('change', function() {
-                                                    trigger.classList.remove('is-invalid');
-                                                    trigger.style.borderColor = '';
-                                                });
 
-                                                // Load property list asynchronously so the page renders instantly
+                                                    // Allow direct ID entry for power users.
+                                                    if (/^\d+$/.test(typed)) {
+                                                        propertyIdField.value = typed;
+                                                        propertySearch.setCustomValidity('');
+                                                        return;
+                                                    }
+
+                                                    propertyIdField.value = '';
+                                                    if (typed) {
+                                                        propertySearch.setCustomValidity('Select a property from the list or enter a numeric Property ID.');
+                                                    } else {
+                                                        propertySearch.setCustomValidity('Please select a property.');
+                                                    }
+                                                }
+
+                                                propertySearch.addEventListener('input', syncHiddenId);
+                                                propertySearch.addEventListener('change', syncHiddenId);
+
                                                 fetch('/api/property-picklist')
                                                     .then(r => r.json())
                                                     .then(data => {
                                                         const props = data.properties || [];
-                                                        if (props.length > 0) {
-                                                            list.innerHTML = props.map(p =>
-                                                                `<li class="property-picker-item"
-                                                                     data-value="${p.property_id}"
-                                                                     data-name="${p.property_name}"
-                                                                     data-search="${p.property_name.toLowerCase()} ${p.property_id}">
-                                                                    <span class="prop-name">${p.property_name}</span>
-                                                                    <span class="prop-id">${p.property_id}</span>
-                                                                </li>`
-                                                            ).join('');
-                                                            label.innerHTML = '<span style="color:#6c757d;">Select Property…</span>';
-                                                            pickerReady = true;
-                                                        } else {
-                                                            label.innerHTML = '<span style="color:#6c757d;">No properties available</span>';
+                                                        if (!props.length) {
+                                                            propertySearch.placeholder = 'No properties available';
+                                                            propertySearch.disabled = true;
+                                                            propertySearch.setCustomValidity('No properties available.');
+                                                            return;
                                                         }
+
+                                                        propertySearch.placeholder = 'Select Property...';
+                                                        propertySearch.disabled = false;
+
+                                                        const html = props.map(p => {
+                                                            const id = String(p.property_id);
+                                                            const label = `${p.property_name} (${id})`;
+                                                            propertyLabelToId.set(label, id);
+                                                            return `<option value="${label}"></option>`;
+                                                        }).join('');
+                                                        propertyOptions.innerHTML = html;
+                                                        propertySearch.setCustomValidity('Please select a property.');
                                                     })
                                                     .catch(() => {
-                                                        label.innerHTML = '<span style="color:#dc3545;">Failed to load properties — enter ID manually</span>';
-                                                        // Fallback: convert to plain number input
-                                                        hiddenInput.type = 'number';
-                                                        hiddenInput.removeAttribute('type');
-                                                        picker.style.display = 'none';
-                                                        const fallback = document.createElement('input');
-                                                        fallback.type = 'number';
-                                                        fallback.step = '1';
-                                                        fallback.className = 'form-control';
-                                                        fallback.name = 'api_property_id';
-                                                        fallback.required = true;
-                                                        fallback.placeholder = 'Enter Property ID';
-                                                        picker.parentNode.insertBefore(fallback, picker.nextSibling);
-                                                        hiddenInput.removeAttribute('name');
+                                                        propertySearch.placeholder = 'Failed to load properties';
+                                                        propertySearch.disabled = true;
+                                                        propertySearch.setCustomValidity('Failed to load properties.');
                                                     });
                                             })();
                                             </script>

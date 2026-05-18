@@ -232,6 +232,7 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    const activeJob = {{ active_job | tojson if active_job else 'null' }};
 
     // ---- date defaults: first of current month → today ----
     const today = new Date();
@@ -285,7 +286,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const toDate = document.getElementById('toDate').value;
 
         this.disabled = true;
-        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting…';
+        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting bulk audit from Entrata API…';
 
         fetch('{{ url_for("main.start_bulk_audit") }}', {
             method: 'POST',
@@ -380,7 +381,7 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('stopBtn').addEventListener('click', function () {
             if (!confirm('Stop the bulk audit? Properties already completed will be saved. The current property will finish before stopping.')) return;
             this.disabled = true;
-            this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Stopping…';
+            this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Stopping bulk audit…';
             fetch('{{ url_for("main.cancel_bulk_audit", job_id="__JOB_ID__") }}'.replace('__JOB_ID__', jobId), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -391,6 +392,10 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('runAnotherBtn').addEventListener('click', function () {
         window.location.reload();
     });
+
+    if (activeJob && activeJob.job_id) {
+        showProgressPanel(activeJob.job_id, activeJob.total || 0);
+    }
 });
 </script>
 {% endblock %}

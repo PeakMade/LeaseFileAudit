@@ -99,6 +99,7 @@ class SharePointLogger:
         self.list_name = list_name
         self._site_id = None  # Cache for Graph API site ID
         self._list_id = None  # Cache for Graph API list ID
+        self._list_columns = None  # Cache for list internal column names
         logger.debug(f"[SHAREPOINT] Initialized SharePoint logger")
         logger.debug(f"[SHAREPOINT] Site URL: {self.site_url}")
         logger.debug(f"[SHAREPOINT] List name: {self.list_name}")
@@ -150,6 +151,9 @@ class SharePointLogger:
             if not list_id:
                 logger.error("Failed to resolve SharePoint list ID")
                 return False
+
+            # Adapt payload to each list schema by keeping only recognized fields.
+            list_columns = self._get_list_columns(access_token, site_id, list_id)
             
             # Prepare the list item data for Microsoft Graph API
             # Graph API uses a simpler format with fields nested under 'fields' key
@@ -171,6 +175,19 @@ class SharePointLogger:
 
             if session_id:
                 item_data['fields']['SessionID'] = session_id
+
+            if list_columns:
+                filtered_fields = {
+                    key: value
+                    for key, value in item_data['fields'].items()
+                    if key in list_columns
+                }
+                dropped_fields = sorted(set(item_data['fields'].keys()) - set(filtered_fields.keys()))
+                if dropped_fields:
+                    logger.warning(
+                        f"[SHAREPOINT] Dropping unsupported fields for list '{self.list_name}': {', '.join(dropped_fields)}"
+                    )
+                item_data['fields'] = filtered_fields
             
             logger.info(f"[SHAREPOINT] Sending Env field with value: '{env_value}'")
             
@@ -311,6 +328,38 @@ class SharePointLogger:
         except Exception as e:
             logger.error(f"Error getting list ID: {e}", exc_info=True)
             return None
+
+    def _get_list_columns(self, access_token: str, site_id: str, list_id: str) -> Optional[set[str]]:
+        """Get internal column names for the target SharePoint list."""
+        if self._list_columns is not None:
+            return self._list_columns
+
+        try:
+            endpoint = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/columns"
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Accept': 'application/json',
+            }
+            response = requests.get(endpoint, headers=headers, timeout=10)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[SHAREPOINT] Could not resolve list columns for '{self.list_name}'. "
+                    f"Status: {response.status_code}"
+                )
+                self._list_columns = None
+                return None
+
+            columns_data = response.json()
+            self._list_columns = {
+                column.get('name')
+                for column in columns_data.get('value', [])
+                if column.get('name')
+            }
+            return self._list_columns
+        except Exception as e:
+            logger.warning(f"[SHAREPOINT] Error getting list columns for '{self.list_name}': {e}")
+            self._list_columns = None
+            return None
     
     def _get_client_ip(self) -> str:
         """
@@ -432,8 +481,15 @@ def log_user_activity(
         logger.debug(f"[SHAREPOINT] is_local_dev: {is_local_dev}")
         return False
     
-    logger.debug(f"[SHAREPOINT] Creating SharePointLogger instance")
-    logger_instance = SharePointLogger(site_url, list_name)
+    # Support fan-out logging to multiple lists (comma/semicolon-separated).
+    list_names = [
+        name.strip()
+        for name in str(list_name).replace(';', ',').split(',')
+        if name.strip()
+    ]
+    if not list_names:
+        logger.warning("Cannot log to SharePoint: No list names configured")
+        return False
     
     # Get user details - use local dev overrides if available
     user_name = os.getenv('LOCAL_DEV_USER_NAME', user_info.get('name', 'Unknown User'))
@@ -454,12 +510,25 @@ def log_user_activity(
         user_role = details_payload.pop('user_role')  # Remove from details to avoid duplication
     details_payload.pop('session_id', None)
     
-    return logger_instance.log_activity(
-        access_token=access_token,
-        user_name=user_name,
-        user_email=user_email,
-        activity_type=activity_type,
-        user_role=user_role,
-        details=details_payload,
-        session_id=session_id
-    )
+    any_success = False
+    for target_list_name in list_names:
+        logger.debug(f"[SHAREPOINT] Creating SharePointLogger instance for list '{target_list_name}'")
+        logger_instance = SharePointLogger(site_url, target_list_name)
+        success = logger_instance.log_activity(
+            access_token=access_token,
+            user_name=user_name,
+            user_email=user_email,
+            activity_type=activity_type,
+            user_role=user_role,
+            details=details_payload,
+            session_id=session_id
+        )
+        if success:
+            any_success = True
+        else:
+            logger.warning(
+                f"[SHAREPOINT] Activity log failed for list '{target_list_name}' "
+                f"(activity={activity_type}, user={user_email})"
+            )
+
+    return any_success

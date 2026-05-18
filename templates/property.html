@@ -79,11 +79,13 @@
                 const option = document.createElement('option');
                 option.value = run.run_id;
 
-                if (run.timestamp && run.timestamp !== 'Unknown' && run.timestamp.length >= 10) {
-                    option.textContent = `${run.timestamp.substring(5, 7)}/${run.timestamp.substring(8, 10)}/${run.timestamp.substring(0, 4)} - ${run.run_type || 'Manual'}`;
+                if (run.timestamp && run.timestamp !== 'Unknown' && run.timestamp.length >= 19) {
+                    option.textContent = `${run.timestamp.substring(5, 7)}/${run.timestamp.substring(8, 10)}/${run.timestamp.substring(0, 4)} ${run.timestamp.substring(11, 16)} - ${run.run_type || 'Manual'} (${run.run_id})`;
+                } else if (run.timestamp && run.timestamp !== 'Unknown' && run.timestamp.length >= 10) {
+                    option.textContent = `${run.timestamp.substring(5, 7)}/${run.timestamp.substring(8, 10)}/${run.timestamp.substring(0, 4)} - ${run.run_type || 'Manual'} (${run.run_id})`;
                 } else if (run.audit_period && run.audit_period.month && run.audit_period.year) {
                     const month = String(run.audit_period.month).padStart(2, '0');
-                    option.textContent = `${month}/${run.audit_period.year} - ${run.run_type || 'Manual'}`;
+                    option.textContent = `${month}/${run.audit_period.year} - ${run.run_type || 'Manual'} (${run.run_id})`;
                 } else {
                     option.textContent = `${run.run_id} - ${run.run_type || 'Manual'}`;
                 }
@@ -123,10 +125,12 @@
             <select class="form-select form-select-sm" id="runSelector" onchange="changeRun(this.value)" style="min-width: 220px;">
                 {% for run in all_runs %}
                 <option value="{{ run.run_id }}" {% if run.run_id == current_run_id %}selected{% endif %}>
-                    {% if run.timestamp and run.timestamp != 'Unknown' %}
-                        {{ run.timestamp[5:7] }}/{{ run.timestamp[8:10] }}/{{ run.timestamp[0:4] }} - {{ run.run_type if run.run_type else 'Manual' }}
+                    {% if run.timestamp and run.timestamp != 'Unknown' and run.timestamp|length >= 19 %}
+                        {{ run.timestamp[5:7] }}/{{ run.timestamp[8:10] }}/{{ run.timestamp[0:4] }} {{ run.timestamp[11:16] }} - {{ run.run_type if run.run_type else 'Manual' }} ({{ run.run_id }})
+                    {% elif run.timestamp and run.timestamp != 'Unknown' %}
+                        {{ run.timestamp[5:7] }}/{{ run.timestamp[8:10] }}/{{ run.timestamp[0:4] }} - {{ run.run_type if run.run_type else 'Manual' }} ({{ run.run_id }})
                     {% elif run.audit_period.month and run.audit_period.year %}
-                        {{ '%02d'|format(run.audit_period.month) }}/{{ run.audit_period.year }} - {{ run.run_type if run.run_type else 'Manual' }}
+                        {{ '%02d'|format(run.audit_period.month) }}/{{ run.audit_period.year }} - {{ run.run_type if run.run_type else 'Manual' }} ({{ run.run_id }})
                     {% else %}
                         {{ run.run_id }} - {{ run.run_type if run.run_type else 'Manual' }}
                     {% endif %}

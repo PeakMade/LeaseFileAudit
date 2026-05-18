@@ -47,13 +47,14 @@ class StorageService:
     _GLOBAL_SNAPSHOT_COLUMNS_CACHE: Dict[str, Dict[str, Any]] = {}
     _GLOBAL_SNAPSHOT_COLUMNS_CACHE_LOCK = threading.Lock()
     
-    def __init__(self, base_dir: Path, use_sharepoint: bool = False, sharepoint_site_url: str = None, 
-                 library_name: str = None, access_token: str = None):
+    def __init__(self, base_dir: Path, use_sharepoint: bool = False, sharepoint_site_url: str = None,
+                 library_name: str = None, access_token: str = None, audit_results_list_name: str = None):
         self.base_dir = Path(base_dir)
-        self.use_sharepoint = use_sharepoint and sharepoint_site_url and library_name
+        self.use_sharepoint = bool(use_sharepoint and sharepoint_site_url and library_name)
         self.sharepoint_site_url = sharepoint_site_url.rstrip('/') if sharepoint_site_url else None
         self.library_name = library_name
         self.access_token = access_token
+        self.audit_results_list_name = (audit_results_list_name or os.getenv('SHAREPOINT_AUDIT_RESULTS_LIST_NAME', 'AuditRuns2')).strip()
         self._site_id = None
         self._drive_id = None
         self._list_ids = {}
@@ -163,7 +164,9 @@ class StorageService:
             return None
 
     def _get_sharepoint_list_id(self, list_name: str) -> Optional[str]:
+        logger.info(f"[STORAGE] Attempting to resolve list ID for: {list_name}")
         if list_name in self._list_ids:
+            logger.info(f"[STORAGE] Found {list_name} in cache: {self._list_ids[list_name]}")
             return self._list_ids[list_name]
 
         site_id = self._get_site_id()
@@ -175,6 +178,7 @@ class StorageService:
         if global_list_key in self._GLOBAL_LIST_ID_CACHE:
             list_id = self._GLOBAL_LIST_ID_CACHE[global_list_key]
             self._list_ids[list_name] = list_id
+            logger.info(f"[STORAGE] Found {list_name} in global cache: {list_id}")
             return list_id
 
         list_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists"
@@ -183,6 +187,7 @@ class StorageService:
             'Content-Type': 'application/json'
         }
         params = {'$filter': f"displayName eq '{list_name}'"}
+        logger.info(f"[STORAGE] Querying Graph API for list: {list_name}")
         response = requests.get(list_url, headers=headers, params=params, timeout=30)
 
         if response.status_code != 200:
@@ -191,13 +196,13 @@ class StorageService:
 
         lists_data = response.json()
         if not lists_data.get('value'):
-            logger.error(f"[STORAGE] List '{list_name}' not found")
+            logger.error(f"[STORAGE] List '{list_name}' not found in SharePoint (empty response)")
             return None
 
         list_id = lists_data['value'][0]['id']
         self._list_ids[list_name] = list_id
         self._GLOBAL_LIST_ID_CACHE[global_list_key] = list_id
-        logger.debug(f"[STORAGE] Resolved SharePoint list '{list_name}' id: {list_id}")
+        logger.info(f"[STORAGE] ✅ Resolved SharePoint list '{list_name}' id: {list_id}")
         return list_id
 
     def _extract_list_id_from_config_value(self, configured_value: str) -> Optional[str]:
@@ -277,14 +282,34 @@ class StorageService:
     #     return f"{run_id}:{result_type}:row:{row_index}"
 
     def _get_audit_results_list_id(self) -> Optional[str]:
-        """Resolve audit results list id with preferred name first and legacy fallback."""
-        preferred_names = ["AuditRuns", "Audit Run Results"]
-        for name in preferred_names:
-            list_id = self._get_sharepoint_list_id(name)
+        """Resolve audit results list id via env override first, then configured display name(s)."""
+        configured = self._get_configured_sharepoint_list_id([
+            'SHAREPOINT_AUDIT_RESULTS_LIST_ID',
+            'SHAREPOINT_AUDIT_RESULTS_LIST_URL',
+        ])
+        if configured:
+            return configured
+
+        configured_targets = [
+            name.strip()
+            for name in str(self.audit_results_list_name or '').replace(';', ',').split(',')
+            if name.strip()
+        ]
+        # If both targets are configured, force writes/reads to the new list only.
+        if any(name.lower() == 'auditruns2' for name in configured_targets):
+            configured_targets = [name for name in configured_targets if name.lower() != 'auditruns']
+        if not configured_targets:
+            logger.warning("[STORAGE] SHAREPOINT_AUDIT_RESULTS_LIST_NAME is empty; cannot resolve audit results list")
+            return None
+
+        for configured_name in configured_targets:
+            list_id = self._get_sharepoint_list_id(configured_name)
             if list_id:
-                if name != "AuditRuns":
-                    logger.warning(f"[STORAGE] Using legacy list name '{name}'. Consider renaming to 'AuditRuns'.")
                 return list_id
+
+        logger.warning(
+            f"[STORAGE] Configured audit results list(s) '{configured_targets}' not found on SharePoint"
+        )
         return None
 
     def _get_run_display_snapshots_list_id(self) -> Optional[str]:
@@ -640,11 +665,15 @@ class StorageService:
             'property_name': ['PropertyNameStatic', 'PropertyName'],
             'total_variance': ['TotalVarianceStatic'],
             'total_lease_intervals': ['TotalLeaseIntervalStatic'],
+            'run_scope_type': ['RunScopeType'],
+            'audited_through': ['AuditedThrough'],
         }
         resolved = {
             'property_name': None,
             'total_variance': None,
             'total_lease_intervals': None,
+            'run_scope_type': None,
+            'audited_through': None,
         }
 
         try:
@@ -774,12 +803,14 @@ class StorageService:
             else:
                 audited_through_value = None
 
+            run_scope_type_field = optional_field_names.get('run_scope_type')
+            audited_through_field = optional_field_names.get('audited_through')
+
             row_payload = {
                 'Title': title,
                 'SnapshotKey': snapshot_key,
                 'RunId': run_id,
                 'ScopeType': scope_type,
-                'RunScopeType': run_scope_type or '',
                 'PropertyId': property_id_int,
                 'LeaseIntervalId': lease_interval_id_int,
                 exception_count_field_name: metrics['exception_count'],
@@ -788,9 +819,12 @@ class StorageService:
                 'MatchRateStatic': metrics['match_rate'],
                 'TotalBucketsStatic': metrics['total_buckets'],
                 'MatchedBucketsStatic': metrics['matched_buckets'],
-                'AuditedThrough': audited_through_value or '',
                 'CreatedAt': datetime.utcnow().isoformat(),
             }
+            if run_scope_type_field:
+                row_payload[run_scope_type_field] = run_scope_type or ''
+            if audited_through_field:
+                row_payload[audited_through_field] = audited_through_value or ''
 
             if property_name_field and property_name:
                 row_payload[property_name_field] = property_name
@@ -840,16 +874,19 @@ class StorageService:
     ) -> bool:
         """Persist static portfolio/property/lease display snapshots to RunDisplaySnapshots list."""
         if not self._can_use_sharepoint_lists():
+            print(f"[STORAGE] ❌ RunDisplaySnapshots write skipped — _can_use_sharepoint_lists()=False (token={bool(self.access_token)} site={bool(self.sharepoint_site_url)})")
             logger.debug("[STORAGE] SharePoint lists unavailable; skipping RunDisplaySnapshots write")
             return False
 
         try:
             site_id = self._get_site_id()
             if not site_id:
+                print(f"[STORAGE] ❌ RunDisplaySnapshots write failed — could not resolve site_id")
                 return False
 
             list_id = self._get_run_display_snapshots_list_id()
             if not list_id:
+                print(f"[STORAGE] ❌ RunDisplaySnapshots list not found on SharePoint — list does not exist or name mismatch")
                 logger.warning("[STORAGE] RunDisplaySnapshots list not found; skipping snapshot persistence")
                 return False
 
@@ -866,11 +903,14 @@ class StorageService:
                 stage_timers['snapshot_filter_seconds'] = float(perf_counter() - snapshot_filter_started)
 
             exception_count_field_name = self._resolve_snapshot_exception_count_field_name(site_id, list_id)
-            optional_field_names = self._resolve_snapshot_optional_field_names(site_id, list_id)
 
-            # Ensure AuditedThrough and RunScopeType columns exist
+            # Ensure AuditedThrough and RunScopeType columns exist BEFORE resolving optional
+            # field names — _ensure_list_column_exists busts the column cache on creation,
+            # so the subsequent _resolve_snapshot_optional_field_names call will see them.
             self._ensure_list_column_exists(site_id, list_id, 'AuditedThrough', column_type='text')
             self._ensure_list_column_exists(site_id, list_id, 'RunScopeType', column_type='text')
+
+            optional_field_names = self._resolve_snapshot_optional_field_names(site_id, list_id)
 
             snapshot_rows = self._build_run_display_snapshot_rows(
                 run_id,
@@ -887,6 +927,7 @@ class StorageService:
             # Log snapshot details
             property_snapshots = [row for row in snapshot_rows if row.get('ScopeType') == 'property']
             property_ids_in_snapshots = [row.get('PropertyId') for row in property_snapshots]
+            print(f"[STORAGE] RunDisplaySnapshots: built {len(snapshot_rows)} rows ({len(property_snapshots)} property snapshots, props={property_ids_in_snapshots})")
             logger.info(
                 f"[STORAGE] Building {len(snapshot_rows)} snapshot rows for run {run_id}: "
                 f"{len(property_snapshots)} property snapshots with IDs {property_ids_in_snapshots}"
@@ -904,9 +945,11 @@ class StorageService:
             if stage_timers is not None:
                 stage_timers['snapshot_write_seconds'] = float(perf_counter() - snapshot_write_started)
 
+            print(f"[STORAGE] RunDisplaySnapshots posted: created={created} of {len(payload_rows)} rows for {run_id}")
             logger.info(f"[STORAGE] ✅ Wrote RunDisplaySnapshots rows for {run_id}: rows={created}")
             return True
         except Exception as e:
+            print(f"[STORAGE] ❌ Exception in _write_run_display_snapshots_to_sharepoint_list for {run_id}: {e}")
             logger.error(f"[STORAGE] Error writing RunDisplaySnapshots list rows: {e}", exc_info=True)
             return False
 
@@ -1401,6 +1444,13 @@ class StorageService:
     ) -> None:
         """Background wrapper for detailed AuditRuns list persistence."""
         try:
+            # Refresh token — background thread may outlive original request token.
+            try:
+                new_token = _get_app_only_token()
+                if new_token:
+                    self.access_token = new_token
+            except Exception as _token_err:
+                logger.warning(f"[STORAGE] Token refresh failed in async results write: {_token_err}")
             logger.info(f"[STORAGE] 🚀 Background AuditRuns write started for {run_id}")
             self._write_results_to_sharepoint_list(
                 run_id,
@@ -1422,6 +1472,13 @@ class StorageService:
     ) -> None:
         """Background wrapper for metrics list persistence."""
         try:
+            # Refresh token — background thread may outlive original request token
+            try:
+                new_token = _get_app_only_token()
+                if new_token:
+                    self.access_token = new_token
+            except Exception as _token_err:
+                logger.warning(f"[STORAGE] Token refresh failed in async metrics write: {_token_err}")
             logger.info(f"[STORAGE] 🚀 Background metrics write started for {run_id}")
             self._write_metrics_to_sharepoint_list(run_id, bucket_results, findings, metadata)
             logger.info(f"[STORAGE] ✅ Background metrics write finished for {run_id}")
@@ -1463,6 +1520,20 @@ class StorageService:
     ) -> None:
         """Background wrapper for RunDisplaySnapshots persistence and optional validation."""
         try:
+            # Refresh token — this runs in a background thread that may outlive the
+            # original request token lifetime. Always acquire a fresh token before
+            # making any SharePoint list API calls.
+            try:
+                new_token = _get_app_only_token()
+                if new_token:
+                    self.access_token = new_token
+                    logger.debug(f"[STORAGE] 🔄 Token refreshed for async snapshot write {run_id}")
+                else:
+                    logger.warning(f"[STORAGE] ⚠️ Token refresh returned None for async snapshot write {run_id}")
+            except Exception as _token_err:
+                logger.warning(f"[STORAGE] Token refresh failed in async snapshot write: {_token_err}")
+
+            print(f"[STORAGE] 🚀 Background RunDisplaySnapshots write STARTED for {run_id} | can_use_lists={self._can_use_sharepoint_lists()} | has_token={bool(self.access_token)}")
             logger.info(f"[STORAGE] 🚀 Background RunDisplaySnapshots write started for {run_id}")
             snapshot_stage_timers: Dict[str, float] = {
                 'snapshot_filter_seconds': 0.0,
@@ -1479,6 +1550,7 @@ class StorageService:
                 run_scope_type=run_scope_type,
             )
             if snapshot_write_ok:
+                print(f"[STORAGE] ✅ Background RunDisplaySnapshots write SUCCESS for {run_id}")
                 logger.info(
                     f"[STORAGE] ✅ Background RunDisplaySnapshots write finished for {run_id}: "
                     f"filter={snapshot_stage_timers.get('snapshot_filter_seconds', 0.0):.2f}s "
@@ -1502,8 +1574,10 @@ class StorageService:
                             f"[STORAGE] Background snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
                         )
             else:
+                print(f"[STORAGE] ⚠️ Background RunDisplaySnapshots write SKIPPED/FAILED for {run_id}")
                 logger.warning(f"[STORAGE] Background RunDisplaySnapshots write skipped/failed for {run_id}")
         except Exception as e:
+            print(f"[STORAGE] ❌ Background RunDisplaySnapshots write EXCEPTION for {run_id}: {e}")
             logger.error(f"[STORAGE] Background RunDisplaySnapshots write failed for {run_id}: {e}", exc_info=True)
 
     def load_run_display_snapshot_from_sharepoint_list(
@@ -2045,20 +2119,78 @@ class StorageService:
         findings: pd.DataFrame,
         actual_detail: Optional[pd.DataFrame] = None,
         expected_detail: Optional[pd.DataFrame] = None,
+        target_list_name: Optional[str] = None,
     ) -> bool:
         """Persist bucket results and findings to SharePoint list 'AuditRuns'."""
+        logger.info(f"[STORAGE] _write_results_to_sharepoint_list called: run_id={run_id}, target_list_name={target_list_name}, self.audit_results_list_name={self.audit_results_list_name}")
+
+        # Detailed result writes can run long enough that a request-scoped token is
+        # missing or stale by the time SharePoint list calls start. Always prefer a
+        # fresh app-only token for this path so writes are consistent with snapshot
+        # and metrics persistence.
+        try:
+            fresh_token = _get_app_only_token()
+            if fresh_token:
+                self.access_token = fresh_token
+        except Exception as token_error:
+            logger.warning(f"[STORAGE] Failed to refresh token before result write for {run_id}: {token_error}")
+        
         if not self._can_use_sharepoint_lists():
             logger.debug("[STORAGE] SharePoint lists unavailable; skipping AuditRuns write")
             return False
+
+        # Support writing to multiple AuditRuns-style lists while reusing the same write path.
+        if target_list_name is None:
+            configured_targets = [
+                name.strip()
+                for name in str(self.audit_results_list_name or '').replace(';', ',').split(',')
+                if name.strip()
+            ]
+            # If AuditRuns2 is configured, do not also write to legacy AuditRuns.
+            if any(name.lower() == 'auditruns2' for name in configured_targets):
+                configured_targets = [name for name in configured_targets if name.lower() != 'auditruns']
+            if not configured_targets:
+                configured_targets = ['AuditRuns2']
+
+            logger.info(f"[STORAGE] Audit results targets for run {run_id}: {configured_targets}")
+
+            if len(configured_targets) > 1:
+                logger.info(f"[STORAGE] Multi-list audit results write detected: {len(configured_targets)} targets")
+                any_success = False
+                for configured_target in configured_targets:
+                    logger.info(f"[STORAGE] Writing audit results to: {configured_target}")
+                    success = self._write_results_to_sharepoint_list(
+                        run_id,
+                        bucket_results,
+                        findings,
+                        actual_detail=actual_detail,
+                        expected_detail=expected_detail,
+                        target_list_name=configured_target,
+                    )
+                    logger.info(f"[STORAGE] Result for {configured_target}: {'SUCCESS' if success else 'FAILED'}")
+                    if success:
+                        any_success = True
+                return any_success
+
+            target_list_name = configured_targets[0]
 
         try:
             site_id = self._get_site_id()
             if not site_id:
                 return False
 
-            list_id = self._get_audit_results_list_id()
+            # Force AuditRuns2 writes through configured ID/URL pin when provided.
+            normalized_target = (target_list_name or '').strip().lower()
+            if normalized_target == 'auditruns2':
+                list_id = self._get_audit_results_list_id() or self._get_sharepoint_list_id(target_list_name)
+            else:
+                list_id = self._get_sharepoint_list_id(target_list_name)
+
             if not list_id:
-                logger.warning("[STORAGE] AuditRuns/Audit Run Results list not found; skipping list-backed result persistence")
+                logger.warning(
+                    f"[STORAGE] Audit results list '{target_list_name}' not found; "
+                    "skipping list-backed result persistence"
+                )
                 return False
 
             headers = {
@@ -2071,28 +2203,87 @@ class StorageService:
 
             property_name_field = None
             resident_name_field = None
+            target_list_name = (target_list_name or 'AuditRuns').strip() or 'AuditRuns'
+            audit_field_name_map: Dict[str, str] = {}
+            uses_generic_field_names: bool = False
+            schema_loaded_ok = False
             try:
                 columns_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/columns"
-                columns_params = {'$select': 'name', '$top': 200}
+                columns_params = {'$select': 'name,displayName', '$top': 200}
                 columns_response = requests.get(columns_url, headers=headers, params=columns_params, timeout=60)
                 if columns_response.status_code == 200:
-                    column_names = {
-                        column.get('name')
-                        for column in columns_response.json().get('value', [])
-                        if column.get('name')
-                    }
-                    if 'PropertyName' in column_names:
-                        property_name_field = 'PropertyName'
+                    column_defs = columns_response.json().get('value', [])
+                    column_name_by_display: Dict[str, str] = {}
+                    column_names = set()
+                    for column in column_defs:
+                        internal_name = column.get('name')
+                        display_name = column.get('displayName')
+                        if internal_name:
+                            column_names.add(internal_name)
+                        if internal_name and display_name:
+                            column_name_by_display[display_name] = internal_name
 
-                    if 'ResidentName' in column_names:
-                        resident_name_field = 'ResidentName'
+                    logical_fields = [
+                        'Title', 'RunId', 'ResultType', 'PropertyId', 'LeaseIntervalId',
+                        'ArCodeId', 'AuditMonth', 'Status', 'Severity', 'FindingTitle',
+                        'Variance', 'ExpectedTotal', 'ActualTotal', 'ImpactAmount',
+                        'MatchRule', 'FindingId', 'Category', 'Description',
+                        'ExpectedValue', 'ActualValue', 'CreatedAt',
+                        'PropertyName', 'ResidentName',
+                    ]
+                    for logical_name in logical_fields:
+                        if logical_name in column_names:
+                            audit_field_name_map[logical_name] = logical_name
+                        elif logical_name in column_name_by_display:
+                            audit_field_name_map[logical_name] = column_name_by_display[logical_name]
+
+                    if 'PropertyName' in audit_field_name_map:
+                        property_name_field = audit_field_name_map['PropertyName']
+
+                    if 'ResidentName' in audit_field_name_map:
+                        resident_name_field = audit_field_name_map['ResidentName']
+
+                    # Detect generic field_* column names (text-typed columns created by SharePoint).
+                    # In that case all numeric values must be coerced to strings on write.
+                    uses_generic_field_names = any(
+                        v.startswith('field_') for v in audit_field_name_map.values()
+                    )
+                    if uses_generic_field_names:
+                        logger.info(
+                            f"[STORAGE] {target_list_name} uses generic field_* column names; "
+                            "numeric values will be coerced to strings"
+                        )
+
+                    # Fail fast when target list schema does not match required result fields.
+                    required_columns = {
+                        'RunId', 'ResultType', 'PropertyId', 'LeaseIntervalId',
+                        'ArCodeId', 'AuditMonth', 'Status', 'Variance',
+                        'ExpectedTotal', 'ActualTotal',
+                    }
+                    missing_required = sorted(name for name in required_columns if name not in audit_field_name_map)
+                    if missing_required:
+                        logger.warning(
+                            f"[STORAGE] Skipping writes to '{target_list_name}' for run {run_id}: "
+                            f"missing required SharePoint columns: {', '.join(missing_required)}"
+                        )
+                        return False
+                    schema_loaded_ok = True
                 else:
                     logger.warning(
-                        f"[STORAGE] Could not read AuditRuns columns: "
+                        f"[STORAGE] Could not read {target_list_name} columns: "
                         f"{columns_response.status_code} - {columns_response.text}"
                     )
             except Exception as schema_exc:
-                logger.warning(f"[STORAGE] Failed loading AuditRuns optional column names: {schema_exc}")
+                logger.warning(f"[STORAGE] Failed loading {target_list_name} optional column names: {schema_exc}")
+
+            # Never create list items when schema detection failed. Continuing here can
+            # produce blank rows with an empty fields payload.
+            if not schema_loaded_ok:
+                logger.warning(
+                    f"[STORAGE] Skipping writes to '{target_list_name}' for run {run_id}: "
+                    "schema detection failed"
+                )
+                return False
 
             def _normalize_person_name(value: Any) -> str:
                 if value is None:
@@ -2236,7 +2427,7 @@ class StorageService:
                     property_id_int = self._safe_int(property_id_val)
                     lease_interval_id_int = self._safe_int(lease_interval_id_val)
 
-                    fields_payload = {
+                    canonical_fields_payload = {
                         'Title': f"{result_type}:{idx}",
                         'RunId': run_id,
                         'ResultType': result_type,
@@ -2260,6 +2451,19 @@ class StorageService:
                         'CreatedAt': datetime.utcnow().isoformat(),
                     }
 
+                    # When list uses generic field_* column names (text type), coerce numeric values to strings.
+                    if uses_generic_field_names:
+                        canonical_fields_payload = {
+                            k: (str(v) if isinstance(v, (int, float)) and v is not None else v)
+                            for k, v in canonical_fields_payload.items()
+                        }
+
+                    fields_payload: Dict[str, Any] = {}
+                    for logical_name, value in canonical_fields_payload.items():
+                        internal_name = audit_field_name_map.get(logical_name)
+                        if internal_name:
+                            fields_payload[internal_name] = value
+
                     if property_name_field and property_id_int is not None:
                         property_name_value = property_name_lookup.get(property_id_int)
                         if property_name_value:
@@ -2276,7 +2480,7 @@ class StorageService:
                     site_id=site_id,
                     list_id=list_id,
                     row_payloads=row_payloads,
-                    context_label=f"AuditRuns {result_type} run={run_id}",
+                    context_label=f"{target_list_name} {result_type} run={run_id}",
                 )
 
                 return rows_written
@@ -2302,7 +2506,7 @@ class StorageService:
             bucket_rows_written = rows_written_by_type['bucket_result']
             finding_rows_written = rows_written_by_type['finding']
             logger.info(
-                f"[STORAGE] ✅ Wrote AuditRuns rows for {run_id}: "
+                f"[STORAGE] ✅ Wrote {target_list_name} rows for {run_id}: "
                 f"bucket_result={bucket_rows_written}, finding={finding_rows_written}"
             )
             return True
@@ -2336,14 +2540,81 @@ class StorageService:
                 'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
             }
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+
+            # Resolve logical field names to the list's real internal names.
+            # This supports both canonical columns (RunId/PropertyId/...) and
+            # SharePoint generic schemas (field_1/field_2/...).
+            field_name_map: Dict[str, str] = {}
+            uses_generic_field_names = False
+            try:
+                columns_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/columns"
+                columns_params = {'$select': 'name,displayName', '$top': 200}
+                columns_response = requests.get(columns_url, headers=headers, params=columns_params, timeout=60)
+                if columns_response.status_code == 200:
+                    column_defs = columns_response.json().get('value', [])
+                    column_name_by_display: Dict[str, str] = {}
+                    column_names = set()
+                    for column in column_defs:
+                        internal_name = column.get('name')
+                        display_name = column.get('displayName')
+                        if internal_name:
+                            column_names.add(internal_name)
+                        if internal_name and display_name:
+                            column_name_by_display[display_name] = internal_name
+
+                    logical_fields = [
+                        'RunId', 'ResultType', 'PropertyId', 'LeaseIntervalId',
+                        'ArCodeId', 'AuditMonth', 'Status', 'Severity', 'FindingTitle',
+                        'Variance', 'ExpectedTotal', 'ActualTotal', 'ImpactAmount',
+                        'MatchRule', 'FindingId', 'Category', 'Description',
+                        'ExpectedValue', 'ActualValue', 'PropertyName', 'ResidentName',
+                        'RowJson',
+                    ]
+                    for logical_name in logical_fields:
+                        if logical_name in column_names:
+                            field_name_map[logical_name] = logical_name
+                        elif logical_name in column_name_by_display:
+                            field_name_map[logical_name] = column_name_by_display[logical_name]
+
+                    uses_generic_field_names = any(
+                        v.startswith('field_') for v in field_name_map.values()
+                    )
+                else:
+                    logger.warning(
+                        f"[STORAGE] Could not read audit result columns for list id {list_id}: "
+                        f"{columns_response.status_code} - {columns_response.text}"
+                    )
+                    return None
+            except Exception as schema_exc:
+                logger.warning(f"[STORAGE] Failed loading audit result column names: {schema_exc}")
+                return None
+
+            run_id_field = field_name_map.get('RunId')
+            result_type_field = field_name_map.get('ResultType')
+            if not run_id_field or not result_type_field:
+                logger.warning(
+                    "[STORAGE] Cannot query audit results list: missing RunId/ResultType column mapping"
+                )
+                return None
+
             filters = [
-                f"fields/RunId eq '{run_id}'",
-                f"fields/ResultType eq '{result_type}'",
+                f"fields/{run_id_field} eq '{run_id}'",
+                f"fields/{result_type_field} eq '{result_type}'",
             ]
             if property_id is not None:
-                filters.append(f"fields/PropertyId eq {int(property_id)}")
+                property_id_field = field_name_map.get('PropertyId')
+                if property_id_field:
+                    if uses_generic_field_names:
+                        filters.append(f"fields/{property_id_field} eq '{int(property_id)}'")
+                    else:
+                        filters.append(f"fields/{property_id_field} eq {int(property_id)}")
             if lease_interval_id is not None:
-                filters.append(f"fields/LeaseIntervalId eq {int(lease_interval_id)}")
+                lease_interval_id_field = field_name_map.get('LeaseIntervalId')
+                if lease_interval_id_field:
+                    if uses_generic_field_names:
+                        filters.append(f"fields/{lease_interval_id_field} eq '{int(lease_interval_id)}'")
+                    else:
+                        filters.append(f"fields/{lease_interval_id_field} eq {int(lease_interval_id)}")
 
             params = {
                 '$expand': 'fields',
@@ -2367,25 +2638,30 @@ class StorageService:
             for item in items:
                 fields = item.get('fields', {})
 
+                def _field(logical_name: str, default: Any = None) -> Any:
+                    internal_name = field_name_map.get(logical_name, logical_name)
+                    return fields.get(internal_name, default)
+
                 if result_type == 'bucket_result':
                     row_payload = {
-                        'PROPERTY_ID': fields.get('PropertyId'),
-                        'LEASE_INTERVAL_ID': fields.get('LeaseIntervalId'),
-                        'property_name': fields.get('PropertyName'),
-                        'resident_name': fields.get('ResidentName'),
-                        'AR_CODE_ID': fields.get('ArCodeId'),
-                        'AUDIT_MONTH': fields.get('AuditMonth'),
-                        'expected_total': fields.get('ExpectedTotal'),
-                        'actual_total': fields.get('ActualTotal'),
-                        'variance': fields.get('Variance'),
-                        'status': fields.get('Status'),
-                        'match_rule': fields.get('MatchRule')
+                        'PROPERTY_ID': _field('PropertyId'),
+                        'LEASE_INTERVAL_ID': _field('LeaseIntervalId'),
+                        'property_name': _field('PropertyName'),
+                        'resident_name': _field('ResidentName'),
+                        'AR_CODE_ID': _field('ArCodeId'),
+                        'AUDIT_MONTH': _field('AuditMonth'),
+                        'expected_total': _field('ExpectedTotal'),
+                        'actual_total': _field('ActualTotal'),
+                        'variance': _field('Variance'),
+                        'status': _field('Status'),
+                        'match_rule': _field('MatchRule')
                     }
 
                     # Legacy compatibility: recover full row from RowJson if explicit fields are missing.
-                    if row_payload.get('status') in [None, ''] and fields.get('RowJson'):
+                    row_json_value = _field('RowJson')
+                    if row_payload.get('status') in [None, ''] and row_json_value:
                         try:
-                            legacy = json.loads(fields.get('RowJson'))
+                            legacy = json.loads(row_json_value)
                             for key, value in legacy.items():
                                 row_payload[key] = value
                         except Exception:
@@ -2394,28 +2670,29 @@ class StorageService:
                     rows.append(row_payload)
                 elif result_type == 'finding':
                     row_payload = {
-                        'finding_id': fields.get('FindingId'),
-                        'run_id': fields.get('RunId', run_id),
-                        'property_id': fields.get('PropertyId'),
-                        'lease_interval_id': fields.get('LeaseIntervalId'),
-                        'property_name': fields.get('PropertyName'),
-                        'resident_name': fields.get('ResidentName'),
-                        'ar_code_id': fields.get('ArCodeId'),
-                        'audit_month': fields.get('AuditMonth'),
-                        'category': fields.get('Category'),
-                        'severity': fields.get('Severity'),
-                        'title': fields.get('FindingTitle'),
-                        'description': fields.get('Description'),
-                        'expected_value': fields.get('ExpectedValue'),
-                        'actual_value': fields.get('ActualValue'),
-                        'variance': fields.get('Variance'),
-                        'impact_amount': fields.get('ImpactAmount')
+                        'finding_id': _field('FindingId'),
+                        'run_id': _field('RunId', run_id),
+                        'property_id': _field('PropertyId'),
+                        'lease_interval_id': _field('LeaseIntervalId'),
+                        'property_name': _field('PropertyName'),
+                        'resident_name': _field('ResidentName'),
+                        'ar_code_id': _field('ArCodeId'),
+                        'audit_month': _field('AuditMonth'),
+                        'category': _field('Category'),
+                        'severity': _field('Severity'),
+                        'title': _field('FindingTitle'),
+                        'description': _field('Description'),
+                        'expected_value': _field('ExpectedValue'),
+                        'actual_value': _field('ActualValue'),
+                        'variance': _field('Variance'),
+                        'impact_amount': _field('ImpactAmount')
                     }
 
                     # Legacy compatibility: recover fields from RowJson if present.
-                    if row_payload.get('title') in [None, ''] and fields.get('RowJson'):
+                    row_json_value = _field('RowJson')
+                    if row_payload.get('title') in [None, ''] and row_json_value:
                         try:
-                            legacy = json.loads(fields.get('RowJson'))
+                            legacy = json.loads(row_json_value)
                             for key, value in legacy.items():
                                 row_payload[key] = value
                         except Exception:
@@ -2424,8 +2701,8 @@ class StorageService:
                     rows.append(row_payload)
                 else:
                     rows.append({
-                        'RunId': fields.get('RunId', run_id),
-                        'ResultType': fields.get('ResultType', result_type)
+                        'RunId': _field('RunId', run_id),
+                        'ResultType': _field('ResultType', result_type)
                     })
 
             logger.info(
@@ -3471,6 +3748,7 @@ class StorageService:
                 return False
 
             normalized_audit_month = self._normalize_snapshot_audit_month(month_data.get('audit_month'))
+            audit_month_field_value = self._normalize_audit_month_value(month_data.get('audit_month'))
 
             # Build composite key for this specific month
             composite_key = (
@@ -3502,7 +3780,7 @@ class StorageService:
                 'PropertyId': int(month_data.get('property_id', 0)),
                 'LeaseIntervalId': int(month_data.get('lease_interval_id', 0)),
                 'ArCodeId': month_data.get('ar_code_id'),
-                'AuditMonth': normalized_audit_month,
+                'AuditMonth': audit_month_field_value,
                 'ExceptionType': month_data.get('exception_type', ''),
                 'Status': month_data.get('status', 'Open'),
                 'FixLabel': month_data.get('fix_label', ''),
@@ -3517,6 +3795,37 @@ class StorageService:
                 'UpdatedAt': month_data.get('updated_at', ''),
                 'UpdatedBy': month_data.get('updated_by', '')
             }
+
+            def _retry_without_unrecognized_field(response: requests.Response, payload: Dict[str, Any], op: str) -> tuple[requests.Response, Dict[str, Any]]:
+                """Retry one time when Graph rejects an unknown field (schema drift)."""
+                if response.status_code != 400:
+                    return response, payload
+
+                try:
+                    error_message = response.json().get('error', {}).get('message', '')
+                except Exception:
+                    error_message = response.text or ''
+
+                match = re.search(r"Field '([^']+)' is not recognized", error_message)
+                if not match:
+                    return response, payload
+
+                unknown_field = match.group(1)
+                if unknown_field not in payload:
+                    return response, payload
+
+                retry_payload = dict(payload)
+                retry_payload.pop(unknown_field, None)
+                logger.warning(
+                    f"[STORAGE] SharePoint rejected field '{unknown_field}' during ExceptionMonths {op}; retrying without it"
+                )
+
+                if op == 'update':
+                    retry_response = requests.patch(update_url, headers=headers, json=retry_payload, timeout=30)
+                else:
+                    retry_response = requests.post(items_url, headers=headers, json={'fields': retry_payload}, timeout=30)
+
+                return retry_response, retry_payload
             
             logger.info(f"[STORAGE] 💾 Saving fields: RunId={fields_payload['RunId']}, PropertyId={fields_payload['PropertyId']}, LeaseIntervalId={fields_payload['LeaseIntervalId']}, ArCodeId={fields_payload['ArCodeId']}, Status={fields_payload['Status']}, ResolvedBy={fields_payload['ResolvedBy']}, ResolvedByName={fields_payload['ResolvedByName']}")
 
@@ -3528,6 +3837,7 @@ class StorageService:
                 item_id = items[0]['id']
                 update_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items/{item_id}/fields"
                 update_response = requests.patch(update_url, headers=headers, json=fields_payload, timeout=30)
+                update_response, fields_payload = _retry_without_unrecognized_field(update_response, fields_payload, 'update')
                 
                 if update_response.status_code in [200, 204]:
                     logger.info(f"[STORAGE] ✅ Exception month updated: {month_data.get('audit_month')}")
@@ -3539,6 +3849,7 @@ class StorageService:
                 # Create new record
                 create_payload = {'fields': fields_payload}
                 create_response = requests.post(items_url, headers=headers, json=create_payload, timeout=30)
+                create_response, fields_payload = _retry_without_unrecognized_field(create_response, fields_payload, 'create')
                 
                 if create_response.status_code in [200, 201]:
                     logger.info(f"[STORAGE] ✅ Exception month created: {month_data.get('audit_month')}")
@@ -3621,7 +3932,19 @@ class StorageService:
             }
             logger.debug(f"[STORAGE] 📤 Uploading: {file_path} ({len(file_content)} chars)")
             response = requests.put(url, headers=headers, data=file_content.encode('utf-8'), timeout=30)
-            
+
+            # On 401, refresh the token once and retry
+            if response.status_code == 401:
+                logger.warning(f"[STORAGE] 🔄 Token expired uploading {file_path}; refreshing and retrying...")
+                new_token = _get_app_only_token()
+                if new_token:
+                    self.access_token = new_token
+                    headers['Authorization'] = f'Bearer {self.access_token}'
+                    response = requests.put(url, headers=headers, data=file_content.encode('utf-8'), timeout=30)
+                else:
+                    logger.error(f"[STORAGE] ❌ Token refresh failed for {file_path}")
+                    return False
+
             if response.status_code in [200, 201]:
                 logger.debug(f"[STORAGE] ✅ Uploaded: {file_path}")
                 return True
@@ -3649,7 +3972,19 @@ class StorageService:
             }
             logger.info(f"[STORAGE] 📤 Uploading binary file: {file_path} ({len(file_content)} bytes)")
             response = requests.put(url, headers=headers, data=file_content, timeout=30)
-            
+
+            # On 401, refresh the token once and retry
+            if response.status_code == 401:
+                logger.warning(f"[STORAGE] 🔄 Token expired uploading binary {file_path}; refreshing and retrying...")
+                new_token = _get_app_only_token()
+                if new_token:
+                    self.access_token = new_token
+                    headers['Authorization'] = f'Bearer {self.access_token}'
+                    response = requests.put(url, headers=headers, data=file_content, timeout=30)
+                else:
+                    logger.error(f"[STORAGE] ❌ Token refresh failed for {file_path}")
+                    return False
+
             if response.status_code in [200, 201]:
                 logger.info(f"[STORAGE] ✅ Successfully uploaded: {file_path}")
                 return True
@@ -3702,7 +4037,9 @@ class StorageService:
             # Save to SharePoint
             csv_content = df.to_csv(index=False)
             sp_path = f"{run_id}/{file_path}"
-            self._upload_file_to_sharepoint(csv_content, sp_path)
+            success = self._upload_file_to_sharepoint(csv_content, sp_path)
+            if not success:
+                raise RuntimeError(f"[STORAGE] SharePoint upload failed for {sp_path}")
         else:
             # Save to local filesystem
             local_path = self.base_dir / run_id / file_path
@@ -3730,7 +4067,9 @@ class StorageService:
             # Save to SharePoint
             json_content = json.dumps(data, indent=2, default=str)
             sp_path = f"{run_id}/{file_path}"
-            self._upload_file_to_sharepoint(json_content, sp_path)
+            success = self._upload_file_to_sharepoint(json_content, sp_path)
+            if not success:
+                raise RuntimeError(f"[STORAGE] SharePoint upload failed for {sp_path}")
         else:
             # Save to local filesystem
             local_path = self.base_dir / run_id / file_path
@@ -4103,77 +4442,74 @@ class StorageService:
         # Write static display snapshots (portfolio/property/lease) for fast UI loads.
         print(f"\n[STORAGE] Step 6/7: Writing display snapshots (portfolio/property/lease views)...")
         try:
-            if not write_display_snapshots:
-                print("[STORAGE] ↩️  Display snapshot write skipped for run scope")
+            can_write_sharepoint_lists = self._can_use_sharepoint_lists()
+            if write_snapshots_async and can_write_sharepoint_lists:
+                snapshot_dispatch_started = perf_counter()
+                print(f"[STORAGE] 🚀 Dispatching async display snapshot write...")
+                _run_scope_type = str((metadata.get('run_scope') or {}).get('type') or '')
+                snapshot_thread = threading.Thread(
+                    target=self._write_run_display_snapshots_async,
+                    args=(run_id, bucket_results),
+                    kwargs={
+                        'actual_detail': actual_detail,
+                        'expected_detail': expected_detail,
+                        'property_name_map': property_name_map,
+                        'snapshot_validation_async': snapshot_validation_async,
+                        'run_scope_type': _run_scope_type,
+                    },
+                    daemon=True,
+                    name=f"snapshot-write-{run_id}",
+                )
+                snapshot_thread.start()
+                stage_timers['snapshot_write_seconds'] = float(perf_counter() - snapshot_dispatch_started)
+                print(f"[STORAGE] ✓ Display snapshot write dispatched (async mode)")
             else:
-                can_write_sharepoint_lists = self._can_use_sharepoint_lists()
-                if write_snapshots_async and can_write_sharepoint_lists:
-                    snapshot_dispatch_started = perf_counter()
-                    print(f"[STORAGE] 🚀 Dispatching async display snapshot write...")
-                    _run_scope_type = str((metadata.get('run_scope') or {}).get('type') or '')
-                    snapshot_thread = threading.Thread(
-                        target=self._write_run_display_snapshots_async,
-                        args=(run_id, bucket_results),
-                        kwargs={
-                            'actual_detail': actual_detail,
-                            'expected_detail': expected_detail,
-                            'property_name_map': property_name_map,
-                            'snapshot_validation_async': snapshot_validation_async,
-                            'run_scope_type': _run_scope_type,
-                        },
-                        daemon=True,
-                        name=f"snapshot-write-{run_id}",
-                    )
-                    snapshot_thread.start()
-                    stage_timers['snapshot_write_seconds'] = float(perf_counter() - snapshot_dispatch_started)
-                    print(f"[STORAGE] ✓ Display snapshot write dispatched (async mode)")
-                else:
-                    snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
-                        run_id,
-                        bucket_results,
-                        actual_detail=actual_detail,
-                        expected_detail=expected_detail,
-                        property_name_map=property_name_map,
-                        stage_timers=stage_timers,
-                        run_scope_type=str((metadata.get('run_scope') or {}).get('type') or ''),
-                    )
-                    if snapshot_write_ok:
-                        print(f"[STORAGE] ✓ Display snapshots written successfully")
-                        if snapshot_validation_async and self._can_use_sharepoint_lists():
-                            validate_started = perf_counter()
-                            print(f"[STORAGE] 🚀 Dispatching async snapshot validation...")
-                            validate_thread = threading.Thread(
-                                target=self._validate_run_display_snapshots_async,
-                                args=(run_id, bucket_results),
-                                daemon=True,
-                                name=f"snapshot-validate-{run_id}",
+                snapshot_write_ok = self._write_run_display_snapshots_to_sharepoint_list(
+                    run_id,
+                    bucket_results,
+                    actual_detail=actual_detail,
+                    expected_detail=expected_detail,
+                    property_name_map=property_name_map,
+                    stage_timers=stage_timers,
+                    run_scope_type=str((metadata.get('run_scope') or {}).get('type') or ''),
+                )
+                if snapshot_write_ok:
+                    print(f"[STORAGE] ✓ Display snapshots written successfully")
+                    if snapshot_validation_async and self._can_use_sharepoint_lists():
+                        validate_started = perf_counter()
+                        print(f"[STORAGE] 🚀 Dispatching async snapshot validation...")
+                        validate_thread = threading.Thread(
+                            target=self._validate_run_display_snapshots_async,
+                            args=(run_id, bucket_results),
+                            daemon=True,
+                            name=f"snapshot-validate-{run_id}",
+                        )
+                        validate_thread.start()
+                        stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
+                        print(f"[STORAGE] ✓ Snapshot validation dispatched (async mode)")
+                    else:
+                        validate_started = perf_counter()
+                        print(f"[STORAGE] Validating snapshots synchronously...")
+                        validation = self.validate_run_display_snapshots(run_id, bucket_results)
+                        stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
+                        if validation.get('ok'):
+                            print(
+                                f"[STORAGE] ✓ Snapshot validation passed: "
+                                f"portfolio={validation['actual']['portfolio']}, "
+                                f"property={validation['actual']['property']}, "
+                                f"lease={validation['actual']['lease']}"
                             )
-                            validate_thread.start()
-                            stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
-                            print(f"[STORAGE] ✓ Snapshot validation dispatched (async mode)")
+                            logger.info(
+                                f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
+                                f"portfolio={validation['actual']['portfolio']}, "
+                                f"property={validation['actual']['property']}, "
+                                f"lease={validation['actual']['lease']}"
+                            )
                         else:
-                            validate_started = perf_counter()
-                            print(f"[STORAGE] Validating snapshots synchronously...")
-                            validation = self.validate_run_display_snapshots(run_id, bucket_results)
-                            stage_timers['snapshot_validate_seconds'] = float(perf_counter() - validate_started)
-                            if validation.get('ok'):
-                                print(
-                                    f"[STORAGE] ✓ Snapshot validation passed: "
-                                    f"portfolio={validation['actual']['portfolio']}, "
-                                    f"property={validation['actual']['property']}, "
-                                    f"lease={validation['actual']['lease']}"
-                                )
-                                logger.info(
-                                    f"[STORAGE] ✅ Snapshot validation passed for {run_id}: "
-                                    f"portfolio={validation['actual']['portfolio']}, "
-                                    f"property={validation['actual']['property']}, "
-                                    f"lease={validation['actual']['lease']}"
-                                )
-                            else:
-                                print(f"[STORAGE] ⚠️  Snapshot validation warnings: {validation.get('errors', [])}")
-                                logger.warning(
-                                    f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
-                                )
+                            print(f"[STORAGE] ⚠️  Snapshot validation warnings: {validation.get('errors', [])}")
+                            logger.warning(
+                                f"[STORAGE] Snapshot validation warnings for {run_id}: {validation.get('errors', [])}"
+                            )
         except Exception as e:
             print(f"[STORAGE] ⚠️  Display snapshots write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
@@ -4202,14 +4538,17 @@ class StorageService:
                 print(f"[STORAGE] ✓ Detail write dispatched (async mode)")
             else:
                 print(f"[STORAGE] Writing details synchronously...")
-                self._write_results_to_sharepoint_list(
+                detail_write_ok = self._write_results_to_sharepoint_list(
                     run_id,
                     bucket_results,
                     findings,
                     actual_detail=actual_detail,
                     expected_detail=expected_detail,
                 )
-                print(f"[STORAGE] ✓ Details written successfully")
+                if detail_write_ok:
+                    print(f"[STORAGE] ✓ Details written successfully")
+                else:
+                    raise RuntimeError("Detailed SharePoint result write returned False")
         except Exception as e:
             print(f"[STORAGE] ⚠️  Detail write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write detailed results to SharePoint list: {e}")
@@ -4329,6 +4668,7 @@ class StorageService:
     def list_runs(self, limit: int = 10) -> List[Dict[str, Any]]:
         """List recent audit runs."""
         runs = []
+        logger.info(f"[STORAGE] 🔍 list_runs() called with limit={limit}, use_sharepoint={self.use_sharepoint}, base_dir={self.base_dir}")
         
         if self.use_sharepoint:
             # List folders from SharePoint
@@ -4338,66 +4678,131 @@ class StorageService:
                     logger.warning("[STORAGE] Cannot list runs - SharePoint not accessible")
                     return runs
                 
-                # List children of root folder
-                url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root/children"
                 headers = {'Authorization': f'Bearer {self.access_token}'}
-                response = requests.get(url, headers=headers, timeout=10)
-                
-                if response.status_code != 200:
-                    logger.error(f"[STORAGE] Failed to list runs: {response.status_code}")
-                    return runs
-                
-                # Get folders that start with "run_"
-                folders = [item for item in response.json().get('value', []) 
-                          if item.get('folder') and item['name'].startswith('run_')]
+                # List children of root folder with pagination support.
+                # Some tenants contain hundreds/thousands of run folders.
+                next_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root/children"
+                limit = max(1, int(limit))
+                load_run_meta = os.getenv('RUN_LIST_LOAD_METADATA', 'false').lower() == 'true'
+                # UI paths (limit small, no metadata) do not need to enumerate the full drive.
+                # Scan just enough pages to assemble recent runs unless explicitly overridden.
+                scan_all_pages = os.getenv('RUN_LIST_SCAN_ALL_PAGES', 'false').lower() == 'true'
+                target_scan_count = max(limit * 3, 50)
+                params = {'$top': min(999, target_scan_count)}
+                folders = []
+
+                while next_url:
+                    if next_url.endswith('/children'):
+                        response = requests.get(next_url, headers=headers, params=params, timeout=10)
+                    else:
+                        response = requests.get(next_url, headers=headers, timeout=10)
+
+                    if response.status_code != 200:
+                        logger.error(f"[STORAGE] Failed to list runs: {response.status_code}")
+                        break
+
+                    payload = response.json()
+                    page_folders = [
+                        item for item in payload.get('value', [])
+                        if item.get('folder') and item.get('name', '').startswith('run_')
+                    ]
+                    folders.extend(page_folders)
+
+                    if (not scan_all_pages) and (not load_run_meta) and len(folders) >= target_scan_count:
+                        logger.debug(
+                            "[STORAGE] Stopping run folder scan early at %s items (target=%s)",
+                            len(folders),
+                            target_scan_count,
+                        )
+                        break
+
+                    next_url = payload.get('@odata.nextLink')
                 
                 # Sort by name (which includes timestamp) in reverse
                 folders.sort(key=lambda x: x['name'], reverse=True)
                 
-                # Load metadata for each run
-                for folder in folders[:limit]:
+                # Build lightweight run rows from folder metadata for fast picker loads.
+                # Optional env override allows deeper metadata loading when needed.
+                for folder in folders:
                     run_id = folder['name']
-                    try:
-                        meta = self._load_json(run_id, "run_meta.json")
-                        if meta:
-                            meta["run_id"] = run_id
-                            runs.append(meta)
-                        else:
-                            runs.append({
-                                "run_id": run_id,
-                                "timestamp": folder.get("createdDateTime", "Unknown"),
-                                "audit_period": {},
-                                "run_type": "Manual"
-                            })
-                    except Exception as e:
-                        logger.warning(f"[STORAGE] Failed to load metadata for {run_id}; using fallback metadata: {e}")
-                        runs.append({
-                            "run_id": run_id,
-                            "timestamp": folder.get("createdDateTime", "Unknown"),
-                            "audit_period": {},
-                            "run_type": "Manual"
-                        })
+                    run_row = {
+                        "run_id": run_id,
+                        "timestamp": folder.get("createdDateTime", "Unknown"),
+                        "audit_period": {},
+                        "run_type": "Manual"
+                    }
+
+                    if load_run_meta:
+                        try:
+                            meta = self._load_json(run_id, "run_meta.json")
+                            if meta:
+                                run_row.update(meta)
+                                run_row["run_id"] = run_id
+                        except Exception as e:
+                            logger.debug(f"[STORAGE] Failed to load run_meta.json for {run_id}: {e}")
+
+                    runs.append(run_row)
+                    if len(runs) >= limit:
+                        break
                 
             except Exception as e:
                 logger.error(f"[STORAGE] Error listing SharePoint runs: {e}", exc_info=True)
         else:
             # List from local filesystem
             if not self.base_dir.exists():
+                logger.warning(f"[STORAGE] ⚠️  Base directory does not exist: {self.base_dir}")
                 return runs
             
-            for run_dir in sorted(self.base_dir.iterdir(), reverse=True):
-                if run_dir.is_dir():
+            logger.info(f"[STORAGE] 📁 Scanning local runs directory: {self.base_dir}")
+            try:
+                for run_dir in sorted(self.base_dir.iterdir(), reverse=True):
+                    if run_dir.is_dir():
+                        meta_path = run_dir / "run_meta.json"
+                        if meta_path.exists():
+                            with open(meta_path, "r") as f:
+                                meta = json.load(f)
+                                meta["run_id"] = run_dir.name
+                                runs.append(meta)
+                                logger.debug(f"[STORAGE] Found run: {run_dir.name}")
+                        else:
+                            logger.debug(f"[STORAGE] Found folder but no metadata: {run_dir.name}")
+                        
+                        if len(runs) >= limit:
+                            break
+            except Exception as e:
+                logger.error(f"[STORAGE] ❌ Error scanning runs directory: {e}", exc_info=True)
+
+        # If SharePoint storage is enabled, also merge in local runs.
+        # This covers historical runs created before migration/flag changes.
+        if self.use_sharepoint and self.base_dir.exists():
+            try:
+                for run_dir in sorted(self.base_dir.iterdir(), reverse=True):
+                    if not run_dir.is_dir():
+                        continue
                     meta_path = run_dir / "run_meta.json"
-                    if meta_path.exists():
-                        with open(meta_path, "r") as f:
-                            meta = json.load(f)
-                            meta["run_id"] = run_dir.name
-                            runs.append(meta)
-                    
-                    if len(runs) >= limit:
-                        break
-        
-        return runs
+                    if not meta_path.exists():
+                        continue
+                    with open(meta_path, "r") as f:
+                        meta = json.load(f)
+                        meta["run_id"] = run_dir.name
+                        runs.append(meta)
+            except Exception as e:
+                logger.warning(f"[STORAGE] Failed to merge local runs into SharePoint run list: {e}")
+
+        # Deduplicate and sort newest first across all sources.
+        deduped = {}
+        for run in runs:
+            run_id = run.get('run_id')
+            if not run_id:
+                continue
+            if run_id not in deduped:
+                deduped[run_id] = run
+
+        merged_runs = list(deduped.values())
+        merged_runs.sort(key=lambda r: str(r.get('run_id', '')), reverse=True)
+        final_runs = merged_runs[:max(1, int(limit))]
+        logger.info(f"[STORAGE] ✅ list_runs() returning {len(final_runs)} runs (found {len(runs)} total, deduped to {len(deduped)})")
+        return final_runs
     
     def get_run_exists(self, run_id: str) -> bool:
         """Check if run exists."""

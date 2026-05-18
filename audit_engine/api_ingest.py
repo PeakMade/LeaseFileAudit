@@ -813,6 +813,11 @@ def _fetch_all_lease_details_pages(
 ) -> dict[str, Any]:
     """Call getLeaseDetails repeatedly until all pages are collected, then return a
     merged payload whose lease list contains every lease node across all pages."""
+
+    def _is_page_overflow_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "page_no" in msg and "value must be between" in msg
+
     parsed = urlparse(endpoint_url)
     qs = parse_qs(parsed.query, keep_blank_values=True)
     per_page = int((qs.get("per_page") or ["100"])[0])
@@ -825,15 +830,24 @@ def _fetch_all_lease_details_pages(
         qs["page_no"] = [str(page_no)]
         page_url = urlunparse(parsed._replace(query=urlencode({k: v[0] for k, v in qs.items()})))
 
-        payload = _post_method(
-            endpoint_url=page_url,
-            api_key=api_key,
-            api_key_header=api_key_header,
-            method_name=method_name,
-            version=version,
-            params=params,
-            timeout_seconds=timeout_seconds,
-        )
+        try:
+            payload = _post_method(
+                endpoint_url=page_url,
+                api_key=api_key,
+                api_key_header=api_key_header,
+                method_name=method_name,
+                version=version,
+                params=params,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            if _is_page_overflow_error(exc):
+                print(
+                    "[LEASE API PAGINATION] "
+                    f"Reached Entrata page boundary at page={page_no}; stopping pagination."
+                )
+                break
+            raise
 
         if first_payload is None:
             first_payload = payload

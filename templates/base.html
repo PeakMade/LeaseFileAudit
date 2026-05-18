@@ -682,12 +682,35 @@
             const overlay = document.getElementById('pageLoadingOverlay');
             const statusText = document.getElementById('overlayStatusText');
             if (!overlay) return;
+            let phaseTimer = null;
 
             function setStatus(msg) {
                 if (statusText) statusText.textContent = msg;
             }
 
+            function stopPhaseMessages() {
+                if (phaseTimer) {
+                    clearInterval(phaseTimer);
+                    phaseTimer = null;
+                }
+            }
+
+            function startPhaseMessages(steps, intervalMs) {
+                stopPhaseMessages();
+                if (!Array.isArray(steps) || steps.length === 0) {
+                    return;
+                }
+
+                let index = 0;
+                setStatus(steps[index]);
+                phaseTimer = setInterval(() => {
+                    index = Math.min(index + 1, steps.length - 1);
+                    setStatus(steps[index]);
+                }, intervalMs || 4000);
+            }
+
             function showOverlay(msg) {
+                stopPhaseMessages();
                 setStatus(msg || 'Loading…');
                 overlay.classList.add('show');
                 overlay.setAttribute('aria-hidden', 'false');
@@ -706,14 +729,74 @@
 
             function messageForForm(form) {
                 const action = (form && form.action) || '';
-                if (/api_property/.test(action) || /upload_api_property/.test(action)) return 'Calling Entrata API — fetching all leases…';
-                if (/api_lease/.test(action)    || /upload_api_lease/.test(action))    return 'Calling Entrata API — fetching lease data…';
-                if (/upload/.test(action))      return 'Parsing Excel file & saving to SharePoint…';
+                if (/upload-api-property/.test(action)) return 'Calling Entrata API — fetching full property ledger…';
+                if (/upload-api-lease/.test(action))    return 'Calling Entrata API — fetching single lease data…';
+                if (/\/upload$/.test(action) || /\/upload\?/.test(action)) return 'Parsing Excel upload and writing results to SharePoint…';
                 return 'Submitting…';
+            }
+
+            function phasesForForm(form) {
+                const action = (form && form.action) || '';
+                if (/upload-api-property/.test(action)) {
+                    return [
+                        'Calling Entrata API — fetching all leases for this property…',
+                        'Reconciling scheduled charges and AR transactions…',
+                        'Saving audit run, snapshots, and detail rows to SharePoint…'
+                    ];
+                }
+                if (/upload-api-lease/.test(action)) {
+                    return [
+                        'Calling Entrata API — fetching lease transactions and schedules…',
+                        'Reconciling lease-level expected vs actual charges…',
+                        'Saving lease audit results to SharePoint…'
+                    ];
+                }
+                if (/\/upload$/.test(action) || /\/upload\?/.test(action)) {
+                    return [
+                        'Reading and validating Excel workbook…',
+                        'Reconciling expected and actual charges…',
+                        'Saving audit outputs and snapshots to SharePoint…'
+                    ];
+                }
+                return null;
+            }
+
+            function messageForRequest(url, options) {
+                const requestUrl = String(url || '').toLowerCase();
+                const method = String((options && options.method) || 'GET').toUpperCase();
+
+                if (requestUrl.includes('/api/property-picklist')) {
+                    return 'Loading property picklist from Entrata API…';
+                }
+                if (requestUrl.includes('/api/runs')) {
+                    return 'Loading available audit runs from SharePoint…';
+                }
+                if (requestUrl.includes('/api/lease-terms')) {
+                    return 'Refreshing lease documents from Entrata API…';
+                }
+                if (requestUrl.includes('/api/exception-months')) {
+                    if (method === 'POST') return 'Saving exception month status to SharePoint…';
+                    return 'Loading exception month history from SharePoint…';
+                }
+                if (requestUrl.includes('/api/exception-states')) {
+                    return 'Saving exception status updates to SharePoint…';
+                }
+                if (requestUrl.includes('/bulk-audit/status')) {
+                    return 'Refreshing bulk audit progress from SharePoint-backed status…';
+                }
+                if (requestUrl.includes('/bulk-audit/start')) {
+                    return 'Starting bulk audit run from Entrata API inputs…';
+                }
+                return null;
             }
 
             // Expose globally for onclick handlers (can pass optional message)
             window.showPageLoadingOverlay = function(msg) { showOverlay(msg); };
+            window.updatePageLoadingOverlay = function(msg) {
+                if (overlay.classList.contains('show')) {
+                    setStatus(msg || 'Loading…');
+                }
+            };
 
             document.addEventListener('click', function (event) {
                 const link = event.target.closest('a[href]');
@@ -728,10 +811,29 @@
             });
 
             document.addEventListener('submit', function (event) {
-                showOverlay(messageForForm(event.target));
+                const form = event.target;
+                showOverlay(messageForForm(form));
+                const phaseMessages = phasesForForm(form);
+                if (phaseMessages) {
+                    startPhaseMessages(phaseMessages, 4500);
+                }
             });
 
+            const previousFetch = window.fetch;
+            window.fetch = function(input, init) {
+                const url = (typeof input === 'string') ? input : (input && input.url) || '';
+                const requestMessage = messageForRequest(url, init);
+                if (requestMessage && overlay.classList.contains('show')) {
+                    setStatus(requestMessage);
+                }
+
+                return previousFetch.call(this, input, init).then(function(response) {
+                    return response;
+                });
+            };
+
             window.addEventListener('pageshow', function () {
+                stopPhaseMessages();
                 overlay.classList.remove('show');
                 overlay.setAttribute('aria-hidden', 'true');
             });

@@ -2,7 +2,7 @@
 Wipe all items from all active SharePoint lists used by LeaseFileAudit.
 
 Lists cleared:
-  - AuditRuns
+    - AuditRuns2
   - RunDisplaySnapshots
   - LeaseTermSet
   - LeaseTerms
@@ -19,10 +19,8 @@ You will be prompted to confirm before anything is deleted.
 import sys
 import os
 import time
-import threading
 import requests
 from requests.adapters import HTTPAdapter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Bootstrap app config so we can reuse the same auth/config as the app
 sys.path.insert(0, os.path.dirname(__file__))
@@ -36,18 +34,19 @@ from activity_logging.sharepoint import _get_app_only_token
 
 # ── List names to wipe ──────────────────────────────────────────────────────
 LISTS_TO_CLEAN = [
-    "AuditRuns",
+    "AuditRuns2",
     "RunDisplaySnapshots",
     "LeaseTermSet",
     "LeaseTerms",
     "LeaseTermEvidence",
     "ExceptionMonths",
     "Audit Run Metrics",
+    # "AuditRuns",  # Excluded per user request
 ]
 
 # Each entry may have a fallback name (same as service.py resolver)
 LIST_FALLBACKS = {
-    "AuditRuns": ["AuditRuns", "Audit Run Results"],
+    "AuditRuns2": ["AuditRuns2", "AuditRuns 2"],
     "RunDisplaySnapshots": ["RunDisplaySnapshots", "Run Display Snapshots"],
     "LeaseTermSet": ["LeaseTermSet", "Lease Term Set"],
     "LeaseTerms": ["LeaseTerms", "Lease Terms"],
@@ -110,69 +109,81 @@ def resolve_list_id(token: str, site_id: str, names: list[str]) -> tuple[str | N
     return None, None
 
 
-def fetch_all_item_ids(token: str, site_id: str, list_id: str) -> list[str]:
-    sess = get_session(token)
-    url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
-    params = {"$select": "id", "$top": 200}
-    ids = []
-    page = 0
-    while url:
-        page += 1
-        # Show a live timer so the user can see we're still working (SharePoint is slow)
-        stop = threading.Event()
-        t_start = time.time()
-        def _tick(stop=stop, t_start=t_start, page=page):
-            while not stop.wait(2):
-                elapsed = int(time.time() - t_start)
-                print(f"\r    page {page}: waiting for SharePoint... ({elapsed}s)  ", end="", flush=True)
-        t = threading.Thread(target=_tick, daemon=True)
-        t.start()
-        try:
-            r = sess.get(url, params=params, timeout=120)
-        finally:
-            stop.set()
-            t.join(timeout=1)
-
-        elapsed = int(time.time() - t_start)
-        if r.status_code != 200:
-            print(f"\r    WARNING: {r.status_code}: {r.text[:200]}")
-            break
-        data = r.json()
-        batch = data.get("value", [])
-        ids.extend(item["id"] for item in batch)
-        print(f"\r    page {page}: {len(batch)} item(s) in {elapsed}s{' ' * 20}")
-        url = data.get("@odata.nextLink")
-        params = {}
-    return ids
+BATCH_SIZE = 20  # Graph $batch allows up to 20 requests per call
+MAX_RETRIES = 8
 
 
-def delete_item(token: str, site_id: str, list_id: str, item_id: str) -> bool:
-    # Each thread needs its own session (Session is not thread-safe)
-    url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items/{item_id}"
-    r = requests.delete(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
-    return r.status_code in (200, 204)
+def _request_with_retry(fn, *args, **kwargs):
+    """Call fn(*args, **kwargs) and retry on 429/503 with Retry-After backoff."""
+    for attempt in range(MAX_RETRIES):
+        r = fn(*args, **kwargs)
+        if r.status_code not in (429, 503):
+            return r
+        wait = int(r.headers.get("Retry-After", 30))
+        print(f"\n  Throttled (429) — waiting {wait}s before retry {attempt+1}/{MAX_RETRIES}...", flush=True)
+        time.sleep(wait)
+    return r  # return last response after exhausting retries
+
+
+def _batch_delete(sess: requests.Session, token: str, site_id: str, list_id: str, item_ids: list[str]) -> tuple[int, int]:
+    """Send up to BATCH_SIZE DELETEs in a single Graph $batch call."""
+    requests_payload = [
+        {"id": str(i), "method": "DELETE",
+         "url": f"/sites/{site_id}/lists/{list_id}/items/{iid}"}
+        for i, iid in enumerate(item_ids)
+    ]
+    r = _request_with_retry(
+        sess.post,
+        "https://graph.microsoft.com/v1.0/$batch",
+        json={"requests": requests_payload},
+        headers={"Content-Type": "application/json"},
+        timeout=60,
+    )
+    if r.status_code not in (200, 201):
+        print(f"\n  Batch error {r.status_code}: {r.text[:200]}")
+        return 0, len(item_ids)
+    responses = r.json().get("responses", [])
+    deleted = sum(1 for resp in responses if resp.get("status") in (200, 204))
+    failed = len(responses) - deleted
+    return deleted, failed
 
 
 def wipe_list(token: str, site_id: str, list_id: str, list_name: str) -> tuple[int, int]:
-    print(f"  Fetching items (this can take 30-60s, please wait)...")
-    item_ids = fetch_all_item_ids(token, site_id, list_id)
-    total = len(item_ids)
-    print(f"  {total} item(s) found.")
-    if not item_ids:
-        return 0, 0
+    """Stream pages of item IDs and batch-delete as we go (no full pre-fetch)."""
+    sess = get_session(token)
+    url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+    params = {"$select": "id", "$top": 200}
+    total_deleted = 0
+    total_failed = 0
+    page = 0
+    t_overall = time.time()
 
-    deleted = 0
-    failed = 0
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(delete_item, token, site_id, list_id, iid): iid for iid in item_ids}
-        for i, fut in enumerate(as_completed(futures), 1):
-            if fut.result():
-                deleted += 1
-            else:
-                failed += 1
-            print(f"\r  Deleting... {i}/{len(item_ids)}", end="", flush=True)
-    print()
-    return deleted, failed
+    while url:
+        page += 1
+        r = _request_with_retry(sess.get, url, params=params, timeout=120)
+        if r.status_code != 200:
+            print(f"  WARNING page {page}: {r.status_code} {r.text[:200]}")
+            break
+        data = r.json()
+        ids = [item["id"] for item in data.get("value", [])]
+        if not ids:
+            break
+
+        # Batch-delete this page in chunks of BATCH_SIZE
+        for i in range(0, len(ids), BATCH_SIZE):
+            chunk = ids[i:i + BATCH_SIZE]
+            d, f = _batch_delete(sess, token, site_id, list_id, chunk)
+            total_deleted += d
+            total_failed += f
+            elapsed = time.time() - t_overall
+            rate = total_deleted / elapsed if elapsed > 0 else 0
+            print(f"\r  page {page} | deleted {total_deleted} | {rate:.0f}/s    ", end="", flush=True)
+
+        url = data.get("@odata.nextLink")
+        params = {}
+
+    print(f"\r  Done: {total_deleted} deleted, {total_failed} failed.{' ' * 30}")
+    return total_deleted, total_failed
 
 
 def main():
