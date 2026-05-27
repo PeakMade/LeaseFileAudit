@@ -54,7 +54,16 @@ class StorageService:
         self.sharepoint_site_url = sharepoint_site_url.rstrip('/') if sharepoint_site_url else None
         self.library_name = library_name
         self.access_token = access_token
-        self.audit_results_list_name = (audit_results_list_name or os.getenv('SHAREPOINT_AUDIT_RESULTS_LIST_NAME', 'AuditRuns2')).strip()
+        requested_results_list_name = (
+            audit_results_list_name
+            or os.getenv('SHAREPOINT_AUDIT_RESULTS_LIST_NAME', 'AuditRuns2')
+        ).strip()
+        if requested_results_list_name.lower() != 'auditruns2':
+            logger.warning(
+                f"[STORAGE] Ignoring legacy audit results list '{requested_results_list_name}'; "
+                "forcing AuditRuns2"
+            )
+        self.audit_results_list_name = 'AuditRuns2'
         self._site_id = None
         self._drive_id = None
         self._list_ids = {}
@@ -282,7 +291,7 @@ class StorageService:
     #     return f"{run_id}:{result_type}:row:{row_index}"
 
     def _get_audit_results_list_id(self) -> Optional[str]:
-        """Resolve audit results list id via env override first, then configured display name(s)."""
+        """Resolve audit results list id via env override first, then AuditRuns2 name fallback."""
         configured = self._get_configured_sharepoint_list_id([
             'SHAREPOINT_AUDIT_RESULTS_LIST_ID',
             'SHAREPOINT_AUDIT_RESULTS_LIST_URL',
@@ -290,25 +299,13 @@ class StorageService:
         if configured:
             return configured
 
-        configured_targets = [
-            name.strip()
-            for name in str(self.audit_results_list_name or '').replace(';', ',').split(',')
-            if name.strip()
-        ]
-        # If both targets are configured, force writes/reads to the new list only.
-        if any(name.lower() == 'auditruns2' for name in configured_targets):
-            configured_targets = [name for name in configured_targets if name.lower() != 'auditruns']
-        if not configured_targets:
-            logger.warning("[STORAGE] SHAREPOINT_AUDIT_RESULTS_LIST_NAME is empty; cannot resolve audit results list")
-            return None
-
-        for configured_name in configured_targets:
+        for configured_name in ['AuditRuns2', 'AuditRuns 2']:
             list_id = self._get_sharepoint_list_id(configured_name)
             if list_id:
                 return list_id
 
         logger.warning(
-            f"[STORAGE] Configured audit results list(s) '{configured_targets}' not found on SharePoint"
+            "[STORAGE] AuditRuns2 list not found on SharePoint"
         )
         return None
 
@@ -523,11 +520,14 @@ class StorageService:
         actual_column = 'actual_total' if 'actual_total' in dataframe.columns else 'ACTUAL_TOTAL'
 
         status_series = dataframe[status_column].map(self._normalize_status_value) if status_column in dataframe.columns else pd.Series([], dtype=str)
+        # Exclude MATCHED and SCHEDULED_ONLY — same logic as calculate_kpis in metrics.py
+        non_exception_statuses = {'matched', 'scheduled_only'}
+        non_exception_mask = status_series.isin(non_exception_statuses)
         matched_mask = status_series == 'matched'
 
         total_buckets = int(len(dataframe))
         matched_buckets = int(matched_mask.sum())
-        exception_rows = dataframe[~matched_mask].copy() if status_column in dataframe.columns else dataframe.copy()
+        exception_rows = dataframe[~non_exception_mask].copy() if status_column in dataframe.columns else dataframe.copy()
 
         if expected_column in exception_rows.columns and actual_column in exception_rows.columns and len(exception_rows) > 0:
             expected_values = pd.to_numeric(exception_rows[expected_column], errors='coerce').fillna(0)
@@ -1442,7 +1442,7 @@ class StorageService:
         actual_detail: Optional[pd.DataFrame] = None,
         expected_detail: Optional[pd.DataFrame] = None,
     ) -> None:
-        """Background wrapper for detailed AuditRuns list persistence."""
+        """Background wrapper for detailed AuditRuns2 list persistence."""
         try:
             # Refresh token — background thread may outlive original request token.
             try:
@@ -1451,7 +1451,7 @@ class StorageService:
                     self.access_token = new_token
             except Exception as _token_err:
                 logger.warning(f"[STORAGE] Token refresh failed in async results write: {_token_err}")
-            logger.info(f"[STORAGE] 🚀 Background AuditRuns write started for {run_id}")
+            logger.info(f"[STORAGE] 🚀 Background AuditRuns2 write started for {run_id}")
             self._write_results_to_sharepoint_list(
                 run_id,
                 bucket_results,
@@ -1459,9 +1459,9 @@ class StorageService:
                 actual_detail=actual_detail,
                 expected_detail=expected_detail,
             )
-            logger.info(f"[STORAGE] ✅ Background AuditRuns write finished for {run_id}")
+            logger.info(f"[STORAGE] ✅ Background AuditRuns2 write finished for {run_id}")
         except Exception as e:
-            logger.error(f"[STORAGE] Background AuditRuns write failed for {run_id}: {e}", exc_info=True)
+            logger.error(f"[STORAGE] Background AuditRuns2 write failed for {run_id}: {e}", exc_info=True)
     
     def _write_metrics_to_sharepoint_list_async(
         self,
@@ -2121,7 +2121,7 @@ class StorageService:
         expected_detail: Optional[pd.DataFrame] = None,
         target_list_name: Optional[str] = None,
     ) -> bool:
-        """Persist bucket results and findings to SharePoint list 'AuditRuns'."""
+        """Persist bucket results and findings to SharePoint list 'AuditRuns2'."""
         logger.info(f"[STORAGE] _write_results_to_sharepoint_list called: run_id={run_id}, target_list_name={target_list_name}, self.audit_results_list_name={self.audit_results_list_name}")
 
         # Detailed result writes can run long enough that a request-scoped token is
@@ -2136,55 +2136,23 @@ class StorageService:
             logger.warning(f"[STORAGE] Failed to refresh token before result write for {run_id}: {token_error}")
         
         if not self._can_use_sharepoint_lists():
-            logger.debug("[STORAGE] SharePoint lists unavailable; skipping AuditRuns write")
+            logger.debug("[STORAGE] SharePoint lists unavailable; skipping AuditRuns2 write")
             return False
 
-        # Support writing to multiple AuditRuns-style lists while reusing the same write path.
-        if target_list_name is None:
-            configured_targets = [
-                name.strip()
-                for name in str(self.audit_results_list_name or '').replace(';', ',').split(',')
-                if name.strip()
-            ]
-            # If AuditRuns2 is configured, do not also write to legacy AuditRuns.
-            if any(name.lower() == 'auditruns2' for name in configured_targets):
-                configured_targets = [name for name in configured_targets if name.lower() != 'auditruns']
-            if not configured_targets:
-                configured_targets = ['AuditRuns2']
-
-            logger.info(f"[STORAGE] Audit results targets for run {run_id}: {configured_targets}")
-
-            if len(configured_targets) > 1:
-                logger.info(f"[STORAGE] Multi-list audit results write detected: {len(configured_targets)} targets")
-                any_success = False
-                for configured_target in configured_targets:
-                    logger.info(f"[STORAGE] Writing audit results to: {configured_target}")
-                    success = self._write_results_to_sharepoint_list(
-                        run_id,
-                        bucket_results,
-                        findings,
-                        actual_detail=actual_detail,
-                        expected_detail=expected_detail,
-                        target_list_name=configured_target,
-                    )
-                    logger.info(f"[STORAGE] Result for {configured_target}: {'SUCCESS' if success else 'FAILED'}")
-                    if success:
-                        any_success = True
-                return any_success
-
-            target_list_name = configured_targets[0]
+        # Hard-lock results persistence to AuditRuns2 only.
+        if target_list_name and str(target_list_name).strip().lower() != 'auditruns2':
+            logger.warning(
+                f"[STORAGE] Ignoring target_list_name='{target_list_name}' and forcing AuditRuns2"
+            )
+        target_list_name = 'AuditRuns2'
+        logger.info(f"[STORAGE] Audit results target for run {run_id}: {target_list_name}")
 
         try:
             site_id = self._get_site_id()
             if not site_id:
                 return False
 
-            # Force AuditRuns2 writes through configured ID/URL pin when provided.
-            normalized_target = (target_list_name or '').strip().lower()
-            if normalized_target == 'auditruns2':
-                list_id = self._get_audit_results_list_id() or self._get_sharepoint_list_id(target_list_name)
-            else:
-                list_id = self._get_sharepoint_list_id(target_list_name)
+            list_id = self._get_audit_results_list_id() or self._get_sharepoint_list_id(target_list_name)
 
             if not list_id:
                 logger.warning(
@@ -2203,7 +2171,7 @@ class StorageService:
 
             property_name_field = None
             resident_name_field = None
-            target_list_name = (target_list_name or 'AuditRuns').strip() or 'AuditRuns'
+            target_list_name = 'AuditRuns2'
             audit_field_name_map: Dict[str, str] = {}
             uses_generic_field_names: bool = False
             schema_loaded_ok = False
@@ -2521,7 +2489,7 @@ class StorageService:
         property_id: Optional[int] = None,
         lease_interval_id: Optional[int] = None,
     ) -> Optional[pd.DataFrame]:
-        """Load result rows for a run/type from SharePoint list 'AuditRuns'."""
+        """Load result rows for a run/type from SharePoint list 'AuditRuns2'."""
         if not self._can_use_sharepoint_lists():
             return None
 
@@ -3672,7 +3640,8 @@ class StorageService:
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
             headers = {
                 'Authorization': f'Bearer {self.access_token}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
             }
 
             recovered = 0.0
@@ -4414,7 +4383,7 @@ class StorageService:
         files_saved.append("run_meta.json")
         
         # Write metrics to SharePoint list (don't fail save if this fails)
-        print(f"\n[STORAGE] Step 5/7: Writing metrics to SharePoint List (AuditRuns)...")
+        print(f"\n[STORAGE] Step 5/7: Writing metrics to SharePoint List (Audit Run Metrics)...")
         try:
             can_write_sharepoint_lists = self._can_use_sharepoint_lists()
             if write_metrics_async and can_write_sharepoint_lists:
@@ -4516,7 +4485,7 @@ class StorageService:
 
         # Write detailed results to SharePoint list (list-backed results DB).
         # Keep CSVs as fallback for compatibility. Run asynchronously by default to reduce upload latency.
-        print(f"\n[STORAGE] Step 7/7: Writing detailed results to SharePoint List (AuditRuns Detail)...")
+        print(f"\n[STORAGE] Step 7/7: Writing detailed results to SharePoint List (AuditRuns2)...")
         try:
             can_write_sharepoint_lists = self._can_use_sharepoint_lists()
             if write_details_async and can_write_sharepoint_lists:
@@ -4528,11 +4497,11 @@ class StorageService:
                     target=self._write_results_to_sharepoint_list_async,
                     args=(run_id, bucket_results, findings, actual_detail, expected_detail),
                     daemon=True,
-                    name=f"auditruns-write-{run_id}",
+                    name=f"auditruns2-write-{run_id}",
                 )
                 writer_thread.start()
                 logger.info(
-                    f"[STORAGE] 🚀 Dispatched background AuditRuns write for {run_id}: "
+                    f"[STORAGE] 🚀 Dispatched background AuditRuns2 write for {run_id}: "
                     f"bucket_rows={len(bucket_results)}, finding_rows={len(findings)}"
                 )
                 print(f"[STORAGE] ✓ Detail write dispatched (async mode)")
@@ -4772,22 +4741,24 @@ class StorageService:
             except Exception as e:
                 logger.error(f"[STORAGE] ❌ Error scanning runs directory: {e}", exc_info=True)
 
-        # If SharePoint storage is enabled, also merge in local runs.
-        # This covers historical runs created before migration/flag changes.
-        if self.use_sharepoint and self.base_dir.exists():
-            try:
-                for run_dir in sorted(self.base_dir.iterdir(), reverse=True):
-                    if not run_dir.is_dir():
-                        continue
-                    meta_path = run_dir / "run_meta.json"
-                    if not meta_path.exists():
-                        continue
-                    with open(meta_path, "r") as f:
-                        meta = json.load(f)
-                        meta["run_id"] = run_dir.name
-                        runs.append(meta)
-            except Exception as e:
-                logger.warning(f"[STORAGE] Failed to merge local runs into SharePoint run list: {e}")
+        # If SharePoint storage is enabled, local-run merge is opt-in.
+        # On network-backed workspaces, filesystem probes here can block requests.
+        merge_local_with_sharepoint = os.getenv('LIST_RUNS_MERGE_LOCAL_WITH_SHAREPOINT', 'false').lower() == 'true'
+        if self.use_sharepoint and merge_local_with_sharepoint:
+            if self.base_dir.exists():
+                try:
+                    for run_dir in sorted(self.base_dir.iterdir(), reverse=True):
+                        if not run_dir.is_dir():
+                            continue
+                        meta_path = run_dir / "run_meta.json"
+                        if not meta_path.exists():
+                            continue
+                        with open(meta_path, "r") as f:
+                            meta = json.load(f)
+                            meta["run_id"] = run_dir.name
+                            runs.append(meta)
+                except Exception as e:
+                    logger.warning(f"[STORAGE] Failed to merge local runs into SharePoint run list: {e}")
 
         # Deduplicate and sort newest first across all sources.
         deduped = {}

@@ -32,6 +32,10 @@ except ImportError:
 import config as _cfg
 from activity_logging.sharepoint import _get_app_only_token
 
+
+def _banner(text: str):
+    print(f"\n{text}")
+
 # ── List names to wipe ──────────────────────────────────────────────────────
 LISTS_TO_CLEAN = [
     "AuditRuns2",
@@ -60,7 +64,8 @@ def get_token() -> str:
     # _get_app_only_token reads directly from env vars (SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, etc.)
     token = _get_app_only_token()
     if not token:
-        print("ERROR: Could not acquire access token. Check SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, MICROSOFT_PROVIDER_AUTHENTICATION_SECRET in .env")
+        print("We couldn't connect to SharePoint with the current app credentials.")
+        print("Please verify SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, and MICROSOFT_PROVIDER_AUTHENTICATION_SECRET in your .env file.")
         sys.exit(1)
     return token
 
@@ -120,7 +125,10 @@ def _request_with_retry(fn, *args, **kwargs):
         if r.status_code not in (429, 503):
             return r
         wait = int(r.headers.get("Retry-After", 30))
-        print(f"\n  Throttled (429) — waiting {wait}s before retry {attempt+1}/{MAX_RETRIES}...", flush=True)
+        print(
+            f"\n  SharePoint asked us to slow down. Waiting {wait}s before trying again ({attempt + 1}/{MAX_RETRIES}).",
+            flush=True,
+        )
         time.sleep(wait)
     return r  # return last response after exhausting retries
 
@@ -140,7 +148,7 @@ def _batch_delete(sess: requests.Session, token: str, site_id: str, list_id: str
         timeout=60,
     )
     if r.status_code not in (200, 201):
-        print(f"\n  Batch error {r.status_code}: {r.text[:200]}")
+        print(f"\n  We hit an issue removing a batch of items (status {r.status_code}).")
         return 0, len(item_ids)
     responses = r.json().get("responses", [])
     deleted = sum(1 for resp in responses if resp.get("status") in (200, 204))
@@ -162,7 +170,7 @@ def wipe_list(token: str, site_id: str, list_id: str, list_name: str) -> tuple[i
         page += 1
         r = _request_with_retry(sess.get, url, params=params, timeout=120)
         if r.status_code != 200:
-            print(f"  WARNING page {page}: {r.status_code} {r.text[:200]}")
+            print(f"  We couldn't read the next page for this list (status {r.status_code}).")
             break
         data = r.json()
         ids = [item["id"] for item in data.get("value", [])]
@@ -177,12 +185,16 @@ def wipe_list(token: str, site_id: str, list_id: str, list_name: str) -> tuple[i
             total_failed += f
             elapsed = time.time() - t_overall
             rate = total_deleted / elapsed if elapsed > 0 else 0
-            print(f"\r  page {page} | deleted {total_deleted} | {rate:.0f}/s    ", end="", flush=True)
+            print(
+                f"\r  Working on {list_name}... page {page} | removed {total_deleted} item(s) | {rate:.0f}/sec    ",
+                end="",
+                flush=True,
+            )
 
         url = data.get("@odata.nextLink")
         params = {}
 
-    print(f"\r  Done: {total_deleted} deleted, {total_failed} failed.{' ' * 30}")
+    print(f"\r  Finished {list_name}: removed {total_deleted} item(s), skipped {total_failed}.{' ' * 20}")
     return total_deleted, total_failed
 
 
@@ -190,11 +202,12 @@ def main():
     cfg = _cfg.config
     site_url = cfg.auth.sharepoint_site_url
     if not site_url:
-        print("ERROR: sharepoint_site_url not configured.")
+        print("SharePoint site URL is missing from your configuration.")
         sys.exit(1)
 
-    print(f"\nSharePoint site: {site_url}")
-    print("Connecting and resolving lists (may take ~30s)...")
+    _banner("SharePoint cleanup")
+    print(f"Site: {site_url}")
+    print("Connecting and checking your configured lists (this can take about 30 seconds)...")
     token = get_token()
     site_id = get_site_id(token, site_url)
 
@@ -206,24 +219,24 @@ def main():
         if list_id:
             resolved.append((list_id, resolved_name))
         else:
-            print(f"  WARNING: '{canonical_name}' not found on SharePoint, will skip.")
+            print(f"  Couldn't find '{canonical_name}' on SharePoint, so it will be skipped.")
 
-    print(f"\nReady to wipe {len(resolved)} list(s):")
+    print(f"\nReady to clear {len(resolved)} list(s):")
     for _, name in resolved:
         print(f"  - {name}")
 
-    confirm = input("\nType YES to permanently delete ALL items from these lists: ").strip()
+    confirm = input("\nType YES to permanently remove all items from these lists: ").strip()
     if confirm != "YES":
-        print("Aborted.")
+        print("Canceled. No changes were made.")
         sys.exit(0)
     print()
 
     for list_id, resolved_name in resolved:
-        print(f"[{resolved_name}]")
+        print(f"Now cleaning: {resolved_name}")
         deleted, failed = wipe_list(token, site_id, list_id, resolved_name)
-        print(f"  Done: {deleted} deleted, {failed} failed.\n")
+        print(f"  Summary: removed {deleted}, skipped {failed}.\n")
 
-    print("All lists cleaned.")
+    print("Cleanup complete. All selected lists have been processed.")
 
 
 if __name__ == "__main__":

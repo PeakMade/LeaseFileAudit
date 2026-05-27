@@ -102,6 +102,24 @@ def _safe_seconds_from_iso(started_at_iso: str) -> float:
         return 0.0
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Coerce mixed API/SharePoint numeric values to float for safe math."""
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except Exception:
+        try:
+            return float(str(value).replace(',', '').strip())
+        except Exception:
+            return default
+
+
 def _log_and_clear_pending_upload_timing(run_id: str, destination: str, destination_route_seconds: float) -> None:
     pending = session.get('pending_upload_timing')
     if not isinstance(pending, dict):
@@ -1591,11 +1609,19 @@ def calculate_cumulative_metrics(session_cache_key: str = None) -> dict:
     # For historical: if variance < 0, it means actual < expected (undercharged)
     #                 if variance > 0, it means actual > expected (overcharged)
     # Also include resolved exceptions from current run
-    historical_undercharge = sum(abs(exc['variance']) for exc in all_exception_data if exc['variance'] < 0)
-    historical_undercharge += sum(abs(exc['variance']) for exc in resolved_exceptions_data if exc['variance'] < 0)
+    historical_undercharge = sum(
+        abs(_safe_float(exc.get('variance'))) for exc in all_exception_data if _safe_float(exc.get('variance')) < 0
+    )
+    historical_undercharge += sum(
+        abs(_safe_float(exc.get('variance'))) for exc in resolved_exceptions_data if _safe_float(exc.get('variance')) < 0
+    )
     
-    historical_overcharge = sum(exc['variance'] for exc in all_exception_data if exc['variance'] > 0)
-    historical_overcharge += sum(exc['variance'] for exc in resolved_exceptions_data if exc['variance'] > 0)
+    historical_overcharge = sum(
+        _safe_float(exc.get('variance')) for exc in all_exception_data if _safe_float(exc.get('variance')) > 0
+    )
+    historical_overcharge += sum(
+        _safe_float(exc.get('variance')) for exc in resolved_exceptions_data if _safe_float(exc.get('variance')) > 0
+    )
     
     logger.info(f"[METRICS-SLOW] Historical undercharge=${historical_undercharge}, overcharge=${historical_overcharge} (from {len(all_exception_data)} historical + {len(resolved_exceptions_data)} resolved exceptions)")
     
@@ -1612,7 +1638,7 @@ def calculate_cumulative_metrics(session_cache_key: str = None) -> dict:
     
     # Recovered = historical exceptions not in current
     recovered_exceptions = [exc for exc in all_exception_data if exc['key'] not in current_exception_keys]
-    money_recovered = sum(abs(exc['variance']) for exc in recovered_exceptions)
+    money_recovered = sum(abs(_safe_float(exc.get('variance'))) for exc in recovered_exceptions)
     
     # Calculate true net variance: Overcharge - Undercharge (positive = net over-billed, negative = net under-billed)
     current_net_variance = current_overcharge - current_undercharge
@@ -2977,6 +3003,40 @@ def upload_api_property():
 # the GIL (each property update is a single dict assignment).
 _BULK_AUDIT_JOBS: dict = {}
 
+_BULK_JOBS_FILE = Path("instance/bulk_jobs.json")
+_MAX_PERSISTED_BULK_JOBS = 2
+
+
+def _persist_completed_jobs() -> None:
+    """Write the last _MAX_PERSISTED_BULK_JOBS completed/cancelled jobs to disk."""
+    try:
+        _BULK_JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        finished = [
+            j for j in _BULK_AUDIT_JOBS.values()
+            if j.get('status') in ('complete', 'cancelled')
+        ]
+        finished_sorted = sorted(finished, key=lambda j: j.get('started_at') or '', reverse=True)
+        to_save = finished_sorted[:_MAX_PERSISTED_BULK_JOBS]
+        with open(_BULK_JOBS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(to_save, f, indent=2)
+    except Exception:
+        logger.exception('[BULK AUDIT] Failed to persist completed jobs to disk')
+
+
+def _load_persisted_jobs() -> None:
+    """Load previously saved completed jobs from disk into _BULK_AUDIT_JOBS (once per process)."""
+    if not _BULK_JOBS_FILE.exists():
+        return
+    try:
+        with open(_BULK_JOBS_FILE, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+        for job in saved:
+            job_id = job.get('job_id')
+            if job_id and job_id not in _BULK_AUDIT_JOBS:
+                _BULK_AUDIT_JOBS[job_id] = job
+    except Exception:
+        logger.exception('[BULK AUDIT] Failed to load persisted jobs from disk')
+
 
 def _run_bulk_audit_job(app, job_id: str, properties: list, from_date: str, to_date: str) -> None:
     """Background worker that audits each property sequentially and updates job state."""
@@ -2994,6 +3054,7 @@ def _run_bulk_audit_job(app, job_id: str, properties: list, from_date: str, to_d
                     if remaining['status'] == 'pending':
                         remaining['status'] = 'cancelled'
                 logger.info(f"[BULK AUDIT] Job {job_id} cancelled after {idx}/{job['total']} properties")
+                _persist_completed_jobs()
                 return
 
             property_id = prop['property_id']
@@ -3091,6 +3152,7 @@ def _run_bulk_audit_job(app, job_id: str, properties: list, from_date: str, to_d
         job['current_property'] = None
         job['completed_at'] = datetime.utcnow().isoformat()
         logger.info(f"[BULK AUDIT] Job {job_id} finished: {job['completed']}/{job['total']} properties")
+        _persist_completed_jobs()
 
 
 @bp.route('/api/bulk-audit/<job_id>/cancel', methods=['POST'])
@@ -3111,6 +3173,9 @@ def cancel_bulk_audit(job_id: str):
 @require_auth
 def bulk_audit_page():
     """Render the bulk audit form."""
+    # Restore any persisted completed jobs so they survive app restarts.
+    _load_persisted_jobs()
+
     try:
         from audit_engine.api_ingest import get_entrata_environment
         picklist = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
@@ -3128,21 +3193,17 @@ def bulk_audit_page():
             active_job = job
             break
 
-    # Find the most recent completed/cancelled job to show on the page
-    last_job = None
-    for job in sorted(
-        _BULK_AUDIT_JOBS.values(),
+    # Collect up to _MAX_PERSISTED_BULK_JOBS recent completed/cancelled jobs
+    recent_jobs = sorted(
+        [j for j in _BULK_AUDIT_JOBS.values() if j.get('status') in ('complete', 'cancelled')],
         key=lambda j: j.get('started_at') or '',
         reverse=True,
-    ):
-        if job.get('status') in ('complete', 'cancelled'):
-            last_job = job
-            break
+    )[:_MAX_PERSISTED_BULK_JOBS]
 
     return render_template(
         'bulk_audit.html',
         properties=picklist,
-        last_job=last_job,
+        recent_jobs=recent_jobs,
         active_job=active_job,
     )
 
@@ -3453,13 +3514,47 @@ def portfolio(run_id: str = None):
             f"property_snapshot_count={len(property_snapshots)}"
         )
 
-        # Load available runs for selector (use cached function to avoid slow metadata loads)
+        # Fan out independent SharePoint reads in parallel to avoid sequential blocking.
+        # Each of these calls can take several seconds (or much longer on cache miss when
+        # ExceptionMonths has grown large), so running them concurrently and applying an
+        # overall timeout keeps the portfolio page responsive.
+        from concurrent.futures import ThreadPoolExecutor as _PortfolioTPE, TimeoutError as _PortfolioTimeout
+        _portfolio_data_timeout = max(1, int(os.getenv('PORTFOLIO_DATA_TIMEOUT_SECONDS', '15')))
+
         try:
             run_limit = int(os.getenv('RUN_PICKER_MAX_RUNS', '50'))  # Default to 50 to avoid slow portfolio load
         except Exception:
             run_limit = 50
+
+        _pf_pool = _PortfolioTPE(max_workers=3)
+        try:
+            _runs_future = _pf_pool.submit(get_available_runs, cache_token)
+            _resolved_future = _pf_pool.submit(cached_load_all_resolved_totals, cache_token)
+            _status_future = _pf_pool.submit(cached_load_property_audit_status_summary, cache_token)
+
+            try:
+                _raw_runs = _runs_future.result(timeout=_portfolio_data_timeout)
+            except (_PortfolioTimeout, Exception) as _e:
+                logger.warning(f"[PORTFOLIO] get_available_runs timed out or failed ({_e}); using empty run list")
+                _raw_runs = []
+
+            try:
+                resolved_totals = _resolved_future.result(timeout=_portfolio_data_timeout)
+            except (_PortfolioTimeout, Exception) as _e:
+                logger.warning(f"[PORTFOLIO] cached_load_all_resolved_totals timed out or failed ({_e}); using zeros")
+                resolved_totals = {'recovered': 0.0, 'prevented': 0.0, 'count': 0}
+
+            try:
+                audit_status_summary = _status_future.result(timeout=_portfolio_data_timeout)
+            except (_PortfolioTimeout, Exception) as _e:
+                logger.warning(f"[PORTFOLIO] cached_load_property_audit_status_summary timed out or failed ({_e}); using empty summary")
+                audit_status_summary = {}
+        finally:
+            # shutdown(wait=False) so slow SharePoint threads don't block the route response
+            _pf_pool.shutdown(wait=False)
+
         available_runs = []
-        for run in get_available_runs(cache_token):
+        for run in _raw_runs:
             available_runs.append({
                 'run_id': run.get('run_id'),
                 'timestamp': run.get('timestamp', 'Unknown'),
@@ -3477,8 +3572,7 @@ def portfolio(run_id: str = None):
         matched_buckets = sum(p.get('matched_buckets', 0) for p in property_snapshots)
         match_rate = (matched_buckets / total_buckets * 100) if total_buckets > 0 else 0
 
-        # Fetch historical recovery / prevented-impact totals from resolved ExceptionMonths rows.
-        resolved_totals = cached_load_all_resolved_totals(cache_token)
+        # Resolved totals already fetched in parallel above.
         historical_undercharge = resolved_totals.get('recovered', 0.0)
         historical_overcharge = resolved_totals.get('prevented', 0.0)
 
@@ -3514,12 +3608,7 @@ def portfolio(run_id: str = None):
             f"overcharge={total_overcharge}, match_rate={match_rate:.2f}%"
         )
 
-        # Load per-property audit status summary (resolved/open exception month counts)
-        try:
-            audit_status_summary = cached_load_property_audit_status_summary(cache_token)
-        except Exception as _ase:
-            logger.debug(f"[PORTFOLIO] Could not load audit status summary: {_ase}")
-            audit_status_summary = {}
+        # audit_status_summary already fetched in parallel above.
 
         # Build a picklist lookup to resolve property names missing from snapshots
         picklist_name_map: dict[int, str] = {}
@@ -3561,10 +3650,14 @@ def portfolio(run_id: str = None):
             prop_status_counts = audit_status_summary.get(property_id_int) or {}
             resolved_months = int(prop_status_counts.get('resolved_months', 0))
             open_months = int(prop_status_counts.get('open_months', 0))
+            tracked_months = resolved_months + open_months
+
+            # ExceptionMonths rows are created when month-level actions are saved,
+            # so a fresh audited property can have exceptions with zero tracked months.
             if exception_count == 0:
                 audit_status = 'complete'
-            elif resolved_months == 0:
-                audit_status = 'not_started'
+            elif tracked_months == 0:
+                audit_status = 'in_progress'
             elif open_months > 0:
                 audit_status = 'in_progress'
             else:
@@ -3784,7 +3877,7 @@ def property_view(property_id: str, run_id: str = None):
         )
         stage_started = perf_counter()
 
-        # Get bucket results for this property from AuditRuns
+        # Get bucket results for this property from AuditRuns2
         all_property_buckets = cached_load_bucket_results(
             run_id,
             property_id=int(float(property_id)),
@@ -3869,7 +3962,17 @@ def property_view(property_id: str, run_id: str = None):
                     break
         
         # Get all unique leases for this property
-        all_lease_ids = sorted(all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value].unique())
+        lease_id_column = CanonicalField.LEASE_INTERVAL_ID.value
+        normalized_lease_ids = pd.to_numeric(all_property_buckets[lease_id_column], errors='coerce')
+        valid_lease_id_mask = normalized_lease_ids.notna()
+        if valid_lease_id_mask.sum() != len(all_property_buckets):
+            logger.warning(
+                f"[PROPERTY_VIEW] Dropping {len(all_property_buckets) - int(valid_lease_id_mask.sum())} row(s) "
+                f"with non-numeric lease_interval_id for run {run_id}, property {property_id}"
+            )
+        all_property_buckets = all_property_buckets[valid_lease_id_mask].copy()
+        all_property_buckets[lease_id_column] = normalized_lease_ids[valid_lease_id_mask].astype(int)
+        all_lease_ids = sorted(all_property_buckets[lease_id_column].unique().tolist())
 
         lease_customer_names = {}
         lease_parent_ids = {}
@@ -4111,7 +4214,13 @@ def property_view(property_id: str, run_id: str = None):
             if lease_id in lease_groups:
                 # Lease has exceptions
                 exceptions = lease_groups[lease_id]
-                total_variance = sum(e['variance'] for e in exceptions)
+                total_variance = sum(float(e.get('variance') or 0) for e in exceptions)
+                total_undercharge = sum(abs(float(e.get('variance') or 0)) for e in exceptions if float(e.get('variance') or 0) < 0)
+                total_overcharge = sum(float(e.get('variance') or 0) for e in exceptions if float(e.get('variance') or 0) > 0)
+                # Use snapshot values for consistent display with the resident detail page
+                if lease_snapshot:
+                    total_undercharge = float(lease_snapshot.get('undercharge', total_undercharge) or 0)
+                    total_overcharge = float(lease_snapshot.get('overcharge', total_overcharge) or 0)
                 lease_summary.append({
                     'lease_interval_id': lease_id,
                     'lease_id': resolved_lease_id,
@@ -4121,15 +4230,20 @@ def property_view(property_id: str, run_id: str = None):
                     'exception_count': static_exception_count,
                     'unresolved_exception_count': unresolved_exception_count,
                     'matched_count': matched_count,
+                    'total_undercharge': float(total_undercharge),
+                    'total_overcharge': float(total_overcharge),
                     'total_variance': total_variance,
                     'status_label': status_label,
                     'status_color': status_color,
-                    'exceptions': sorted(exceptions, key=lambda x: abs(x['variance']), reverse=True),
+                    'exceptions': sorted(exceptions, key=lambda x: abs(float(x.get('variance') or 0)), reverse=True),
                     'lease_start_date': _lease_start,
                     'is_future_lease': _is_future,
                 })
             else:
-                # Clean lease - no exceptions
+                # Clean lease - no exceptions currently unresolved
+                # Still check snapshot in case there are SCHEDULED_ONLY or historical amounts
+                _snap_undercharge = float(lease_snapshot.get('undercharge', 0) or 0) if lease_snapshot else 0.0
+                _snap_overcharge = float(lease_snapshot.get('overcharge', 0) or 0) if lease_snapshot else 0.0
                 lease_summary.append({
                     'lease_interval_id': lease_id,
                     'lease_id': resolved_lease_id,
@@ -4139,7 +4253,9 @@ def property_view(property_id: str, run_id: str = None):
                     'exception_count': static_exception_count,
                     'unresolved_exception_count': 0,
                     'matched_count': matched_count,
-                    'total_variance': 0,
+                    'total_undercharge': _snap_undercharge,
+                    'total_overcharge': _snap_overcharge,
+                    'total_variance': _snap_overcharge - _snap_undercharge,
                     'status_label': status_label,
                     'status_color': status_color,
                     'exceptions': [],
@@ -4190,18 +4306,25 @@ def property_view(property_id: str, run_id: str = None):
             property_id=None  # Already filtered, don't filter again
         )
 
-        # Keep property KPI cards aligned with portfolio totals by using the same
-        # property snapshot source when available for this run/property.
-        if property_snapshot:
-            property_kpis['total_undercharge'] = float(property_snapshot.get('undercharge', 0) or 0)
+        # Derive undercharge and overcharge from lease_summary so the KPI cards always
+        # match the per-row values shown in the lease table (both now use snapshot values).
+        property_kpis['total_undercharge'] = sum(
+            float(lease.get('total_undercharge', 0) or 0) for lease in lease_summary
+        )
+        property_kpis['total_overcharge'] = sum(
+            float(lease.get('total_overcharge', 0) or 0) for lease in lease_summary
+        )
+
+        # Fallback: if snapshot exists for overcharge and lease_summary had none, prefer snapshot.
+        if property_snapshot and property_kpis['total_overcharge'] == 0.0:
             property_kpis['total_overcharge'] = float(property_snapshot.get('overcharge', 0) or 0)
-        elif not property_buckets.empty and CanonicalField.VARIANCE.value in property_buckets.columns:
+        elif not property_buckets.empty and CanonicalField.VARIANCE.value in property_buckets.columns and property_kpis['total_overcharge'] == 0.0:
+            # Convert variance column to numeric, coercing non-numeric strings to NaN
             variance_series = pd.to_numeric(
                 property_buckets[CanonicalField.VARIANCE.value],
                 errors='coerce'
-            ).fillna(0.0)
-            property_kpis['total_undercharge'] = abs(float(variance_series[variance_series < 0].sum()))
-            property_kpis['total_overcharge'] = float(variance_series[variance_series > 0].sum())
+            ).fillna(0.0).astype(float)
+            property_kpis['total_overcharge'] = float(variance_series[variance_series > 0.0].sum())
 
         # Keep the KPI card aligned with the lease table's discrepancy column.
         property_exception_count = int(
@@ -4578,7 +4701,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                         period_end = period_end.strftime('%Y-%m-%d')
                     
                     expected_transactions.append({
-                        'amount': exp_rec.get('expected_amount', 0),
+                        'amount': _safe_float(exp_rec.get('expected_amount', 0)),
                         'period_start': period_start,
                         'period_end': period_end,
                         'ar_code_name': exp_rec.get('AR_CODE_NAME', ar_code_name)
@@ -4596,7 +4719,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                         post_date = post_date.strftime('%Y-%m-%d')
                     
                     actual_transactions.append({
-                        'amount': act_rec.get('actual_amount', 0),
+                        'amount': _safe_float(act_rec.get('actual_amount', 0)),
                         'post_date': post_date,
                         'ar_code_name': act_rec.get('AR_CODE_NAME', ar_code_name),
                         'transaction_id': act_rec.get('ID') or act_rec.get('AR_TRANSACTION_ID'),
@@ -4617,9 +4740,9 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                 'status': bucket[CanonicalField.STATUS.value],
                 'status_label': _get_status_label(bucket[CanonicalField.STATUS.value]),
                 'status_color': _get_status_color(bucket[CanonicalField.STATUS.value]),
-                'expected_total': bucket[CanonicalField.EXPECTED_TOTAL.value],
-                'actual_total': bucket[CanonicalField.ACTUAL_TOTAL.value],
-                'variance': bucket[CanonicalField.VARIANCE.value],
+                'expected_total': _safe_float(bucket[CanonicalField.EXPECTED_TOTAL.value]),
+                'actual_total': _safe_float(bucket[CanonicalField.ACTUAL_TOTAL.value]),
+                'variance': _safe_float(bucket[CanonicalField.VARIANCE.value]),
                 'expected_transactions': expected_transactions,
                 'actual_transactions': actual_transactions,
                 'missing_dates_warning': missing_dates_warning
@@ -4655,9 +4778,9 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     'status': exc['status'],
                     'status_label': exc['status_label'],
                     'status_color': exc['status_color'],
-                    'total_variance': 0,
-                    'total_expected': 0,
-                    'total_actual': 0,
+                    'total_variance': 0.0,
+                    'total_expected': 0.0,
+                    'total_actual': 0.0,
                     'month_count': 0,
                     'monthly_details': [],
                     'all_expected_transactions': [],
@@ -4666,9 +4789,9 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             
             # Aggregate totals
             group = grouped_exceptions[group_key]
-            group['total_variance'] += exc['variance']
-            group['total_expected'] += exc['expected_total']
-            group['total_actual'] += exc['actual_total']
+            group['total_variance'] += _safe_float(exc.get('variance'))
+            group['total_expected'] += _safe_float(exc.get('expected_total'))
+            group['total_actual'] += _safe_float(exc.get('actual_total'))
             group['month_count'] += 1
             
             # Store monthly detail
@@ -4841,7 +4964,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                         period_end = None
                     
                     expected_transactions.append({
-                        'amount': exp_rec.get('expected_amount', 0),
+                        'amount': _safe_float(exp_rec.get('expected_amount', 0)),
                         'period_start': period_start,
                         'period_end': period_end,
                     })
@@ -4857,7 +4980,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                         post_date = None
                     
                     actual_transactions.append({
-                        'amount': act_rec.get('actual_amount', 0),
+                        'amount': _safe_float(act_rec.get('actual_amount', 0)),
                         'post_date': post_date,
                         'transaction_id': act_rec.get('ID') or act_rec.get('AR_TRANSACTION_ID'),
                         'is_reversal': bool(pd.to_numeric(act_rec.get('IS_REVERSAL', 0), errors='coerce') == 1),
@@ -4867,11 +4990,12 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             # Convert audit_month to date string
             audit_month_str = audit_month.strftime('%Y-%m-%d') if isinstance(audit_month, pd.Timestamp) else audit_month
             
-            matched_groups[ar_code]['total_amount'] += bucket[CanonicalField.ACTUAL_TOTAL.value]
+            matched_amount = _safe_float(bucket[CanonicalField.ACTUAL_TOTAL.value])
+            matched_groups[ar_code]['total_amount'] += matched_amount
             matched_groups[ar_code]['month_count'] += 1
             matched_groups[ar_code]['monthly_details'].append({
                 'audit_month': audit_month_str,
-                'amount': bucket[CanonicalField.ACTUAL_TOTAL.value],
+                'amount': matched_amount,
                 'expected_transactions': expected_transactions,
                 'actual_transactions': actual_transactions
             })
@@ -4924,7 +5048,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     'has_exceptions': False
                 }
             
-            ar_code_unified[ar_code_id]['exception_count'] += exc['month_count']
+            ar_code_unified[ar_code_id]['exception_count'] += int(pd.to_numeric(exc.get('month_count', 0), errors='coerce') or 0)
             ar_code_unified[ar_code_id]['has_exceptions'] = True
             
             # Add exception monthly details with status flag

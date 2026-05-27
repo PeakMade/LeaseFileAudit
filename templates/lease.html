@@ -809,6 +809,7 @@
                 <option value="Resident moved out \u2013 charge not applicable|internal">Resident moved out \u2013 charge not applicable</option>
                 <option value="Month-to-month \u2013 no active schedule|external">Month-to-month \u2013 no active schedule</option>
                 <option value="Concession / waiver approved|internal">Concession / waiver approved</option>
+                <option value="No Issue|internal">No Issue</option>
             `;
         } else if (status === 'BILLED_NOT_SCHEDULED') {
             options = `
@@ -817,6 +818,7 @@
                 <option value="Move-in proration|internal">Move-in proration</option>
                 <option value="Backdated / corrected posting|internal">Backdated / corrected posting</option>
                 <option value="Mark as one-time charge|one_time">Mark as one-time charge</option>
+                <option value="No Issue|internal">No Issue</option>
             `;
         } else if (status === 'AMOUNT_MISMATCH') {
             options = `
@@ -826,6 +828,7 @@
                 <option value="Proration (move-in or move-out)|internal">Proration (move-in or move-out)</option>
                 <option value="Rent concession applied|internal">Rent concession applied</option>
                 <option value="Document variance reason|internal">Document variance reason</option>
+                <option value="No Issue|internal">No Issue</option>
             `;
         } else {
             return `<div class="text-muted">No suggested fixes available for this discrepancy type.</div>`;

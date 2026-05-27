@@ -348,10 +348,12 @@
         .page-loading-overlay {
             position: fixed;
             inset: 0;
-            background: rgba(15, 15, 15, 0.35);
+            background: rgba(9, 18, 34, 0.48);
+            backdrop-filter: blur(4px);
             display: none;
             align-items: center;
             justify-content: center;
+            padding: 24px;
             z-index: 2000;
         }
 
@@ -359,73 +361,209 @@
             display: flex;
         }
 
-        .page-scan {
-            position: relative;
-            width: 180px;
-            height: 200px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+        .page-loading-modal {
+            width: min(520px, 100%);
+            border-radius: 24px;
+            background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+            border: 1px solid rgba(0, 168, 200, 0.14);
+            box-shadow: 0 28px 80px rgba(9, 18, 34, 0.24);
+            overflow: hidden;
+            transform: translateY(10px) scale(0.98);
+            opacity: 0;
+            transition: transform 0.22s ease, opacity 0.22s ease;
         }
 
-        .page-scan .scan-sheet {
-            position: relative;
-            width: 140px;
-            height: 170px;
-            background: #ffffff;
+        .page-loading-overlay.show .page-loading-modal {
+            transform: translateY(0) scale(1);
+            opacity: 1;
+        }
+
+        .page-loading-modal-header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 20px 24px 16px;
+            background:
+                radial-gradient(circle at top right, rgba(31, 81, 255, 0.10), transparent 38%),
+                linear-gradient(135deg, rgba(0, 168, 200, 0.10) 0%, rgba(255, 255, 255, 0.95) 58%);
+            border-bottom: 1px solid rgba(35, 31, 32, 0.08);
+        }
+
+        .page-loading-icon {
+            width: 54px;
+            height: 54px;
             border-radius: 16px;
-            border: 1px solid #e1e6ef;
-            box-shadow: 0 16px 36px rgba(0,0,0,0.25);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            background: linear-gradient(135deg, #00a8c8 0%, #1f51ff 100%);
+            box-shadow: 0 12px 24px rgba(31, 81, 255, 0.22);
+            flex: 0 0 auto;
+        }
+
+        .page-loading-title {
+            margin: 0;
+            color: #231f20;
+            font-size: 1.1rem;
+            line-height: 1.25;
+        }
+
+        .page-loading-subtitle {
+            margin: 3px 0 0;
+            color: #5f6b7a;
+            font-size: 0.88rem;
+            line-height: 1.4;
+        }
+
+        .page-loading-modal-body {
+            padding: 22px 24px 24px;
+        }
+
+        .page-loading-status {
+            color: #1d2f4d;
+            font-size: 0.94rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            margin-bottom: 14px;
+        }
+
+        .page-loading-progress-shell {
+            width: 100%;
+            height: 14px;
+            border-radius: 999px;
+            background: linear-gradient(180deg, #e5edf7 0%, #dbe8f7 100%);
+            overflow: hidden;
+            box-shadow: inset 0 1px 2px rgba(35, 31, 32, 0.08);
+        }
+
+        .page-loading-progress-bar {
+            height: 100%;
+            width: 8%;
+            min-width: 8%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #00a8c8 0%, #41c5de 45%, #1f51ff 100%);
+            box-shadow: 0 4px 14px rgba(0, 168, 200, 0.28);
+            transition: width 0.35s ease;
+            position: relative;
             overflow: hidden;
         }
 
-        .page-scan .scan-top {
+        .page-loading-progress-bar::after {
+            content: '';
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 36px;
-            background: linear-gradient(180deg, #e6f1ff 0%, #ffffff 100%);
+            inset: 0;
+            background: linear-gradient(110deg, transparent 0%, rgba(255,255,255,0.38) 45%, transparent 75%);
+            animation: progress-shimmer 1.4s linear infinite;
         }
 
-        .page-scan .scan-line {
-            position: absolute;
-            left: -12px;
-            right: -12px;
-            height: 18px;
-            background: linear-gradient(180deg, rgba(0,168,200,0.2) 0%, rgba(0,168,200,0.95) 50%, rgba(0,168,200,0.2) 100%);
-            box-shadow: 0 10px 22px rgba(0,168,200,0.45);
-            animation: scan-line 1.8s ease-in-out infinite;
+        .page-loading-progress-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-top: 10px;
         }
 
-        .page-scan .scan-text {
-            position: absolute;
-            left: 18px;
-            right: 18px;
-            height: 10px;
-            background: #d3def0;
+        .page-loading-progress-label {
+            color: #5f6b7a;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 700;
+        }
+
+        .page-loading-progress-value {
+            color: #1f51ff;
+            font-size: 0.9rem;
+            font-weight: 700;
+            min-width: 48px;
+            text-align: right;
+        }
+
+        .page-loading-activity {
+            margin: 16px 0 0;
+            border-radius: 14px;
+            border: 1px solid rgba(31, 81, 255, 0.14);
+            background: linear-gradient(180deg, #f7fbff 0%, #edf4ff 100%);
+            color: #1d2f4d;
+            font-family: 'Montserrat', sans-serif;
+            font-size: 0.83rem;
+            line-height: 1.4;
+            max-height: 140px;
+            overflow-y: auto;
+            padding: 8px 10px;
+        }
+
+        .page-loading-activity-line {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 8px;
+            align-items: start;
+            padding: 6px 4px;
+            border-bottom: 1px dashed rgba(31, 81, 255, 0.12);
+            opacity: 0.94;
+        }
+
+        .page-loading-activity-line:last-child {
+            border-bottom: none;
+        }
+
+        .page-loading-activity-line.latest {
+            background: rgba(31, 81, 255, 0.08);
             border-radius: 8px;
-            opacity: 0.95;
+            color: #123763;
+            opacity: 1;
         }
 
-        .page-scan .scan-text.line-1 { top: 54px; width: 70%; }
-        .page-scan .scan-text.line-2 { top: 78px; width: 82%; }
-        .page-scan .scan-text.line-3 { top: 102px; width: 60%; }
-        .page-scan .scan-text.line-4 { top: 126px; width: 75%; }
+        .page-loading-activity-time {
+            color: #4d6b91;
+            font-weight: 700;
+            font-size: 0.76rem;
+            letter-spacing: 0.02em;
+            background: rgba(31, 81, 255, 0.08);
+            border-radius: 999px;
+            padding: 2px 8px;
+            white-space: nowrap;
+        }
 
-        @keyframes scan-line {
+        .page-loading-activity-message {
+            color: inherit;
+            font-weight: 500;
+            overflow-wrap: anywhere;
+        }
+
+        .page-loading-step.complete {
+            color: #267a5c;
+        }
+
+        .page-loading-step.complete .page-loading-step-dot {
+            background: #2eb67d;
+        }
+
+        .page-loading-note {
+            margin-top: 16px;
+            color: #6c7788;
+            font-size: 0.84rem;
+            line-height: 1.45;
+        }
+
+        @keyframes progress-shimmer {
             0% {
-                top: 26px;
-                opacity: 0.6;
-            }
-            50% {
-                top: 132px;
-                opacity: 1;
+                transform: translateX(-100%);
             }
             100% {
-                top: 26px;
-                opacity: 0.6;
+                transform: translateX(160%);
             }
+        }
+
+        @keyframes progress-stall-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .page-loading-progress-bar.is-stalled {
+            animation: progress-stall-pulse 1.8s ease-in-out infinite;
         }
         
         .user-info .user-name {
@@ -547,27 +685,21 @@
 </head>
 <body style="margin: 0; padding: 0; overflow-x: hidden; position: relative; background-color: #f4f4f4;">
     <div id="pageLoadingOverlay" class="page-loading-overlay" aria-hidden="true">
-        <div style="display: flex; flex-direction: column; align-items: center; gap: 16px;">
-            <div class="page-scan" role="status" aria-label="Loading">
-                <div class="scan-sheet">
-                    <div class="scan-top"></div>
-                    <div class="scan-line"></div>
-                    <div class="scan-text line-1"></div>
-                    <div class="scan-text line-2"></div>
-                    <div class="scan-text line-3"></div>
-                    <div class="scan-text line-4"></div>
-                </div>
+        <div class="page-loading-modal" role="dialog" aria-modal="true" aria-labelledby="pageLoadingTitle" aria-describedby="overlayStatusText">
+            <div class="page-loading-modal-header">
+                <h2 id="pageLoadingTitle" class="page-loading-title">Processing Request</h2>
             </div>
-            <div id="overlayStatusText" style="
-                color: #fff;
-                font-family: 'Montserrat', sans-serif;
-                font-size: 0.85rem;
-                font-weight: 600;
-                letter-spacing: 0.08em;
-                text-transform: uppercase;
-                text-shadow: 0 1px 4px rgba(0,0,0,0.4);
-                opacity: 0.92;
-            ">Loading…</div>
+            <div class="page-loading-modal-body">
+                <div id="overlayStatusText" class="page-loading-status">Loading…</div>
+                <div class="page-loading-progress-shell" aria-hidden="true">
+                    <div id="overlayProgressBar" class="page-loading-progress-bar"></div>
+                </div>
+                <div class="page-loading-progress-meta">
+                    <div class="page-loading-progress-label">Progress</div>
+                    <div id="overlayProgressValue" class="page-loading-progress-value">8%</div>
+                </div>
+                <div class="page-loading-note">Longer SharePoint and Entrata actions may pause between steps while the server finishes writing data.</div>
+            </div>
         </div>
     </div>
 
@@ -676,16 +808,233 @@
             };
         })();
     </script>
+    <script>
+    // Fallback: always hide loading overlay after DOMContentLoaded
+    document.addEventListener('DOMContentLoaded', function() {
+        if (window.hidePageLoadingOverlay) {
+            window.hidePageLoadingOverlay();
+        }
+    });
+    </script>
 
     <script>
         (function () {
             const overlay = document.getElementById('pageLoadingOverlay');
             const statusText = document.getElementById('overlayStatusText');
+            const progressBar = document.getElementById('overlayProgressBar');
+            const progressValue = document.getElementById('overlayProgressValue');
+            const activityFeed = document.getElementById('overlayActivityFeed');
             if (!overlay) return;
             let phaseTimer = null;
+            let progressTimer = null;
+            let currentProgress = 8;
+            let targetProgress = 8;
+            let activeSteps = [];
+            let activeStepIndex = -1;
+            let activeWorkflowKey = 'default';
+            let lastActivityMessage = '';
+
+            function pushActivity(message) {
+                const text = String(message || '').trim();
+                if (!text || !activityFeed) {
+                    return;
+                }
+                if (text === lastActivityMessage) {
+                    return;
+                }
+                lastActivityMessage = text;
+
+                const now = new Date();
+                const stamp = now.toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+                const line = document.createElement('div');
+                line.className = 'page-loading-activity-line';
+
+                const time = document.createElement('span');
+                time.className = 'page-loading-activity-time';
+                time.textContent = stamp;
+
+                const body = document.createElement('span');
+                body.className = 'page-loading-activity-message';
+                body.textContent = text;
+
+                line.appendChild(time);
+                line.appendChild(body);
+
+                const previousLatest = activityFeed.querySelector('.page-loading-activity-line.latest');
+                if (previousLatest) {
+                    previousLatest.classList.remove('latest');
+                }
+                line.classList.add('latest');
+                activityFeed.appendChild(line);
+
+                while (activityFeed.children.length > 8) {
+                    activityFeed.removeChild(activityFeed.firstChild);
+                }
+                activityFeed.scrollTop = activityFeed.scrollHeight;
+            }
+
+            const workflowPhases = {
+                default: {
+                    intervalMs: 4200,
+                    steps: [
+                        'Preparing request…',
+                        'Loading data…',
+                        'Finalizing response…'
+                    ]
+                },
+                navigation_portfolio: {
+                    intervalMs: 3600,
+                    steps: [
+                        'Loading property snapshots from SharePoint…',
+                        'Aggregating portfolio KPIs and discrepancy totals…',
+                        'Preparing portfolio table and run metadata…'
+                    ]
+                },
+                navigation_property: {
+                    intervalMs: 3600,
+                    steps: [
+                        'Loading property bucket rows from SharePoint…',
+                        'Resolving lease-level exception state and summaries…',
+                        'Preparing property dashboard cards and lease table…'
+                    ]
+                },
+                navigation_lease: {
+                    intervalMs: 3400,
+                    steps: [
+                        'Loading lease-level cached detail from SharePoint…',
+                        'Gathering discrepancy months and related charge records…',
+                        'Preparing lease view and exception details…'
+                    ]
+                },
+                upload_api_property: {
+                    intervalMs: 3400,
+                    steps: [
+                        'Calling Entrata API — fetching leases and scheduled charges…',
+                        'Loading AR transactions for selected property and period…',
+                        'Running source mapping and canonical normalization…',
+                        'Reconciling expected vs actual lease charges…',
+                        'Generating bucket variances and KPI summaries…',
+                        'Saving audit run, snapshots, and detail rows to SharePoint…'
+                    ]
+                },
+                upload_api_lease: {
+                    intervalMs: 3200,
+                    steps: [
+                        'Calling Entrata API — fetching single lease transactions…',
+                        'Loading scheduled charges and lease term evidence…',
+                        'Normalizing lease data into canonical model…',
+                        'Reconciling lease-level expected vs actual charges…',
+                        'Calculating discrepancy totals and lease KPIs…',
+                        'Saving lease audit run and snapshots to SharePoint…'
+                    ]
+                },
+                upload_excel: {
+                    intervalMs: 3600,
+                    steps: [
+                        'Reading and validating workbook sheets…',
+                        'Mapping uploaded columns to canonical fields…',
+                        'Normalizing lease and AR data…',
+                        'Reconciling expected vs actual monthly charges…',
+                        'Building discrepancy buckets and summaries…',
+                        'Saving run outputs and snapshots to SharePoint…'
+                    ]
+                }
+            };
 
             function setStatus(msg) {
                 if (statusText) statusText.textContent = msg;
+                pushActivity(msg);
+            }
+
+            function renderProgress() {
+                const safeValue = Math.max(0, Math.min(100, Math.round(currentProgress)));
+                if (progressBar) {
+                    progressBar.style.width = safeValue + '%';
+                }
+                if (progressValue) {
+                    progressValue.textContent = safeValue + '%';
+                }
+            }
+
+            function stopProgress() {
+                if (progressTimer) {
+                    clearInterval(progressTimer);
+                    progressTimer = null;
+                }
+            }
+
+            function setProgress(value) {
+                currentProgress = Math.max(0, Math.min(100, value));
+                targetProgress = Math.max(targetProgress, currentProgress);
+                renderProgress();
+            }
+
+            function nudgeProgress(nextTarget) {
+                targetProgress = Math.max(currentProgress, Math.min(96, nextTarget));
+                if (progressTimer) {
+                    return;
+                }
+                progressTimer = setInterval(() => {
+                    if (!overlay.classList.contains('show')) {
+                        stopProgress();
+                        return;
+                    }
+                    if (currentProgress >= targetProgress) {
+                        if (targetProgress >= 96) {
+                            // Asymptotic creep: bar always moves, approaches 99.5% but never reaches it.
+                            // Shrinks the remaining gap by ~1.2% each tick (180ms), so it visibly
+                            // advances quickly at first then slows to a crawl near 99%.
+                            const gap = 99.5 - currentProgress;
+                            if (gap > 0.02) {
+                                currentProgress += gap * 0.012;
+                                renderProgress();
+                            }
+                        }
+                        return;
+                    }
+                    const delta = targetProgress - currentProgress;
+                    currentProgress += Math.max(1, delta * 0.18);
+                    if (currentProgress >= targetProgress - 0.5) {
+                        currentProgress = targetProgress;
+                    }
+                    renderProgress();
+                }, 180);
+            }
+
+            function clearSteps() {
+                activeSteps = [];
+                activeStepIndex = -1;
+                activeWorkflowKey = 'default';
+                if (activityFeed) {
+                    activityFeed.innerHTML = '';
+                }
+                lastActivityMessage = '';
+            }
+
+            function renderSteps(steps) {
+                activeSteps = Array.isArray(steps) ? steps.slice() : [];
+                activeStepIndex = -1;
+                if (!activeSteps.length) {
+                    return;
+                }
+                activeSteps.forEach((step) => pushActivity(step));
+            }
+
+            function setActiveStep(index) {
+                activeStepIndex = index;
+                if (!activeSteps.length) {
+                    return;
+                }
+                if (index >= 0 && activeSteps.length) {
+                    const progressFloor = 18;
+                    const progressCeiling = 88;
+                    const fraction = (index + 1) / activeSteps.length;
+                    nudgeProgress(progressFloor + (progressCeiling - progressFloor) * fraction);
+                }
             }
 
             function stopPhaseMessages() {
@@ -698,22 +1047,103 @@
             function startPhaseMessages(steps, intervalMs) {
                 stopPhaseMessages();
                 if (!Array.isArray(steps) || steps.length === 0) {
+                    clearSteps();
                     return;
                 }
 
+                renderSteps(steps);
                 let index = 0;
                 setStatus(steps[index]);
+                setActiveStep(index);
                 phaseTimer = setInterval(() => {
-                    index = Math.min(index + 1, steps.length - 1);
-                    setStatus(steps[index]);
+                    if (index < steps.length - 1) {
+                        index++;
+                        setStatus(steps[index]);
+                        setActiveStep(index);
+                    } else {
+                        // All steps shown — server still responding, indicate activity without looping
+                        setStatus('Still loading, please wait…');
+                    }
                 }, intervalMs || 4000);
+            }
+
+            function detectWorkflowFromHref(href) {
+                const value = String(href || '').toLowerCase();
+                if (/\/lease\//.test(value)) return 'navigation_lease';
+                if (/\/property\//.test(value)) return 'navigation_property';
+                if (/\/portfolio/.test(value)) return 'navigation_portfolio';
+                return 'default';
+            }
+
+            function detectWorkflowFromForm(form) {
+                const action = String((form && form.action) || '').toLowerCase();
+                if (/upload-api-property/.test(action)) return 'upload_api_property';
+                if (/upload-api-lease/.test(action)) return 'upload_api_lease';
+                if (/\/upload$/.test(action) || /\/upload\?/.test(action)) return 'upload_excel';
+                return 'default';
+            }
+
+            function beginWorkflow(workflowKey, fallbackMessage) {
+                const key = workflowPhases[workflowKey] ? workflowKey : 'default';
+                const config = workflowPhases[key];
+                activeWorkflowKey = key;
+                showOverlay(fallbackMessage || (config.steps && config.steps[0]) || 'Loading…');
+                if (config && Array.isArray(config.steps) && config.steps.length) {
+                    startPhaseMessages(config.steps, config.intervalMs || 4000);
+                }
+            }
+
+            function completeOverlayAndThen(callback) {
+                stopPhaseMessages();
+                targetProgress = 100;
+                nudgeProgress(100);
+
+                const finalize = () => {
+                    setProgress(100);
+                    window.setTimeout(() => {
+                        if (typeof callback === 'function') {
+                            callback();
+                        }
+                    }, 120);
+                };
+
+                if (currentProgress >= 99.5) {
+                    finalize();
+                    return;
+                }
+
+                const deadline = Date.now() + 1200;
+                const waitHandle = window.setInterval(() => {
+                    if (currentProgress >= 99.5 || Date.now() >= deadline) {
+                        clearInterval(waitHandle);
+                        finalize();
+                    }
+                }, 60);
             }
 
             function showOverlay(msg) {
                 stopPhaseMessages();
+                stopProgress();
+                clearSteps();
+                currentProgress = 8;
+                targetProgress = 8;
+                renderProgress();
+                if (progressBar) progressBar.classList.remove('is-stalled');
                 setStatus(msg || 'Loading…');
                 overlay.classList.add('show');
                 overlay.setAttribute('aria-hidden', 'false');
+                document.body.style.overflow = 'hidden';
+                nudgeProgress(24);
+            }
+
+            function hideOverlay() {
+                stopPhaseMessages();
+                stopProgress();
+                overlay.classList.remove('show');
+                overlay.setAttribute('aria-hidden', 'true');
+                document.body.style.overflow = '';
+                if (progressBar) progressBar.classList.remove('is-stalled');
+                clearSteps();
             }
 
             function messageForHref(href) {
@@ -733,32 +1163,6 @@
                 if (/upload-api-lease/.test(action))    return 'Calling Entrata API — fetching single lease data…';
                 if (/\/upload$/.test(action) || /\/upload\?/.test(action)) return 'Parsing Excel upload and writing results to SharePoint…';
                 return 'Submitting…';
-            }
-
-            function phasesForForm(form) {
-                const action = (form && form.action) || '';
-                if (/upload-api-property/.test(action)) {
-                    return [
-                        'Calling Entrata API — fetching all leases for this property…',
-                        'Reconciling scheduled charges and AR transactions…',
-                        'Saving audit run, snapshots, and detail rows to SharePoint…'
-                    ];
-                }
-                if (/upload-api-lease/.test(action)) {
-                    return [
-                        'Calling Entrata API — fetching lease transactions and schedules…',
-                        'Reconciling lease-level expected vs actual charges…',
-                        'Saving lease audit results to SharePoint…'
-                    ];
-                }
-                if (/\/upload$/.test(action) || /\/upload\?/.test(action)) {
-                    return [
-                        'Reading and validating Excel workbook…',
-                        'Reconciling expected and actual charges…',
-                        'Saving audit outputs and snapshots to SharePoint…'
-                    ];
-                }
-                return null;
             }
 
             function messageForRequest(url, options) {
@@ -790,33 +1194,65 @@
                 return null;
             }
 
+            function advanceWorkflowByRequest(url) {
+                const requestUrl = String(url || '').toLowerCase();
+                if (!overlay.classList.contains('show') || !activeSteps.length) {
+                    return;
+                }
+
+                let targetStep = -1;
+                if (activeWorkflowKey === 'upload_api_property' || activeWorkflowKey === 'upload_api_lease') {
+                    if (requestUrl.includes('/api/property-picklist')) targetStep = 0;
+                    else if (requestUrl.includes('/api/lease-terms')) targetStep = 1;
+                    else if (requestUrl.includes('/bulk-audit/start')) targetStep = 3;
+                    else if (requestUrl.includes('/api/exception-months') || requestUrl.includes('/api/exception-states')) targetStep = activeSteps.length - 1;
+                } else if (activeWorkflowKey === 'upload_excel') {
+                    if (requestUrl.includes('/api/runs')) targetStep = 1;
+                    else if (requestUrl.includes('/api/exception-months') || requestUrl.includes('/api/exception-states')) targetStep = activeSteps.length - 1;
+                } else if (activeWorkflowKey.startsWith('navigation_')) {
+                    if (requestUrl.includes('/api/runs')) targetStep = 1;
+                }
+
+                if (targetStep >= 0 && targetStep < activeSteps.length && targetStep > activeStepIndex) {
+                    setStatus(activeSteps[targetStep]);
+                    setActiveStep(targetStep);
+                }
+            }
+
             // Expose globally for onclick handlers (can pass optional message)
             window.showPageLoadingOverlay = function(msg) { showOverlay(msg); };
-            window.updatePageLoadingOverlay = function(msg) {
+            window.updatePageLoadingOverlay = function(msg, progress) {
                 if (overlay.classList.contains('show')) {
                     setStatus(msg || 'Loading…');
+                    if (typeof progress === 'number' && Number.isFinite(progress)) {
+                        setProgress(progress);
+                    } else {
+                        nudgeProgress(currentProgress + 8);
+                    }
                 }
             };
+            window.hidePageLoadingOverlay = hideOverlay;
 
             document.addEventListener('click', function (event) {
                 const link = event.target.closest('a[href]');
                 if (!link) return;
+                if (event.defaultPrevented) return;
+                if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 
                 const href = link.getAttribute('href');
                 if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) return;
                 if (link.target && link.target !== '_self') return;
                 if (link.hasAttribute('download')) return;
 
-                showOverlay(messageForHref(href));
+                beginWorkflow(detectWorkflowFromHref(href), messageForHref(href));
+                nudgeProgress(30);
             });
 
             document.addEventListener('submit', function (event) {
                 const form = event.target;
-                showOverlay(messageForForm(form));
-                const phaseMessages = phasesForForm(form);
-                if (phaseMessages) {
-                    startPhaseMessages(phaseMessages, 4500);
-                }
+                const workflowKey = detectWorkflowFromForm(form);
+                beginWorkflow(workflowKey, messageForForm(form));
+                nudgeProgress(22);
             });
 
             const previousFetch = window.fetch;
@@ -825,17 +1261,21 @@
                 const requestMessage = messageForRequest(url, init);
                 if (requestMessage && overlay.classList.contains('show')) {
                     setStatus(requestMessage);
+                    nudgeProgress(currentProgress + 10);
                 }
+                advanceWorkflowByRequest(url);
 
                 return previousFetch.call(this, input, init).then(function(response) {
+                    if (overlay.classList.contains('show')) {
+                        nudgeProgress(currentProgress + 6);
+                        advanceWorkflowByRequest(url);
+                    }
                     return response;
                 });
             };
 
             window.addEventListener('pageshow', function () {
-                stopPhaseMessages();
-                overlay.classList.remove('show');
-                overlay.setAttribute('aria-hidden', 'true');
+                hideOverlay();
             });
         })();
     </script>

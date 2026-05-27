@@ -3,7 +3,7 @@
 {% block title %}{{ property_name if property_name else ('Property ' ~ (property_id|int)) }} - Lease Audit{% endblock %}
 
 {% block action_buttons %}
-    <a href="{{ url_for('main.portfolio', run_id=run_id) }}" class="btn btn-secondary btn-sm">
+    <a href="{{ url_for('main.portfolio') }}" class="btn btn-secondary btn-sm">
         <i class="fas fa-arrow-left"></i> Back to Portfolio
     </a>
 {% endblock %}
@@ -198,6 +198,8 @@
                                     <th class="sortable" data-sort="lease_interval_id" style="width: 170px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Lease Interval ID <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
                                     <th class="text-center sortable" data-sort="matched" style="width: 100px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Matched <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
                                     <th class="text-center sortable" data-sort="exceptions" style="width: 110px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Discrepancies <span class="sort-icon" style="font-size: 1em; color: #000;">↓</span></th>
+                                    <th class="text-end sortable" data-sort="undercharge" style="width: 130px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Undercharge <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
+                                    <th class="text-end sortable" data-sort="overcharge" style="width: 130px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Overcharge <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
                                     <th class="text-end sortable" data-sort="variance" style="width: 130px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Variance <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
                                     <th class="text-center sortable" data-sort="status" style="width: 100px; padding: 12px; font-weight: 600; color: #495057; border-right: 1px solid #dee2e6; cursor: pointer; user-select: none;">Status <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span></th>
                                     <th class="text-center" style="width: 80px; padding: 12px; font-weight: 600; color: #495057;">Details</th>
@@ -205,6 +207,16 @@
                             </thead>
                             <tbody>
                                 {% for lease in lease_summary %}
+                                {% set lease_variance_signed = (lease.get('total_variance', 0) or 0) | float %}
+                                {% set lease_undercharge = (lease.get('total_undercharge', 0) or 0) | float %}
+                                {% set lease_overcharge = (lease.get('total_overcharge', 0) or 0) | float %}
+                                {% if lease_undercharge == 0 and lease_overcharge == 0 and lease_variance_signed != 0 %}
+                                    {% if lease_variance_signed < 0 %}
+                                        {% set lease_undercharge = lease_variance_signed | abs %}
+                                    {% else %}
+                                        {% set lease_overcharge = lease_variance_signed %}
+                                    {% endif %}
+                                {% endif %}
                                 <tr class="lease-row" style="cursor: pointer; transition: background-color 0.15s;"
                                     data-lease-url="{{ url_for('main.lease_view', property_id=property_id, lease_interval_id=lease.lease_interval_id) }}?run_id={{ run_id|urlencode }}"
                                     data-customer-name="{{ (lease.customer_name or '') | lower | e }}"
@@ -212,7 +224,9 @@
                                     data-lease-interval-id="{{ lease.lease_interval_id | int }}"
                                     data-matched="{{ lease.matched_count }}"
                                     data-exceptions="{{ lease.exception_count }}"
-                                    data-variance="{{ lease.total_variance | abs }}"
+                                    data-undercharge="{{ lease_undercharge }}"
+                                    data-overcharge="{{ lease_overcharge }}"
+                                    data-variance="{{ lease_variance_signed | abs }}"
                                     data-status="{{ lease.status_label | lower | e }}"
                                     onclick="if(window.showPageLoadingOverlay) window.showPageLoadingOverlay('Loading cached results from SharePoint\u2026'); window.location.href=this.dataset.leaseUrl;">
                                     <td style="padding: 10px 12px; border-right: 1px solid #dee2e6;">
@@ -242,8 +256,22 @@
                                         {% endif %}
                                     </td>
                                     <td class="text-end" style="padding: 10px 12px; font-family: 'Courier New', monospace; border-right: 1px solid #dee2e6;">
-                                        {% if lease.total_variance != 0 %}
-                                            <span style="color: #c20068;">${{ "{:,.2f}".format(lease.total_variance|abs) }}</span>
+                                        {% if lease_undercharge > 0 %}
+                                            <span style="color: #c20068;">${{ "{:,.2f}".format(lease_undercharge) }}</span>
+                                        {% else %}
+                                            <span class="text-muted">$0</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-end" style="padding: 10px 12px; font-family: 'Courier New', monospace; border-right: 1px solid #dee2e6;">
+                                        {% if lease_overcharge > 0 %}
+                                            <span style="color: #00a8c8;">${{ "{:,.2f}".format(lease_overcharge) }}</span>
+                                        {% else %}
+                                            <span class="text-muted">$0</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-end" style="padding: 10px 12px; font-family: 'Courier New', monospace; border-right: 1px solid #dee2e6;">
+                                        {% if lease_variance_signed != 0 %}
+                                            <span style="color: #c20068;">${{ "{:,.2f}".format(lease_variance_signed|abs) }}</span>
                                         {% else %}
                                             <span class="text-muted">$0</span>
                                         {% endif %}
@@ -339,6 +367,8 @@
                     lease_interval_id: 'leaseIntervalId',
                     matched: 'matched',
                     exceptions: 'exceptions',
+                    undercharge: 'undercharge',
+                    overcharge: 'overcharge',
                     variance: 'variance'
                 };
                 const key = numMap[column] || column;

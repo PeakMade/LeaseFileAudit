@@ -40,6 +40,7 @@ Property managers need to ensure that all scheduled rent and fee charges are bil
 - **Entrata Lease-Term Sidecar**: Extract lease expectations from Entrata documents and overlay on AR-code review without changing core match statuses
 - **Portfolio Dashboard**: Aggregated view showing latest audit data for each property across all runs with real-time KPIs
 - **Immutable Audit History**: Each property upload creates a new run preserving complete audit trail
+- **Bulk Audit**: Run audits across multiple properties simultaneously via the Bulk Audit page; each property executes the same audit engine as a single-property audit; completed job results are persisted to `instance/bulk_jobs.json` (last 2 jobs) so history survives app restarts
 - **Drill-Down Views**: Property → Lease → Exception detail hierarchy
 - **Date-Smart Lease Audit**: Distinguishes past, active, and future lease intervals; future months are included for visibility but do not generate false discrepancies
 - **Azure AD Authentication**: Secure, role-based access using Microsoft accounts
@@ -637,6 +638,26 @@ The reconciliation engine is date-aware across three lease phases:
 - Not counted in `exception_buckets` in KPIs (treated same as `MATCHED` for counts)
 - Shown in a separate **Future Lease — Scheduled Charges** informational table on the lease page (blue badge, "Scheduled Only" label)
 - Does not affect AR code status (Open/Resolved/Passed)
+
+### KPI Financial Calculation Rule (unified 2026-05-27)
+
+Undercharge and overcharge are computed **exclusively on exception rows** — i.e., rows whose status is not `MATCHED` and not `SCHEDULED_ONLY`. This rule is applied consistently in all three calculation paths:
+
+| Path | File | Function |
+|------|------|----------|
+| Single & bulk audit display | `audit_engine/metrics.py` | `calculate_kpis()` |
+| Property summary table | `audit_engine/metrics.py` | `calculate_property_summary()` |
+| SharePoint snapshot persistence | `storage/service.py` | `_calculate_static_metrics()` |
+
+```python
+# Canonical rule (all three paths):
+non_exception_statuses = {MATCHED, 'SCHEDULED_ONLY'}
+exception_rows = bucket_results[~status.isin(non_exception_statuses)]
+undercharge = max(0, expected - actual).sum()  # per exception row
+overcharge  = max(0, actual - expected).sum()   # per exception row
+```
+
+Reversal transactions are **included** in the actual total. Paired reversals (a −$X and +$X in the same bucket) net to $0 and do not affect the result. Unpaired reversals correctly reduce the actual amount, which may increase undercharge for that bucket.
 
 **Files involved**:
 - `audit_engine/canonical_fields.py` — `LEASE_MODE` field
@@ -1828,6 +1849,8 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **2026-04-03**: Hardened API scheduled-charge filtering in `audit_engine/api_ingest.py`: deleted/never-posted scheduled rows are now excluded when Entrata surfaces the sentinel anywhere in the scheduled charge payload (including `postedThrough` and `lastPosted`), and duplicate charge objects emitted from overlapping interval subcollections are deduped before normalization; this prevents fresh API audits from creating false expected one-time charges for rows shown in Entrata as `Deleted - Never Posted`
 - **2026-04-23**: Added Entrata sandbox/production environment switching: Settings page now shows an "Entrata API Environment" toggle; active environment is persisted in `entrata_environment.json`; `audit_engine/api_ingest.py` gained `get_entrata_environment()`, `set_entrata_environment()`, and `_resolve_api_credentials()` so all API calls (lease details, AR transactions, lease documents) route to the correct org/credentials at call time; `audit_engine/entrata_lease_terms.py` gained `_get_entrata_headers_and_url()` to apply sandbox credentials to PDF fetch calls; property picklist in sandbox mode is filtered to only properties mapped in `sandbox_property_ids.json` (sandbox uses different property IDs than prod); picklist cache is environment-aware (separate cache entries for prod and sandbox) so switching env immediately reflects the correct property list without cache invalidation issues
 - **2026-04-23**: Restored AR code whitelist in `excluded_ar_codes.json`: file converted from flat array to object format with `api_posted_ar_codes` (existing excluded codes) and `allowed_ar_codes: [154771]` (rent-only whitelist); whitelist applies to both prod and sandbox environments identically; startup confirms activation with `[AR CODE WHITELIST] Restricting to 1 allowed AR code(s): [154771]`
+- **2026-05-27**: Unified undercharge/overcharge KPI calculation logic across all three computation paths (`calculate_kpis()`, `calculate_property_summary()`, `_calculate_static_metrics()`): all paths now exclude both `MATCHED` and `SCHEDULED_ONLY` rows before computing financials using `clip(lower=0)` on exception rows only; previously `calculate_property_summary()` recomputed on all rows (overriding `calculate_kpis()` values) and `_calculate_static_metrics()` excluded only `matched` (keeping `SCHEDULED_ONLY` in financials), causing single vs bulk audit numbers to diverge
+- **2026-05-27**: Added bulk audit job history persistence: completed and cancelled bulk jobs are written to `instance/bulk_jobs.json` (last 2 jobs) by `_persist_completed_jobs()` in `web/views.py`; `_load_persisted_jobs()` is called on bulk audit page load so job history survives app restarts; `templates/bulk_audit.html` updated to display up to 2 recent jobs using `recent_jobs` list instead of single `last_job`
 - **2026-04-24**: Marked reversal transactions visually in the discrepancy drawer: `actual_transactions` dicts now carry `is_reversal` and `is_deleted` flags from canonical fields; `lease.html` drawer rendering detects reversals via flag or negative amount and renders a yellow "Reversal" badge on the post-date cell plus a light-yellow row background, making reversed billings immediately identifiable within amount-mismatch and other discrepancy rows
 - **2026-04-24**: Fixed "Open in Entrata" button to route to the correct org in sandbox mode: `build_entrata_url()` in `web/views.py` now calls `get_entrata_environment()` and uses `peakmade-test-17291.entrata.com` when sandbox is active and `peakmade.entrata.com` in production
 - **2026-04-24**: Added `REVERSED_BILLING` to status label and color mappings: `_get_status_label()` now returns "Reversal" and `_get_status_color()` returns `warning` (orange) for `REVERSED_BILLING` buckets so reversal-classified months display a distinct badge instead of the raw status string

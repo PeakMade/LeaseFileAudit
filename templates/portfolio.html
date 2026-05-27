@@ -55,6 +55,9 @@
                             try {
                                 // Parse the ISO timestamp
                                 const date = new Date(timestamp);
+                                if (Number.isNaN(date.getTime())) {
+                                    return;
+                                }
                                 
                                 // Get user's timezone
                                 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -153,10 +156,10 @@
                                         Discrepancies <span class="sort-icon" style="font-size: 1em; color: #000;">↓</span>
                                     </th>
                                     <th class="text-end sortable" data-sort="undercharge" style="cursor: pointer; user-select: none;">
-                                        Undercharge <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
+                                        Undercharge Variance <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
                                     </th>
                                     <th class="text-end sortable" data-sort="overcharge" style="cursor: pointer; user-select: none;">
-                                        Overcharge <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
+                                        Overcharge Variance <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>
                                     </th>
                                     <th class="text-end sortable" data-sort="variance" style="cursor: pointer; user-select: none;">
                                         Total Variance <span class="sort-icon" style="font-size: 1em; color: #999;">↕</span>

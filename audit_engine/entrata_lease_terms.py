@@ -143,7 +143,7 @@ def post_entrata(payload: dict, url: str = None) -> dict:
     logger.info(f"URL: {target_url}")
     logger.info(f"Payload: {json.dumps(payload, indent=2)}")
 
-    resp = requests.post(target_url, headers=headers, json=payload, timeout=60)
+    resp = requests.post(target_url, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
 
     response_json = resp.json()

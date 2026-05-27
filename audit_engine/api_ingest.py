@@ -927,7 +927,7 @@ def fetch_property_api_sources(
     if not api_key:
         raise ValueError("Missing LEASE_API_KEY (or LEASE_API_SANDBOX_KEY) env var")
 
-    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "60") or "60")
+    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "120") or "120")
 
     # Step 1: Fetch all lease detail pages.
     lease_details_payload = _fetch_all_lease_details_pages(
@@ -941,7 +941,7 @@ def fetch_property_api_sources(
             "propertyId": int(property_id),
             "includeAddOns": _to_str(os.getenv("LEASE_API_INCLUDE_ADDONS") or "0"),
             "includeCharge": _to_str(os.getenv("LEASE_API_INCLUDE_CHARGE") or "1"),
-            "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_LEASE_STATUS_TYPE_IDS") or "3,4"),
+            "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_LEASE_STATUS_TYPE_IDS") or "3,4,5,6"),
         },
     )
 
@@ -963,7 +963,7 @@ def fetch_property_api_sources(
 
     ar_params: dict[str, Any] = {
         "propertyId": int(property_id),
-        "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_AR_LEASE_STATUS_TYPE_IDS") or "3,4"),
+        "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_AR_LEASE_STATUS_TYPE_IDS") or "3,4,5,6"),
         "transactionTypeIds": _to_str(os.getenv("LEASE_API_TRANSACTION_TYPE_IDS") or ""),
         "arCodeIds": _to_str(os.getenv("LEASE_API_AR_CODE_IDS") or ""),
         "showFullLedger": _to_str(os.getenv("LEASE_API_SHOW_FULL_LEDGER") or "1"),
@@ -1033,7 +1033,7 @@ def fetch_single_lease_api_sources(
     if not api_key:
         raise ValueError("Missing LEASE_API_KEY (or LEASE_API_SANDBOX_KEY) env var")
 
-    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "60") or "60")
+    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "120") or "120")
 
     print(f"\n{'='*80}")
     print(f"[SINGLE LEASE API] ===== STARTING API FETCH FOR LEASE {lease_id} (env={env}) =====")
@@ -1056,7 +1056,7 @@ def fetch_single_lease_api_sources(
             "leaseIds": str(lease_id),
             "includeAddOns": "0",
             "includeCharge": "0",
-            "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_LEASE_STATUS_TYPE_IDS") or "3,4"),
+            "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_LEASE_STATUS_TYPE_IDS") or "3,4,5,6"),
         }
         print(f"[SINGLE LEASE API] Discovery request parameters: {discovery_params}")
         discovery_payload = _post_method(
@@ -1084,7 +1084,7 @@ def fetch_single_lease_api_sources(
         "leaseIds": str(lease_id),
         "includeAddOns": _to_str(os.getenv("LEASE_API_INCLUDE_ADDONS") or "0"),
         "includeCharge": _to_str(os.getenv("LEASE_API_INCLUDE_CHARGE") or "1"),
-        "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_LEASE_STATUS_TYPE_IDS") or "3,4"),
+        "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_LEASE_STATUS_TYPE_IDS") or "3,4,5,6"),
     }
     print(f"[SINGLE LEASE API] getLeaseDetails request parameters: {lease_details_params}")
     print(f"[SINGLE LEASE API] ✓ Both propertyId AND leaseIds sent together (Entrata requirement)")
@@ -1149,7 +1149,7 @@ def fetch_single_lease_api_sources(
     ar_params: dict[str, Any] = {
         "propertyId": int(property_id),
         "leaseIds": str(lease_id),
-        "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_AR_LEASE_STATUS_TYPE_IDS") or "3,4"),
+        "leaseStatusTypeIds": _to_str(os.getenv("LEASE_API_AR_LEASE_STATUS_TYPE_IDS") or "3,4,5,6"),
         "transactionTypeIds": _to_str(os.getenv("LEASE_API_TRANSACTION_TYPE_IDS") or ""),
         "arCodeIds": _to_str(os.getenv("LEASE_API_AR_CODE_IDS") or ""),
         "showFullLedger": _to_str(os.getenv("LEASE_API_SHOW_FULL_LEDGER") or "1"),

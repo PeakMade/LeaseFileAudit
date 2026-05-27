@@ -834,6 +834,11 @@ def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
             filtered_whitelist = int(not_allowed_mask.sum())
             if filtered_whitelist > 0:
                 print(f"[FILTER] Excluding {filtered_whitelist} scheduled charges outside allowed AR codes whitelist: {ALLOWED_AR_CODES}")
+                # Debug: show which AR codes are being excluded
+                excluded_codes = df.loc[not_allowed_mask, ScheduledSourceColumns.AR_CODE_ID].value_counts().to_dict()
+                excluded_names = df.loc[not_allowed_mask, ScheduledSourceColumns.AR_CODE_NAME].value_counts().to_dict() if ScheduledSourceColumns.AR_CODE_NAME in df.columns else {}
+                print(f"[FILTER DEBUG] Excluded scheduled charge AR code IDs: {excluded_codes}")
+                print(f"[FILTER DEBUG] Excluded scheduled charge AR code names: {excluded_names}")
             mask = mask & ~not_allowed_mask
 
     # Exclude configured resident profile names

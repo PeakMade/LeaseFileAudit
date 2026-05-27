@@ -5,6 +5,10 @@ from flask import Flask, g, session, request
 from pathlib import Path
 import logging
 import os
+import subprocess
+import threading
+import time
+import webbrowser
 from datetime import datetime, timedelta
 import uuid
 from extensions import cache
@@ -222,4 +226,28 @@ def create_app(config_name='default'):
 
 if __name__ == '__main__':
     app = create_app()
-    app.run(debug=True)
+
+    def _open_external_browser(url: str) -> None:
+        if os.name == 'nt':
+            subprocess.Popen(["cmd", "/c", "start", "", url])
+            return
+        webbrowser.open_new_tab(url)
+
+    port = int(os.getenv('PORT', '8000'))
+    debug = os.getenv('FLASK_DEBUG', 'true').lower() == 'true'
+    print(f"[STARTUP] port={port} debug={debug} server=waitress")
+
+    def open_browser() -> None:
+        time.sleep(2)
+        url = f'http://127.0.0.1:{port}'
+        _open_external_browser(url)
+        print(f"[STARTUP] Opened browser at {url}")
+
+    open_browser_enabled = os.getenv('OPEN_BROWSER', 'true').lower() == 'true'
+    if open_browser_enabled:
+        threading.Thread(target=open_browser, daemon=True).start()
+    else:
+        print('[STARTUP] Browser auto-open disabled (OPEN_BROWSER=false)')
+    from waitress import serve
+
+    serve(app, host='0.0.0.0', port=port, threads=8)

@@ -53,21 +53,40 @@ def calculate_kpis(
     # Status counts — SCHEDULED_ONLY is future-lease informational, not a discrepancy
     from config import config
     non_exception_statuses = {config.reconciliation.status_matched, 'SCHEDULED_ONLY'}
-    matched_buckets = len(bucket_results[
-        bucket_results[CanonicalField.STATUS.value].isin(non_exception_statuses)
-    ])
+    non_exception_mask = bucket_results[CanonicalField.STATUS.value].isin(non_exception_statuses)
+    matched_buckets = int(non_exception_mask.sum())
     exception_buckets = total_buckets - matched_buckets
     match_rate = (matched_buckets / total_buckets) * 100 if total_buckets > 0 else 0.0
-    
-    # Financial aggregates
-    total_expected = bucket_results[CanonicalField.EXPECTED_TOTAL.value].sum()
-    total_actual = bucket_results[CanonicalField.ACTUAL_TOTAL.value].sum()
-    total_variance = bucket_results[CanonicalField.VARIANCE.value].sum()
-    
-    # Calculate undercharge and overcharge
-    variances = bucket_results[CanonicalField.VARIANCE.value]
-    total_undercharge = variances[variances < 0].sum()  # Negative variance = undercharge
-    total_overcharge = variances[variances > 0].sum()   # Positive variance = overcharge
+
+    # Financial aggregates (all rows)
+    expected_values = pd.to_numeric(
+        bucket_results[CanonicalField.EXPECTED_TOTAL.value],
+        errors='coerce'
+    ).fillna(0.0)
+    actual_values = pd.to_numeric(
+        bucket_results[CanonicalField.ACTUAL_TOTAL.value],
+        errors='coerce'
+    ).fillna(0.0)
+    variances = pd.to_numeric(
+        bucket_results[CanonicalField.VARIANCE.value],
+        errors='coerce'
+    ).fillna(0.0)
+
+    total_expected = expected_values.sum()
+    total_actual = actual_values.sum()
+    total_variance = variances.sum()
+
+    # Calculate undercharge and overcharge on exception rows only
+    # (excludes MATCHED and SCHEDULED_ONLY — same logic as _calculate_static_metrics)
+    exception_rows = bucket_results[~non_exception_mask]
+    if len(exception_rows) > 0:
+        exc_expected = pd.to_numeric(exception_rows[CanonicalField.EXPECTED_TOTAL.value], errors='coerce').fillna(0.0)
+        exc_actual = pd.to_numeric(exception_rows[CanonicalField.ACTUAL_TOTAL.value], errors='coerce').fillna(0.0)
+        total_undercharge = float((exc_expected - exc_actual).clip(lower=0).sum())
+        total_overcharge = float((exc_actual - exc_expected).clip(lower=0).sum())
+    else:
+        total_undercharge = 0.0
+        total_overcharge = 0.0
     
     # Finding counts
     total_findings = len(findings)
@@ -75,7 +94,11 @@ def calculate_kpis(
     medium_severity_count = len(findings[findings["severity"] == "medium"])
     
     # Impact calculation
-    total_impact = findings["impact_amount"].sum() if len(findings) > 0 else 0.0
+    total_impact = (
+        pd.to_numeric(findings["impact_amount"], errors='coerce').fillna(0.0).sum()
+        if len(findings) > 0 and "impact_amount" in findings.columns
+        else 0.0
+    )
     
     return {
         "total_buckets": int(total_buckets),
@@ -85,7 +108,7 @@ def calculate_kpis(
         "total_expected": float(total_expected),
         "total_actual": float(total_actual),
         "total_variance": float(total_variance),
-        "total_undercharge": abs(float(total_undercharge)),  # Return as positive number
+        "total_undercharge": float(total_undercharge),
         "total_overcharge": float(total_overcharge),
         "total_findings": int(total_findings),
         "high_severity_count": int(high_severity_count),
@@ -131,24 +154,7 @@ def calculate_property_summary(bucket_results: pd.DataFrame, findings: pd.DataFr
         prop_buckets = bucket_results[bucket_results[CanonicalField.PROPERTY_ID.value] == prop_id]
         total_lease_intervals = prop_buckets[CanonicalField.LEASE_INTERVAL_ID.value].nunique()
         kpis["total_lease_intervals"] = total_lease_intervals
-        
-        # Calculate undercharge/overcharge for this property
-        # Undercharge = expected > actual (billed less than scheduled)
-        # Overcharge = actual > expected (billed more than scheduled)
-        
-        undercharge = prop_buckets.apply(
-            lambda row: max(0, row[CanonicalField.EXPECTED_TOTAL.value] - row[CanonicalField.ACTUAL_TOTAL.value]),
-            axis=1
-        ).sum()
-        
-        overcharge = prop_buckets.apply(
-            lambda row: max(0, row[CanonicalField.ACTUAL_TOTAL.value] - row[CanonicalField.EXPECTED_TOTAL.value]),
-            axis=1
-        ).sum()
-        
-        kpis['total_undercharge'] = undercharge
-        kpis['total_overcharge'] = overcharge
-        
+
         summaries.append(kpis)
     
     return pd.DataFrame(summaries)

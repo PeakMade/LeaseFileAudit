@@ -17,19 +17,23 @@
         <!-- Setup card (shown before job starts) -->
         <div id="setupPanel">
 
-            {% if last_job %}
-            <!-- Last Bulk Audit Summary -->
+            {% if recent_jobs %}
+            <!-- Recent Bulk Audit Runs -->
+            {% for job in recent_jobs %}
             <div class="card mb-4" style="border-left: 4px solid #00a8c8;">
                 <div class="card-header bg-light d-flex align-items-center justify-content-between">
-                    <h5 class="mb-0"><i class="fas fa-history me-2" style="color:#00a8c8;"></i>Last Bulk Audit</h5>
+                    <h5 class="mb-0">
+                        <i class="fas fa-history me-2" style="color:#00a8c8;"></i>
+                        {% if loop.first %}Most Recent Bulk Audit{% else %}Previous Bulk Audit{% endif %}
+                    </h5>
                     <div class="d-flex align-items-center gap-2">
-                        {% if last_job.status == 'complete' %}
+                        {% if job.status == 'complete' %}
                             <span class="badge bg-success">Complete</span>
                         {% else %}
                             <span class="badge bg-secondary">Stopped</span>
                         {% endif %}
                         <button class="btn btn-sm btn-outline-secondary" type="button"
-                                data-bs-toggle="collapse" data-bs-target="#lastJobDetails">
+                                data-bs-toggle="collapse" data-bs-target="#jobDetails_{{ loop.index }}">
                             <i class="fas fa-chevron-down"></i> Details
                         </button>
                     </div>
@@ -38,25 +42,25 @@
                     <div class="row g-3 mb-2">
                         <div class="col-auto">
                             <span class="text-muted small">Date Range</span><br>
-                            <strong>{{ last_job.from_date or 'All time' }} → {{ last_job.to_date or 'today' }}</strong>
+                            <strong>{{ job.from_date or 'All time' }} → {{ job.to_date or 'today' }}</strong>
                         </div>
                         <div class="col-auto">
                             <span class="text-muted small">Started</span><br>
-                            <strong>{{ last_job.started_at[:19].replace('T', ' ') if last_job.started_at else '—' }}</strong>
+                            <strong>{{ job.started_at[:19].replace('T', ' ') if job.started_at else '—' }}</strong>
                         </div>
                         <div class="col-auto">
                             <span class="text-muted small">Properties</span><br>
-                            <strong>{{ last_job.completed }} / {{ last_job.total }} completed</strong>
+                            <strong>{{ job.completed }} / {{ job.total }} completed</strong>
                         </div>
-                        {% if last_job.errors %}
+                        {% if job.errors %}
                         <div class="col-auto">
                             <span class="text-muted small">Errors</span><br>
-                            <strong class="text-danger">{{ last_job.errors | length }}</strong>
+                            <strong class="text-danger">{{ job.errors | length }}</strong>
                         </div>
                         {% endif %}
                     </div>
                 </div>
-                <div class="collapse" id="lastJobDetails">
+                <div class="collapse" id="jobDetails_{{ loop.index }}">
                     <div class="card-body pt-0">
                         <table class="table table-sm mb-0">
                             <thead class="table-light">
@@ -68,7 +72,7 @@
                                 </tr>
                             </thead>
                             <tbody>
-                                {% for prop in last_job.properties %}
+                                {% for prop in job.properties %}
                                 <tr>
                                     <td>{{ prop.property_name or '—' }}</td>
                                     <td class="text-muted">{{ prop.property_id }}</td>
@@ -100,6 +104,7 @@
                     </div>
                 </div>
             </div>
+            {% endfor %}
             {% endif %}
             <div class="card mb-4">
                 <div class="card-header bg-light">

@@ -24,8 +24,8 @@ def _open_external_browser(url: str) -> None:
     webbrowser.open_new_tab(url)
 
 if __name__ == '__main__':
-    # Azure App Service sets PORT environment variable
-    port = int(os.environ.get('PORT', 6001))
+    # Azure App Service sets PORT environment variable; default to 8000 for local development
+    port = int(os.environ.get('PORT', 8000))
     # Use debug mode for local development to enable auto-reload
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     use_reloader = os.environ.get('FLASK_USE_RELOADER', 'False').lower() == 'true'
