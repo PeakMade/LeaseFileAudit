@@ -235,6 +235,34 @@ class CanonicalField(str, Enum):
     LEASE_MODE = "LEASE_MODE"
     """Lease phase relative to today: 'past', 'active', or 'future'"""
 
+    # ==================== Future Lease Audit Fields ====================
+    LEASE_CONTRACT_AMOUNT = "LEASE_CONTRACT_AMOUNT"
+    """Total contract amount from signed lease document"""
+    
+    SCHEDULED_CHARGE_ROLLUP_TOTAL = "SCHEDULED_CHARGE_ROLLUP_TOTAL"
+    """Sum of included scheduled recurring charges"""
+    
+    FUTURE_LEASE_AUDIT_STATUS = "FUTURE_LEASE_AUDIT_STATUS"
+    """Audit status: Pass, Expected Exception, Needs Review, or True Discrepancy"""
+    
+    VARIANCE_DIRECTION = "VARIANCE_DIRECTION"
+    """Direction of variance: undercharge, overcharge, or matched"""
+    
+    INCLUDED_CHARGE_CODES = "INCLUDED_CHARGE_CODES"
+    """List of AR code IDs included in scheduled charge rollup"""
+    
+    EXCLUDED_CHARGE_CODES = "EXCLUDED_CHARGE_CODES"
+    """List of AR code IDs excluded from scheduled charge rollup"""
+    
+    UNMAPPED_CHARGE_CODES = "UNMAPPED_CHARGE_CODES"
+    """List of AR code IDs without usage category mapping"""
+    
+    EXCEPTION_REASON = "EXCEPTION_REASON"
+    """Explanation for audit status classification"""
+    
+    RECOMMENDED_ACTION = "RECOMMENDED_ACTION"
+    """Suggested corrective action for audit finding"""
+
 
 # ==================== Field Groups ====================
 

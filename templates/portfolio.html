@@ -113,6 +113,54 @@
         </div>
     </div>
 
+    <!-- Future Lease Audit KPIs (conditionally shown) -->
+    {% if future_lease_kpis and future_lease_kpis.total_future_leases > 0 %}
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card border-info">
+                <div class="card-header bg-info text-white">
+                    <h5 class="mb-0"><i class="fas fa-calendar-check"></i> Future Lease Audit Results</h5>
+                    <small>Lease contract validation for future-status leases</small>
+                </div>
+                <div class="card-body">
+                    <div class="row text-center">
+                        <div class="col-md-3">
+                            <h6 class="text-muted mb-2">Total Future Leases</h6>
+                            <h3 class="mb-0">{{ future_lease_kpis.total_future_leases }}</h3>
+                            <small class="text-muted">Audited</small>
+                        </div>
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">Pass</h6>
+                            <h3 class="mb-0" style="color: #28a745;">{{ future_lease_kpis.pass_count }}</h3>
+                            <small class="text-muted">{{ "%.1f"|format((future_lease_kpis.pass_count / future_lease_kpis.total_future_leases * 100) if future_lease_kpis.total_future_leases > 0 else 0) }}%</small>
+                        </div>
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">Needs Review</h6>
+                            <h3 class="mb-0" style="color: #ffc107;">{{ future_lease_kpis.needs_review_count }}</h3>
+                            <small class="text-muted">Missing data</small>
+                        </div>
+                        <div class="col-md-2">
+                            <h6 class="text-muted mb-2">True Discrepancies</h6>
+                            <h3 class="mb-0" style="color: #dc3545;">{{ future_lease_kpis.true_discrepancy_count }}</h3>
+                            <small class="text-muted">Action required</small>
+                        </div>
+                        <div class="col-md-3">
+                            <h6 class="text-muted mb-2">Potential Variance</h6>
+                            <h3 class="mb-0" style="color: #ff6600;">
+                                ${{ "{:,.2f}".format(future_lease_kpis.total_potential_undercharge + future_lease_kpis.total_potential_overcharge) }}
+                            </h3>
+                            <small class="text-muted">
+                                Under: ${{ "{:,.2f}".format(future_lease_kpis.total_potential_undercharge) }} | 
+                                Over: ${{ "{:,.2f}".format(future_lease_kpis.total_potential_overcharge) }}
+                            </small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Property Summary Table -->
     <div class="row">
         <div class="col-12">

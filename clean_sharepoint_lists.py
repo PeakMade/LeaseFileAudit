@@ -156,6 +156,13 @@ def _batch_delete(sess: requests.Session, token: str, site_id: str, list_id: str
     return deleted, failed
 
 
+def _refresh_session(sess: requests.Session) -> None:
+    """Refresh the bearer token on the session in-place."""
+    new_token = get_token()
+    sess.headers.update({"Authorization": f"Bearer {new_token}"})
+    print("  Token refreshed.", flush=True)
+
+
 def wipe_list(token: str, site_id: str, list_id: str, list_name: str) -> tuple[int, int]:
     """Stream pages of item IDs and batch-delete as we go (no full pre-fetch)."""
     sess = get_session(token)
@@ -169,6 +176,10 @@ def wipe_list(token: str, site_id: str, list_id: str, list_name: str) -> tuple[i
     while url:
         page += 1
         r = _request_with_retry(sess.get, url, params=params, timeout=120)
+        if r.status_code == 401:
+            print(f"\n  Token expired while reading page {page} — refreshing and retrying...", flush=True)
+            _refresh_session(sess)
+            r = _request_with_retry(sess.get, url, params=params, timeout=120)
         if r.status_code != 200:
             print(f"  We couldn't read the next page for this list (status {r.status_code}).")
             break
@@ -181,6 +192,10 @@ def wipe_list(token: str, site_id: str, list_id: str, list_name: str) -> tuple[i
         for i in range(0, len(ids), BATCH_SIZE):
             chunk = ids[i:i + BATCH_SIZE]
             d, f = _batch_delete(sess, token, site_id, list_id, chunk)
+            # If batch failed with 401, refresh and retry once
+            if f == len(chunk):
+                _refresh_session(sess)
+                d, f = _batch_delete(sess, token, site_id, list_id, chunk)
             total_deleted += d
             total_failed += f
             elapsed = time.time() - t_overall

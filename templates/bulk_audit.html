@@ -116,15 +116,78 @@
                         scheduled charges will be windowed to the same period automatically.
                     </p>
                     <div class="row g-3">
-                        <div class="col-md-4">
+                        <!-- Academic Year Selector -->
+                        <div class="col-12">
+                            <label for="bulk_academic_year" class="form-label fw-bold">
+                                Academic Year
+                                <span class="text-muted small">(Auto-fills date range)</span>
+                            </label>
+                            <select class="form-select" id="bulk_academic_year" name="academic_year">
+                                <option value="">-- Select Academic Year --</option>
+                                {% for year in academic_years %}
+                                <option value="{{ year.value }}" 
+                                        data-start="{{ year.start_date }}" 
+                                        data-end="{{ year.end_date }}"
+                                        {% if loop.first %}selected{% endif %}>
+                                    {{ year.label }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                            <small class="text-muted">Or manually enter dates below to override</small>
+                        </div>
+                        
+                        <div class="col-md-6">
                             <label class="form-label fw-bold">From Date</label>
                             <input type="date" class="form-control" id="fromDate" name="from_date">
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-6">
                             <label class="form-label fw-bold">To Date</label>
                             <input type="date" class="form-control" id="toDate" name="to_date">
                         </div>
                     </div>
+                    
+                    <script>
+                    // Auto-fill dates when academic year is selected
+                    (function() {
+                        const academicYearSelect = document.getElementById('bulk_academic_year');
+                        const fromDateInput = document.getElementById('fromDate');
+                        const toDateInput = document.getElementById('toDate');
+                        
+                        // Set initial dates from default selection
+                        if (academicYearSelect.value) {
+                            const selectedOption = academicYearSelect.options[academicYearSelect.selectedIndex];
+                            fromDateInput.value = selectedOption.dataset.start;
+                            toDateInput.value = selectedOption.dataset.end;
+                        }
+                        
+                        // Update dates when selection changes
+                        academicYearSelect.addEventListener('change', function() {
+                            if (this.value) {
+                                const selectedOption = this.options[this.selectedIndex];
+                                fromDateInput.value = selectedOption.dataset.start;
+                                toDateInput.value = selectedOption.dataset.end;
+                            } else {
+                                // Clear dates when academic year is deselected
+                                fromDateInput.value = '';
+                                toDateInput.value = '';
+                            }
+                        });
+                        
+                        // Clear academic year selection if dates are manually changed
+                        function clearAcademicYearIfManualChange() {
+                            if (academicYearSelect.value) {
+                                const selectedOption = academicYearSelect.options[academicYearSelect.selectedIndex];
+                                if (fromDateInput.value !== selectedOption.dataset.start || 
+                                    toDateInput.value !== selectedOption.dataset.end) {
+                                    academicYearSelect.value = '';
+                                }
+                            }
+                        }
+                        
+                        fromDateInput.addEventListener('change', clearAcademicYearIfManualChange);
+                        toDateInput.addEventListener('change', clearAcademicYearIfManualChange);
+                    })();
+                    </script>
                 </div>
             </div>
 

@@ -1076,6 +1076,39 @@ Flat array (excluded codes only, legacy — still accepted):
 
 ---
 
+#### `excluded_properties.json`
+
+**Purpose**: Defines which property IDs are completely excluded from the application — they won't appear in the property picklist and will be filtered out of any audit processing, even if present in uploaded Excel files.
+
+**Env override**: None (loaded directly from project root)
+
+**Loaded by**: `audit_engine/api_ingest.py` → `_load_excluded_properties()`, `web/views.py` → `execute_audit_run()`
+
+**Format**:
+```json
+{
+  "excluded_property_ids": ["639810", "639820"],
+  "excluded_property_names": ["UNIVERSITY CENTER", "UNIVERSITY GATEWAY"],
+  "notes": "Properties excluded from picklist and auditing. IDs: 639810=UNIVERSITY CENTER (UCC), 639820=UNIVERSITY GATEWAY (Canadian)"
+}
+```
+
+**Fields**:
+- `excluded_property_ids`: Array of property ID strings to exclude
+- `excluded_property_names`: Optional array of property names for documentation
+- `notes`: Optional notes explaining why properties are excluded
+
+**Behavior**: 
+- Properties with matching IDs are removed from the property picklist dropdown
+- During audit execution, AR transactions and scheduled charges for these properties are filtered out
+- Property name maps exclude these properties
+
+**Startup logs**: `[PROPERTY FILTER] Excluded N property(ies) from picklist`
+
+**Safe fallback**: defaults to empty set if file is missing or malformed — all properties are processed normally.
+
+---
+
 #### `ar_code_name_usage_map.json`
 
 **Purpose**: Maps every Entrata AR code ID to its display name, GL code number, and usage category. Used throughout the audit engine to look up human-readable names and route AR codes into audit buckets (Base, Add Ons, Pet, Amenity, Special, Maintenance, etc.).

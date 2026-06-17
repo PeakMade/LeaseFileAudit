@@ -59,6 +59,18 @@
             </div>
         </div>
     </div>
+    <!-- Resolution save toast -->
+    <div aria-live="polite" aria-atomic="true" class="position-fixed" style="bottom:1.5rem;right:1.5rem;z-index:9999;min-width:280px;">
+        <div id="resolutionToast" class="toast align-items-center text-white bg-success border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="d-flex">
+                <div class="toast-body" id="resolutionToastBody">
+                    <i class="fas fa-check-circle me-1"></i> Resolution saved.
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+        </div>
+    </div>
+
     <!-- Lease terms loading indicator -->
     <div class="row mb-2" id="leaseTermsLoadingRow">
         <div class="col-12">
@@ -195,7 +207,7 @@
     <script>
     const arCodeData = {{ all_ar_codes|tojson|safe }};
     const futureMonthsData = {{ future_months|tojson|safe }};
-    const leaseTermsApiUrl = {{ lease_terms_api_url|tojson|safe }};
+    const leaseOnlyExpectationsData = {{ lease_only_expectations|tojson|safe }};
     let currentDrawerData = null;  // Track currently open drawer data
     let currentArCodeId = null;    // Track currently open AR code ID
     const exceptionState = {};
@@ -246,44 +258,22 @@
 
     // Status badges are already set correctly from backend - no need to override them on page load
     document.addEventListener('DOMContentLoaded', () => {
-        // Status calculation happens on the backend based on SharePoint month data
-        // The status_label in the HTML is already correct, don't override it
+        // Lease expectations are already built into the server-rendered AR code payload.
+        // Hide the loading row immediately and render the banner from the embedded data.
+        const loadingRow = document.getElementById('leaseTermsLoadingRow');
+        if (loadingRow) loadingRow.style.display = 'none';
 
-        // Async lease terms fetch
-        fetch(leaseTermsApiUrl)
-            .then(r => r.json())
-            .then(data => {
-                // Hide loading indicator
-                const loadingRow = document.getElementById('leaseTermsLoadingRow');
-                if (loadingRow) loadingRow.style.display = 'none';
-
-                // Populate lease-only expectations banner
-                const leaseOnlyExpectations = data.lease_only_expectations || [];
-                if (leaseOnlyExpectations.length > 0) {
-                    const list = document.getElementById('leaseOnlyExpectationsList');
-                    if (list) {
-                        list.innerHTML = leaseOnlyExpectations.map(item => {
-                            const text = item.message || item.term_label || 'Unmapped lease term';
-                            return `<li>${text}</li>`;
-                        }).join('');
-                    }
-                    const row = document.getElementById('leaseOnlyExpectationsRow');
-                    if (row) row.style.display = '';
-                }
-
-                // Inject lease_expectation into arCodeData so drawer shows terms
-                const arCodeExpectations = data.ar_code_expectations || {};
-                arCodeData.forEach(ar => {
-                    const expectation = arCodeExpectations[String(ar.ar_code_id)];
-                    if (expectation) {
-                        ar.lease_expectation = expectation;
-                    }
-                });
-            })
-            .catch(() => {
-                const loadingRow = document.getElementById('leaseTermsLoadingRow');
-                if (loadingRow) loadingRow.style.display = 'none';
-            });
+        if (leaseOnlyExpectationsData.length > 0) {
+            const list = document.getElementById('leaseOnlyExpectationsList');
+            if (list) {
+                list.innerHTML = leaseOnlyExpectationsData.map(item => {
+                    const text = item.message || item.term_label || 'Unmapped lease term';
+                    return `<li>${text}</li>`;
+                }).join('');
+            }
+            const row = document.getElementById('leaseOnlyExpectationsRow');
+            if (row) row.style.display = '';
+        }
     });
     
     function openDrawer(index) {
@@ -428,7 +418,7 @@
                                 monthLabel += ` <span class="badge bg-${month.status_color}">${month.status_label}</span>`;
                             }
                         }
-                        content += `<td rowspan="${maxRows}" class="align-middle"><strong>${monthLabel}</strong></td>`;
+                        content += `<td id="monthLabel-${monthIndex}" rowspan="${maxRows}" class="align-middle"><strong>${monthLabel}</strong></td>`;
                     }
                     
                     // Expected columns
@@ -809,7 +799,6 @@
                 <option value="Resident moved out \u2013 charge not applicable|internal">Resident moved out \u2013 charge not applicable</option>
                 <option value="Month-to-month \u2013 no active schedule|external">Month-to-month \u2013 no active schedule</option>
                 <option value="Concession / waiver approved|internal">Concession / waiver approved</option>
-                <option value="No Issue|internal">No Issue</option>
             `;
         } else if (status === 'BILLED_NOT_SCHEDULED') {
             options = `
@@ -818,7 +807,6 @@
                 <option value="Move-in proration|internal">Move-in proration</option>
                 <option value="Backdated / corrected posting|internal">Backdated / corrected posting</option>
                 <option value="Mark as one-time charge|one_time">Mark as one-time charge</option>
-                <option value="No Issue|internal">No Issue</option>
             `;
         } else if (status === 'AMOUNT_MISMATCH') {
             options = `
@@ -828,7 +816,6 @@
                 <option value="Proration (move-in or move-out)|internal">Proration (move-in or move-out)</option>
                 <option value="Rent concession applied|internal">Rent concession applied</option>
                 <option value="Document variance reason|internal">Document variance reason</option>
-                <option value="No Issue|internal">No Issue</option>
             `;
         } else {
             return `<div class="text-muted">No suggested fixes available for this discrepancy type.</div>`;
@@ -839,8 +826,9 @@
                     <option value="">Select a resolution...</option>
                     ${options}
                 </select>
-                <button class="btn btn-sm btn-primary" onclick="applySelectedResolution(event)">
-                    <i class="fas fa-check"></i> Apply
+                <button id="applyResolutionBtn" class="btn btn-sm btn-primary" onclick="applySelectedResolution(event)">
+                    <span id="applyBtnIcon"><i class="fas fa-check"></i> Apply</span>
+                    <span id="applyBtnSpinner" style="display:none;"><span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Saving&hellip;</span>
                 </button>
             </div>
         `;
@@ -870,6 +858,14 @@
             alert('No open discrepancy rows are available to apply this fix.');
             return;
         }
+
+        // Show spinner on the Apply button
+        const applyBtn = document.getElementById('applyResolutionBtn');
+        const applyIcon = document.getElementById('applyBtnIcon');
+        const applySpinner = document.getElementById('applyBtnSpinner');
+        if (applyBtn) { applyBtn.disabled = true; }
+        if (applyIcon) { applyIcon.style.display = 'none'; }
+        if (applySpinner) { applySpinner.style.display = 'inline-flex'; applySpinner.style.alignItems = 'center'; applySpinner.style.gap = '0.35rem'; }
 
         const drawerTitle = document.getElementById('drawerTitle');
         if (!drawerTitle) return;
@@ -947,6 +943,13 @@
                     row.classList.add('table-secondary');
                     row.style.opacity = '0.6';
                 }
+
+                // Update the month label cell to show Resolved badge
+                const monthLabelCell = document.getElementById(`monthLabel-${monthIndex}`);
+                if (monthLabelCell) {
+                    const monthDate = formatDate(monthData.audit_month, 'MMMM YYYY');
+                    monthLabelCell.innerHTML = `<strong>${monthDate} <span class="badge bg-success">Resolved</span></strong>`;
+                }
             } else {
                 failedCount += 1;
                 if (result && result.error) {
@@ -960,11 +963,18 @@
         // Clear notes textarea after saves complete.
         if (notesTextarea) notesTextarea.value = '';
 
+        // Restore Apply button
+        if (applyBtn) { applyBtn.disabled = false; }
+        if (applyIcon) { applyIcon.style.display = 'inline'; }
+        if (applySpinner) { applySpinner.style.display = 'none'; }
+
         if (failedCount > 0) {
             const detail = failureReasons.length > 0
                 ? `\n\nFirst failure: ${failureReasons[0]}`
                 : '';
             alert(`Applied to ${savedCount} row(s); ${failedCount} row(s) failed to save. Please retry.${detail}`);
+        } else if (savedCount > 0) {
+            showResolutionToast(fixLabel, savedCount);
         }
     }
     
@@ -1205,6 +1215,18 @@
         return 'secondary';
     }
     
+    function showResolutionToast(fixLabel, savedCount) {
+        const toastEl = document.getElementById('resolutionToast');
+        const toastBody = document.getElementById('resolutionToastBody');
+        if (!toastEl) return;
+        const label = savedCount === 1
+            ? `Resolution saved: <strong>${fixLabel}</strong>`
+            : `Resolution saved for ${savedCount} month(s): <strong>${fixLabel}</strong>`;
+        if (toastBody) toastBody.innerHTML = `<i class="fas fa-check-circle me-1"></i> ${label}`;
+        const toast = bootstrap.Toast.getOrCreateInstance(toastEl, { delay: 4000 });
+        toast.show();
+    }
+
     function formatDateTime(dateStr) {
         if (!dateStr) return '-';
         const date = new Date(dateStr);

@@ -3563,7 +3563,7 @@ class StorageService:
             }
             items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
             params = {
-                '$expand': 'fields($select=PropertyId,Status)',
+                '$expand': 'fields($select=PropertyId,Status,Variance)',
                 '$top': 5000,
             }
 
@@ -3590,14 +3590,25 @@ class StorageService:
                     if prop_id is None:
                         continue
                     status = str(fields.get('Status', 'Open')).strip()
+                    variance = float(fields.get('Variance') or 0)
                     if prop_id not in summary:
-                        summary[prop_id] = {'resolved_months': 0, 'open_months': 0}
+                        summary[prop_id] = {'resolved_months': 0, 'open_months': 0, 'resolved_undercharge': 0.0, 'resolved_overcharge': 0.0, '_resolved_bucket_keys': set()}
                     if status == 'Resolved':
                         summary[prop_id]['resolved_months'] += 1
+                        bucket_key = (fields.get('LeaseIntervalId'), fields.get('ArCodeId'))
+                        summary[prop_id]['_resolved_bucket_keys'].add(bucket_key)
+                        if variance < 0:
+                            summary[prop_id]['resolved_undercharge'] += abs(variance)
+                        elif variance > 0:
+                            summary[prop_id]['resolved_overcharge'] += variance
                     else:
                         summary[prop_id]['open_months'] += 1
 
                 next_url = data.get('@odata.nextLink')
+
+            # Convert internal bucket key sets to counts before returning
+            for prop_id in summary:
+                summary[prop_id]['resolved_buckets'] = len(summary[prop_id].pop('_resolved_bucket_keys', set()))
 
             logger.info(f"[STORAGE] ✅ Loaded audit status summary for {len(summary)} properties")
             return summary
@@ -3900,26 +3911,57 @@ class StorageService:
                 'Content-Type': 'text/plain'
             }
             logger.debug(f"[STORAGE] 📤 Uploading: {file_path} ({len(file_content)} chars)")
-            response = requests.put(url, headers=headers, data=file_content.encode('utf-8'), timeout=30)
 
-            # On 401, refresh the token once and retry
-            if response.status_code == 401:
-                logger.warning(f"[STORAGE] 🔄 Token expired uploading {file_path}; refreshing and retrying...")
-                new_token = _get_app_only_token()
-                if new_token:
-                    self.access_token = new_token
-                    headers['Authorization'] = f'Bearer {self.access_token}'
+            max_attempts = max(1, int(os.getenv('SHAREPOINT_UPLOAD_MAX_ATTEMPTS', '4')))
+            base_backoff = max(0.1, float(os.getenv('SHAREPOINT_UPLOAD_BACKOFF_SECONDS', '1.0')))
+            transient_statuses = {408, 429, 500, 502, 503, 504}
+            token_refresh_attempted = False
+
+            for attempt in range(1, max_attempts + 1):
+                try:
                     response = requests.put(url, headers=headers, data=file_content.encode('utf-8'), timeout=30)
-                else:
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as request_exc:
+                    if attempt < max_attempts:
+                        delay = base_backoff * (2 ** (attempt - 1))
+                        logger.warning(
+                            f"[STORAGE] ⚠️ Upload transient exception for {file_path} "
+                            f"(attempt {attempt}/{max_attempts}): {request_exc}. Retrying in {delay:.1f}s"
+                        )
+                        sleep(delay)
+                        continue
+                    logger.error(f"[STORAGE] ❌ Exception uploading {file_path}: {request_exc}", exc_info=True)
+                    return False
+
+                if response.status_code == 401 and not token_refresh_attempted:
+                    logger.warning(f"[STORAGE] 🔄 Token expired uploading {file_path}; refreshing and retrying...")
+                    token_refresh_attempted = True
+                    new_token = _get_app_only_token()
+                    if new_token:
+                        self.access_token = new_token
+                        headers['Authorization'] = f'Bearer {self.access_token}'
+                        continue
                     logger.error(f"[STORAGE] ❌ Token refresh failed for {file_path}")
                     return False
 
-            if response.status_code in [200, 201]:
-                logger.debug(f"[STORAGE] ✅ Uploaded: {file_path}")
-                return True
-            else:
+                if response.status_code in [200, 201]:
+                    logger.debug(f"[STORAGE] ✅ Uploaded: {file_path}")
+                    return True
+
+                if response.status_code in transient_statuses and attempt < max_attempts:
+                    delay = base_backoff * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"[STORAGE] ⚠️ Transient upload failure for {file_path}: "
+                        f"HTTP {response.status_code} (attempt {attempt}/{max_attempts}). "
+                        f"Retrying in {delay:.1f}s. Response: {response.text[:200]}"
+                    )
+                    sleep(delay)
+                    continue
+
                 logger.error(f"[STORAGE] ❌ Failed to upload {file_path}: HTTP {response.status_code} - {response.text[:200]}")
                 return False
+
+            logger.error(f"[STORAGE] ❌ Failed to upload {file_path}: retries exhausted")
+            return False
                 
         except Exception as e:
             logger.error(f"[STORAGE] ❌ Exception uploading {file_path}: {e}", exc_info=True)
@@ -3940,26 +3982,57 @@ class StorageService:
                 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             }
             logger.info(f"[STORAGE] 📤 Uploading binary file: {file_path} ({len(file_content)} bytes)")
-            response = requests.put(url, headers=headers, data=file_content, timeout=30)
 
-            # On 401, refresh the token once and retry
-            if response.status_code == 401:
-                logger.warning(f"[STORAGE] 🔄 Token expired uploading binary {file_path}; refreshing and retrying...")
-                new_token = _get_app_only_token()
-                if new_token:
-                    self.access_token = new_token
-                    headers['Authorization'] = f'Bearer {self.access_token}'
+            max_attempts = max(1, int(os.getenv('SHAREPOINT_UPLOAD_MAX_ATTEMPTS', '4')))
+            base_backoff = max(0.1, float(os.getenv('SHAREPOINT_UPLOAD_BACKOFF_SECONDS', '1.0')))
+            transient_statuses = {408, 429, 500, 502, 503, 504}
+            token_refresh_attempted = False
+
+            for attempt in range(1, max_attempts + 1):
+                try:
                     response = requests.put(url, headers=headers, data=file_content, timeout=30)
-                else:
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as request_exc:
+                    if attempt < max_attempts:
+                        delay = base_backoff * (2 ** (attempt - 1))
+                        logger.warning(
+                            f"[STORAGE] ⚠️ Binary upload transient exception for {file_path} "
+                            f"(attempt {attempt}/{max_attempts}): {request_exc}. Retrying in {delay:.1f}s"
+                        )
+                        sleep(delay)
+                        continue
+                    logger.error(f"[STORAGE] ❌ Exception uploading {file_path}: {request_exc}", exc_info=True)
+                    return False
+
+                if response.status_code == 401 and not token_refresh_attempted:
+                    logger.warning(f"[STORAGE] 🔄 Token expired uploading binary {file_path}; refreshing and retrying...")
+                    token_refresh_attempted = True
+                    new_token = _get_app_only_token()
+                    if new_token:
+                        self.access_token = new_token
+                        headers['Authorization'] = f'Bearer {self.access_token}'
+                        continue
                     logger.error(f"[STORAGE] ❌ Token refresh failed for {file_path}")
                     return False
 
-            if response.status_code in [200, 201]:
-                logger.info(f"[STORAGE] ✅ Successfully uploaded: {file_path}")
-                return True
-            else:
+                if response.status_code in [200, 201]:
+                    logger.info(f"[STORAGE] ✅ Successfully uploaded: {file_path}")
+                    return True
+
+                if response.status_code in transient_statuses and attempt < max_attempts:
+                    delay = base_backoff * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"[STORAGE] ⚠️ Transient binary upload failure for {file_path}: "
+                        f"HTTP {response.status_code} (attempt {attempt}/{max_attempts}). "
+                        f"Retrying in {delay:.1f}s. Response: {response.text[:200]}"
+                    )
+                    sleep(delay)
+                    continue
+
                 logger.error(f"[STORAGE] ❌ Failed to upload {file_path}: HTTP {response.status_code} - {response.text[:200]}")
                 return False
+
+            logger.error(f"[STORAGE] ❌ Failed to upload {file_path}: retries exhausted")
+            return False
                 
         except Exception as e:
             logger.error(f"[STORAGE] ❌ Exception uploading {file_path}: {e}", exc_info=True)

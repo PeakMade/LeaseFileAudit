@@ -97,6 +97,27 @@
                                             })();
                                             </script>
                                         </div>
+                                        
+                                        <!-- Academic Year Selector -->
+                                        <div class="col-12">
+                                            <label for="academic_year" class="form-label">
+                                                <strong>Academic Year</strong>
+                                                <span class="text-muted small">(Auto-fills date range)</span>
+                                            </label>
+                                            <select class="form-select" id="academic_year" name="academic_year">
+                                                <option value="">-- Select Academic Year --</option>
+                                                {% for year in academic_years %}
+                                                <option value="{{ year.value }}" 
+                                                        data-start="{{ year.start_date }}" 
+                                                        data-end="{{ year.end_date }}"
+                                                        {% if loop.first %}selected{% endif %}>
+                                                    {{ year.label }}
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                            <small class="text-muted">Or manually enter dates below to override</small>
+                                        </div>
+                                        
                                         <div class="col-md-6">
                                             <label for="api_from_date" class="form-label">Transaction From Date</label>
                                             <input type="date" class="form-control" id="api_from_date" name="api_from_date">
@@ -105,6 +126,49 @@
                                             <label for="api_to_date" class="form-label">Transaction To Date</label>
                                             <input type="date" class="form-control" id="api_to_date" name="api_to_date">
                                         </div>
+                                        
+                                        <script>
+                                        // Auto-fill dates when academic year is selected
+                                        (function() {
+                                            const academicYearSelect = document.getElementById('academic_year');
+                                            const fromDateInput = document.getElementById('api_from_date');
+                                            const toDateInput = document.getElementById('api_to_date');
+                                            
+                                            // Set initial dates from default selection
+                                            if (academicYearSelect.value) {
+                                                const selectedOption = academicYearSelect.options[academicYearSelect.selectedIndex];
+                                                fromDateInput.value = selectedOption.dataset.start;
+                                                toDateInput.value = selectedOption.dataset.end;
+                                            }
+                                            
+                                            // Update dates when selection changes
+                                            academicYearSelect.addEventListener('change', function() {
+                                                if (this.value) {
+                                                    const selectedOption = this.options[this.selectedIndex];
+                                                    fromDateInput.value = selectedOption.dataset.start;
+                                                    toDateInput.value = selectedOption.dataset.end;
+                                                } else {
+                                                    // Clear dates when academic year is deselected
+                                                    fromDateInput.value = '';
+                                                    toDateInput.value = '';
+                                                }
+                                            });
+                                            
+                                            // Clear academic year selection if dates are manually changed
+                                            function clearAcademicYearIfManualChange() {
+                                                if (academicYearSelect.value) {
+                                                    const selectedOption = academicYearSelect.options[academicYearSelect.selectedIndex];
+                                                    if (fromDateInput.value !== selectedOption.dataset.start || 
+                                                        toDateInput.value !== selectedOption.dataset.end) {
+                                                        academicYearSelect.value = '';
+                                                    }
+                                                }
+                                            }
+                                            
+                                            fromDateInput.addEventListener('change', clearAcademicYearIfManualChange);
+                                            toDateInput.addEventListener('change', clearAcademicYearIfManualChange);
+                                        })();
+                                        </script>
                                     </div>
 
                                     <div class="mt-3">
@@ -134,8 +198,83 @@
                                             <input type="number" step="1" class="form-control" id="api_lease_id" name="api_lease_id" required placeholder="e.g. 12345">
                                         </div>
                                         <div class="col-12">
-                                            <label for="api_lease_property_id" class="form-label fw-bold">Property ID</label>
-                                            <input type="number" step="1" class="form-control" id="api_lease_property_id" name="api_lease_property_id" required placeholder="e.g. 739012">
+                                            <label for="api_lease_property_search" class="form-label fw-bold">Property</label>
+                                            <input 
+                                                type="text" 
+                                                class="form-control" 
+                                                id="api_lease_property_search" 
+                                                list="api_lease_property_options"
+                                                autocomplete="off"
+                                                placeholder="Loading properties from Entrata API..."
+                                                required
+                                            >
+                                            <datalist id="api_lease_property_options"></datalist>
+                                            <input type="hidden" id="api_lease_property_id" name="api_lease_property_id" required>
+                                            <small class="form-text text-muted">Select from dropdown or enter Property ID directly</small>
+                                            <script>
+                                            (function() {
+                                                const propertySearch = document.getElementById('api_lease_property_search');
+                                                const propertyOptions = document.getElementById('api_lease_property_options');
+                                                const propertyIdField = document.getElementById('api_lease_property_id');
+                                                const propertyLabelToId = new Map();
+
+                                                function syncHiddenId() {
+                                                    const typed = (propertySearch.value || '').trim();
+                                                    const mappedId = propertyLabelToId.get(typed);
+                                                    if (mappedId) {
+                                                        propertyIdField.value = String(mappedId);
+                                                        propertySearch.setCustomValidity('');
+                                                        return;
+                                                    }
+
+                                                    // Allow direct ID entry for power users.
+                                                    if (/^\d+$/.test(typed)) {
+                                                        propertyIdField.value = typed;
+                                                        propertySearch.setCustomValidity('');
+                                                        return;
+                                                    }
+
+                                                    propertyIdField.value = '';
+                                                    if (typed) {
+                                                        propertySearch.setCustomValidity('Select a property from the list or enter a numeric Property ID.');
+                                                    } else {
+                                                        propertySearch.setCustomValidity('Please select a property.');
+                                                    }
+                                                }
+
+                                                propertySearch.addEventListener('input', syncHiddenId);
+                                                propertySearch.addEventListener('change', syncHiddenId);
+
+                                                fetch('/api/property-picklist')
+                                                    .then(r => r.json())
+                                                    .then(data => {
+                                                        const props = data.properties || [];
+                                                        if (!props.length) {
+                                                            propertySearch.placeholder = 'No properties available';
+                                                            propertySearch.disabled = true;
+                                                            propertySearch.setCustomValidity('No properties available.');
+                                                            return;
+                                                        }
+
+                                                        propertySearch.placeholder = 'Select Property or enter Property ID...';
+                                                        propertySearch.disabled = false;
+
+                                                        const html = props.map(p => {
+                                                            const id = String(p.property_id);
+                                                            const label = `${p.property_name} (${id})`;
+                                                            propertyLabelToId.set(label, id);
+                                                            return `<option value="${label}"></option>`;
+                                                        }).join('');
+                                                        propertyOptions.innerHTML = html;
+                                                        propertySearch.setCustomValidity('Please select a property.');
+                                                    })
+                                                    .catch(() => {
+                                                        propertySearch.placeholder = 'Failed to load properties';
+                                                        propertySearch.disabled = true;
+                                                        propertySearch.setCustomValidity('Failed to load properties.');
+                                                    });
+                                            })();
+                                            </script>
                                         </div>
                                         <div class="col-12">
                                             <label for="api_lease_from_date" class="form-label">Transaction From Date</label>

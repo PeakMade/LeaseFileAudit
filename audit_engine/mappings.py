@@ -662,17 +662,10 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
             print(f"[FILTER] Excluding {filtered_api_codes} AR transactions with excluded AR codes: {API_POSTED_AR_CODES}")
         mask = mask & ~api_posted_mask
 
-        # Whitelist filter: if allowed_ar_codes is configured, exclude everything not in it
-        if ALLOWED_AR_CODES_SET:
-            numeric_values = pd.to_numeric(df[ARSourceColumns.AR_CODE_ID], errors='coerce')
-            not_allowed_mask = ~(
-                numeric_values.isin(ALLOWED_AR_CODES_SET) |
-                df[ARSourceColumns.AR_CODE_ID].astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET)
-            )
-            filtered_whitelist = int(not_allowed_mask.sum())
-            if filtered_whitelist > 0:
-                print(f"[FILTER] Excluding {filtered_whitelist} AR transactions outside allowed AR codes whitelist: {ALLOWED_AR_CODES}")
-            mask = mask & ~not_allowed_mask
+        # Whitelist filter intentionally NOT applied in the pipeline.
+        # The reconciliation runs on all AR codes so every lease is represented in
+        # bucket_results (and therefore in the property view lease roster).
+        # The whitelist is enforced at display time only (web/views.py).
 
     # Exclude configured resident profile names
     excluded_resident_mask = _build_excluded_resident_name_mask(
@@ -824,22 +817,8 @@ def _scheduled_row_filter(df: pd.DataFrame) -> pd.DataFrame:
             print(f"[FILTER] Excluding {filtered_api_codes} scheduled charges with excluded AR codes: {API_POSTED_AR_CODES}")
         mask = mask & ~api_posted_mask
 
-        # Whitelist filter: if allowed_ar_codes is configured, exclude everything not in it
-        if ALLOWED_AR_CODES_SET:
-            numeric_values = pd.to_numeric(df[ScheduledSourceColumns.AR_CODE_ID], errors='coerce')
-            not_allowed_mask = ~(
-                numeric_values.isin(ALLOWED_AR_CODES_SET) |
-                df[ScheduledSourceColumns.AR_CODE_ID].astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET)
-            )
-            filtered_whitelist = int(not_allowed_mask.sum())
-            if filtered_whitelist > 0:
-                print(f"[FILTER] Excluding {filtered_whitelist} scheduled charges outside allowed AR codes whitelist: {ALLOWED_AR_CODES}")
-                # Debug: show which AR codes are being excluded
-                excluded_codes = df.loc[not_allowed_mask, ScheduledSourceColumns.AR_CODE_ID].value_counts().to_dict()
-                excluded_names = df.loc[not_allowed_mask, ScheduledSourceColumns.AR_CODE_NAME].value_counts().to_dict() if ScheduledSourceColumns.AR_CODE_NAME in df.columns else {}
-                print(f"[FILTER DEBUG] Excluded scheduled charge AR code IDs: {excluded_codes}")
-                print(f"[FILTER DEBUG] Excluded scheduled charge AR code names: {excluded_names}")
-            mask = mask & ~not_allowed_mask
+        # Intentionally do NOT apply allowed_ar_codes whitelist to scheduled charges.
+        # Keep scheduled baseline intact so AR-only whitelisting doesn't collapse expected rows.
 
     # Exclude configured resident profile names
     excluded_resident_mask = _build_excluded_resident_name_mask(

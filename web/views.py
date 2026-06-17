@@ -1747,6 +1747,46 @@ def filter_to_current_academic_year(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def get_academic_year_options(num_past_years: int = 2) -> list[dict[str, str]]:
+    """
+    Generate academic year options for dropdown selector.
+    
+    Academic year runs from August to July (e.g., "2024-2025" = Aug 2024 - July 2025).
+    
+    Args:
+        num_past_years: Number of past academic years to include (default: 2)
+    
+    Returns:
+        List of dicts with 'value', 'label', 'start_date', 'end_date'
+    """
+    current_date = pd.Timestamp.now()
+    current_month = current_date.month
+    current_year = current_date.year
+    
+    # Determine current academic year start
+    if current_month >= 8:
+        current_academic_start_year = current_year
+    else:
+        current_academic_start_year = current_year - 1
+    
+    options = []
+    for i in range(num_past_years + 1):  # Include current + past years
+        start_year = current_academic_start_year - i
+        end_year = start_year + 1
+        
+        start_date = f"{start_year}-08-01"
+        end_date = f"{end_year}-07-31"
+        
+        options.append({
+            'value': f"{start_year}-{end_year}",
+            'label': f"{start_year}-{end_year}",
+            'start_date': start_date,
+            'end_date': end_date
+        })
+    
+    return options
+
+
 def _resolve_audit_window_bounds(audit_year: int = None, audit_month: int = None) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Resolve inclusive date bounds for audit window filtering."""
     if audit_year is None:
@@ -1860,7 +1900,13 @@ def execute_audit_run(
 
     early_prefilter_enabled = os.getenv('EARLY_AUDIT_WINDOW_PREFILTER', 'true').lower() == 'true'
     if early_prefilter_enabled:
-        window_start, window_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
+        # Use explicit date range when provided so re-running the same audit is deterministic.
+        if audit_date_from or audit_date_to:
+            _default_start, _default_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
+            window_start = pd.to_datetime(audit_date_from, errors='coerce') if audit_date_from else _default_start
+            window_end = pd.to_datetime(audit_date_to, errors='coerce') if audit_date_to else _default_end
+        else:
+            window_start, window_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
         print(
             f"[EARLY WINDOW FILTER] Enabled with canonical bounds: "
             f"{window_start.strftime('%Y-%m-%d')} through {window_end.strftime('%Y-%m-%d')}"
@@ -1958,6 +2004,47 @@ def execute_audit_run(
     _extract_property_names_from_raw(sources.get(config.scheduled_source.name), property_name_map)
     print(f"[EXECUTE_AUDIT_RUN] Upload-time property name map size: {len(property_name_map)}")
     
+    # Filter out excluded properties
+    from audit_engine.api_ingest import _load_excluded_properties
+    excluded_property_ids = _load_excluded_properties()
+    if excluded_property_ids:
+        excluded_count = sum(1 for prop_id in property_name_map if str(prop_id) in excluded_property_ids)
+        if excluded_count > 0:
+            for prop_id in list(property_name_map.keys()):
+                if str(prop_id) in excluded_property_ids:
+                    del property_name_map[prop_id]
+            print(f"[PROPERTY FILTER] Removed {excluded_count} excluded property(ies) from audit")
+        
+        # Filter AR transactions
+        ar_df = sources.get(config.ar_source.name)
+        if ar_df is not None and not ar_df.empty:
+            property_id_col = next(
+                (col for col in ['PROPERTY_ID', 'property_id', 'PropertyId', 'Property ID'] if col in ar_df.columns),
+                None
+            )
+            if property_id_col:
+                before_count = len(ar_df)
+                ar_df = ar_df[~ar_df[property_id_col].astype(str).isin(excluded_property_ids)].copy()
+                sources[config.ar_source.name] = ar_df
+                filtered_ar = before_count - len(ar_df)
+                if filtered_ar > 0:
+                    print(f"[PROPERTY FILTER] Filtered {filtered_ar} AR transaction rows for excluded properties")
+        
+        # Filter scheduled charges
+        sched_df = sources.get(config.scheduled_source.name)
+        if sched_df is not None and not sched_df.empty:
+            property_id_col = next(
+                (col for col in ['PROPERTY_ID', 'property_id', 'PropertyId', 'Property ID'] if col in sched_df.columns),
+                None
+            )
+            if property_id_col:
+                before_count = len(sched_df)
+                sched_df = sched_df[~sched_df[property_id_col].astype(str).isin(excluded_property_ids)].copy()
+                sources[config.scheduled_source.name] = sched_df
+                filtered_sched = before_count - len(sched_df)
+                if filtered_sched > 0:
+                    print(f"[PROPERTY FILTER] Filtered {filtered_sched} scheduled charge rows for excluded properties")
+    
     # Apply source mappings to convert RAW -> CANONICAL
     print(f"\n{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 2: SOURCE MAPPING (RAW → CANONICAL) =====")
@@ -2017,7 +2104,12 @@ def execute_audit_run(
             print(f"[EXECUTE_AUDIT_RUN] Expected date range: {date_range['min']} to {date_range['max']}")
 
     if early_prefilter_enabled:
-        window_start, window_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
+        if audit_date_from or audit_date_to:
+            _default_start, _default_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
+            window_start = pd.to_datetime(audit_date_from, errors='coerce') if audit_date_from else _default_start
+            window_end = pd.to_datetime(audit_date_to, errors='coerce') if audit_date_to else _default_end
+        else:
+            window_start, window_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
         pre_late_ar_count = len(actual_detail)
         pre_late_expected_count = len(expected_detail)
 
@@ -2360,6 +2452,42 @@ def execute_audit_run(
     print(f"[EXECUTE_AUDIT_RUN] Calculating portfolio-level KPIs...")
     portfolio_totals = calculate_kpis(bucket_results, findings)
     print(f"[EXECUTE_AUDIT_RUN] ✓ Portfolio KPIs calculated")
+    
+    # Execute future lease audit if enabled
+    future_lease_audit_results = None
+    future_lease_kpis = {}
+    try:
+        from audit_engine.future_lease_audit import load_future_lease_config, execute_future_lease_audit
+        future_lease_config = load_future_lease_config()
+        
+        if future_lease_config.get('enabled', False):
+            print(f"\n{'='*80}")
+            print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 8: FUTURE LEASE AUDIT =====")
+            print(f"{'='*80}")
+            print(f"[FUTURE LEASE AUDIT] Configuration loaded, executing future lease audit...")
+            
+            future_audit_output = execute_future_lease_audit(
+                scheduled_normalized,
+                run_id=run_id,
+                config=future_lease_config,
+                storage_service=storage
+            )
+            
+            future_lease_audit_results = future_audit_output.get('future_lease_results')
+            future_lease_kpis = future_audit_output.get('kpis', {})
+            
+            print(f"[FUTURE LEASE AUDIT] ✓ Future lease audit complete")
+            print(f"[FUTURE LEASE AUDIT]   Leases audited: {future_lease_kpis.get('total_future_leases', 0)}")
+            print(f"[FUTURE LEASE AUDIT]   Pass: {future_lease_kpis.get('pass_count', 0)}")
+            print(f"[FUTURE LEASE AUDIT]   True Discrepancies: {future_lease_kpis.get('true_discrepancy_count', 0)}")
+            print(f"{'='*80}\n")
+        else:
+            print(f"[FUTURE LEASE AUDIT] Future lease audit disabled in configuration")
+    except ImportError as e:
+        logger.warning(f"[FUTURE LEASE AUDIT] Module not available: {e}")
+    except Exception as e:
+        logger.error(f"[FUTURE LEASE AUDIT] Error executing future lease audit: {e}", exc_info=True)
+    
     print(f"\n[EXECUTE_AUDIT_RUN] ===== AUDIT PIPELINE COMPLETE =====")
     print(f"{'='*80}\n")
 
@@ -2374,6 +2502,8 @@ def execute_audit_run(
         "portfolio_totals": portfolio_totals,
         "property_execution_stats": property_execution_stats,
         "property_name_map": property_name_map,
+        "future_lease_audit_results": future_lease_audit_results,
+        "future_lease_kpis": future_lease_kpis,
     }
 
 
@@ -2422,11 +2552,15 @@ def index():
         logger.info(f"[INDEX] SharePoint site URL: {config.auth.sharepoint_site_url}")
         logger.info(f"[INDEX] SharePoint list name: {config.auth.sharepoint_list_name}")
     
+    # Get academic year options for date selector
+    academic_years = get_academic_year_options(num_past_years=2)
+    
     return render_template(
         'upload.html',
         recent_runs=recent_runs,
         user=user,
         api_property_options=[],
+        academic_years=academic_years,
     )
 
 
@@ -3004,7 +3138,7 @@ def upload_api_property():
 _BULK_AUDIT_JOBS: dict = {}
 
 _BULK_JOBS_FILE = Path("instance/bulk_jobs.json")
-_MAX_PERSISTED_BULK_JOBS = 2
+_MAX_PERSISTED_BULK_JOBS = max(2, int(os.getenv('MAX_PERSISTED_BULK_JOBS', '20')))
 
 
 def _persist_completed_jobs() -> None:
@@ -3200,11 +3334,15 @@ def bulk_audit_page():
         reverse=True,
     )[:_MAX_PERSISTED_BULK_JOBS]
 
+    # Get academic year options for date selector
+    academic_years = get_academic_year_options(num_past_years=2)
+    
     return render_template(
         'bulk_audit.html',
         properties=picklist,
         recent_jobs=recent_jobs,
         active_job=active_job,
+        academic_years=academic_years,
     )
 
 
@@ -3471,42 +3609,42 @@ def portfolio(run_id: str = None):
                 session_cache_key=cache_token
             )
         else:
-            # Default portfolio landing: latest snapshot for each property across runs.
-            property_snapshots = cached_load_latest_property_snapshots(cache_token)
-
-            # Single-lease API runs are drill-down scope — filter them out using the
-            # RunScopeType field stored in the snapshot row (no metadata fetch needed).
-            excluded_lease_scoped = 0
-            filtered_property_snapshots = []
-            for snapshot in property_snapshots:
-                if str(snapshot.get('run_scope_type') or '').strip().lower() == 'lease':
-                    excluded_lease_scoped += 1
-                else:
-                    filtered_property_snapshots.append(snapshot)
-
-            if excluded_lease_scoped:
-                logger.info(
-                    f"[PORTFOLIO_VIEW] Excluded {excluded_lease_scoped} lease-scoped property snapshots "
-                    f"from cross-run aggregation"
-                )
-
-            property_snapshots = filtered_property_snapshots
-
-            # If no cross-run properties found, fall back to latest run scoped snapshots.
-            if not property_snapshots:
-                snapshot_source = 'run_scoped_snapshots'
-                snapshot_reason = 'latest_across_runs_empty'
-                latest_run = get_latest_run(cache_token)
-                run_id = latest_run.get('run_id')
-                if not run_id:
-                    flash('No audit runs available', 'warning')
-                    return redirect(url_for('main.index'))
-
-                property_snapshots = cached_load_run_display_snapshots_for_run(
-                    run_id=run_id,
+            # Default portfolio landing: find the most recent run that has property-level
+            # snapshots so all numbers on the page are from the same audit.
+            snapshot_source = 'run_scoped_snapshots'
+            snapshot_reason = 'latest_run_default'
+            available_runs_for_default = get_available_runs(cache_token) or []
+            property_snapshots = []
+            # Check up to the 5 most recent runs to find one with property snapshots,
+            # skipping lease-only runs (e.g. single-lease API audits).
+            for _candidate in available_runs_for_default[:5]:
+                _candidate_id = _candidate.get('run_id')
+                if not _candidate_id:
+                    continue
+                _snaps = cached_load_run_display_snapshots_for_run(
+                    run_id=_candidate_id,
                     scope_type='property',
                     session_cache_key=cache_token
                 )
+                if _snaps:
+                    run_id = _candidate_id
+                    property_snapshots = _snaps
+                    break
+
+            # Fallback: cross-run aggregation (latest snapshot per property across all runs)
+            if not property_snapshots:
+                snapshot_source = 'latest_property_snapshots_across_runs'
+                snapshot_reason = 'run_scoped_fallback'
+                property_snapshots = cached_load_latest_property_snapshots(cache_token)
+                # Filter out lease-scoped snapshots
+                property_snapshots = [
+                    s for s in property_snapshots
+                    if str(s.get('run_scope_type') or '').strip().lower() != 'lease'
+                ]
+
+            if not property_snapshots:
+                flash('No audit runs available', 'warning')
+                return redirect(url_for('main.index'))
 
         logger.info(
             f"[READ SUMMARY][PORTFOLIO_VIEW] run_id={run_id} "
@@ -3633,11 +3771,21 @@ def portfolio(run_id: str = None):
             undercharge = float(snapshot_row.get('undercharge', 0) or 0)
             overcharge = float(snapshot_row.get('overcharge', 0) or 0)
             exception_count = int(snapshot_row.get('exception_count', 0) or 0)
-            
+
+            property_id_int = _normalize_property_id_token(property_id)
+
+            # Subtract resolved amounts so portfolio reflects current open state
+            if property_id_int is not None and property_id_int in audit_status_summary:
+                _prop_status = audit_status_summary[property_id_int]
+                undercharge = max(0.0, undercharge - float(_prop_status.get('resolved_undercharge', 0) or 0))
+                overcharge = max(0.0, overcharge - float(_prop_status.get('resolved_overcharge', 0) or 0))
+                # Subtract resolved buckets (distinct lease/AR code pairs with any resolved record)
+                _resolved_buckets = int(_prop_status.get('resolved_buckets', 0))
+                exception_count = max(0, exception_count - _resolved_buckets)
+
             # Keep drill-down links pinned to selected run when present.
             property_run_id = selected_run_id or snapshot_row.get('run_id')
 
-            property_id_int = _normalize_property_id_token(property_id)
             snapshot_name = _clean_property_name(snapshot_row.get('property_name'))
             # Reject fallback placeholder names like "Property 12345" baked in during old runs
             if snapshot_name and re.match(r'^property\s+\d+$', snapshot_name.strip(), re.IGNORECASE):
@@ -3654,10 +3802,15 @@ def portfolio(run_id: str = None):
 
             # ExceptionMonths rows are created when month-level actions are saved,
             # so a fresh audited property can have exceptions with zero tracked months.
+            # A run is 'complete' once it has been executed and saved (snapshot exists).
+            # Open exception counts are already surfaced in the exception_count column.
+            # 'in_progress' is reserved for when all exceptions have been acknowledged
+            # but some are still open (i.e., the user has started reviewing).
             if exception_count == 0:
                 audit_status = 'complete'
             elif tracked_months == 0:
-                audit_status = 'in_progress'
+                # Run finished but no exception months tracked yet — audit is done
+                audit_status = 'complete'
             elif open_months > 0:
                 audit_status = 'in_progress'
             else:
@@ -3708,6 +3861,17 @@ def portfolio(run_id: str = None):
         # Render/run selector should reflect the selected run when present.
         display_run_id = selected_run_id or (kpis['most_recent_run']['run_id'] if kpis.get('most_recent_run') else None)
         
+        # Load future lease audit KPIs if available for this run
+        future_lease_kpis = {}
+        if display_run_id:
+            try:
+                # Try to load future lease audit results from storage
+                # For now, this will be empty since we haven't persisted results yet
+                # In production, load from SharePoint FutureLeaseAudit list
+                pass
+            except Exception as e:
+                logger.debug(f"[PORTFOLIO] No future lease audit data available: {e}")
+        
         response = render_template(
             'portfolio.html',
             run_id=display_run_id,
@@ -3717,6 +3881,7 @@ def portfolio(run_id: str = None):
             total_runs=kpis['total_runs'],
             current_run_id=selected_run_id,
             available_runs=available_runs,
+            future_lease_kpis=future_lease_kpis,
         )
         _log_and_clear_pending_upload_timing(
             run_id=run_id,
@@ -4096,6 +4261,19 @@ def property_view(property_id: str, run_id: str = None):
         property_buckets = all_property_buckets[
             ~all_property_buckets[CanonicalField.STATUS.value].isin(_non_exception_statuses)
         ].copy()
+        # Apply whitelist: if an AR code whitelist is active, scope the displayed exceptions
+        # to only those codes (e.g. Rent-only when whitelist=[154771]).  The lease roster
+        # (all_lease_ids) is NOT filtered, so all leases remain visible even if their only
+        # discrepancies are for non-whitelisted codes.
+        from audit_engine.mappings import ALLOWED_AR_CODES_SET, ALLOWED_AR_CODES_TEXT_SET
+        if ALLOWED_AR_CODES_SET and CanonicalField.AR_CODE_ID.value in property_buckets.columns:
+            _pb_ar_col = property_buckets[CanonicalField.AR_CODE_ID.value]
+            _pb_numeric = pd.to_numeric(_pb_ar_col, errors='coerce')
+            _pb_whitelist_mask = (
+                _pb_numeric.isin(ALLOWED_AR_CODES_SET) |
+                _pb_ar_col.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET)
+            )
+            property_buckets = property_buckets[_pb_whitelist_mask].copy()
         
         # 🚀 BULK FETCH: Load all exception months for this property in ONE call
         logger.info(f"[PROPERTY_VIEW] Bulk fetching exception months for property {property_id}")
@@ -4191,7 +4369,12 @@ def property_view(property_id: str, run_id: str = None):
             
             # Calculate lease status based on exception states
             unresolved_exception_count = len(lease_groups.get(lease_id, []))
-            static_exception_count = int(lease_snapshot.get('exception_count', 0)) if lease_snapshot else unresolved_exception_count
+            # When a whitelist is active, the snapshot counts reflect ALL AR codes (pre-filter),
+            # so we use the live (filtered) count to keep the display consistent.
+            if ALLOWED_AR_CODES_SET:
+                static_exception_count = unresolved_exception_count
+            else:
+                static_exception_count = int(lease_snapshot.get('exception_count', 0)) if lease_snapshot else unresolved_exception_count
             resolved_exception_count = max(0, static_exception_count - unresolved_exception_count)
             
             # Determine overall lease status
@@ -4217,10 +4400,8 @@ def property_view(property_id: str, run_id: str = None):
                 total_variance = sum(float(e.get('variance') or 0) for e in exceptions)
                 total_undercharge = sum(abs(float(e.get('variance') or 0)) for e in exceptions if float(e.get('variance') or 0) < 0)
                 total_overcharge = sum(float(e.get('variance') or 0) for e in exceptions if float(e.get('variance') or 0) > 0)
-                # Use snapshot values for consistent display with the resident detail page
-                if lease_snapshot:
-                    total_undercharge = float(lease_snapshot.get('undercharge', total_undercharge) or 0)
-                    total_overcharge = float(lease_snapshot.get('overcharge', total_overcharge) or 0)
+                # NOTE: Do NOT overwrite with lease_snapshot — it is static (audit time) and
+                # does not reflect resolutions. exceptions is already filtered to unresolved only.
                 lease_summary.append({
                     'lease_interval_id': lease_id,
                     'lease_id': resolved_lease_id,
@@ -4240,10 +4421,8 @@ def property_view(property_id: str, run_id: str = None):
                     'is_future_lease': _is_future,
                 })
             else:
-                # Clean lease - no exceptions currently unresolved
-                # Still check snapshot in case there are SCHEDULED_ONLY or historical amounts
-                _snap_undercharge = float(lease_snapshot.get('undercharge', 0) or 0) if lease_snapshot else 0.0
-                _snap_overcharge = float(lease_snapshot.get('overcharge', 0) or 0) if lease_snapshot else 0.0
+                # Clean lease - all exceptions resolved or none exist
+                # Undercharge/overcharge are 0 since there are no unresolved exceptions.
                 lease_summary.append({
                     'lease_interval_id': lease_id,
                     'lease_id': resolved_lease_id,
@@ -4253,9 +4432,9 @@ def property_view(property_id: str, run_id: str = None):
                     'exception_count': static_exception_count,
                     'unresolved_exception_count': 0,
                     'matched_count': matched_count,
-                    'total_undercharge': _snap_undercharge,
-                    'total_overcharge': _snap_overcharge,
-                    'total_variance': _snap_overcharge - _snap_undercharge,
+                    'total_undercharge': 0.0,
+                    'total_overcharge': 0.0,
+                    'total_variance': 0.0,
                     'status_label': status_label,
                     'status_color': status_color,
                     'exceptions': [],
@@ -4307,24 +4486,13 @@ def property_view(property_id: str, run_id: str = None):
         )
 
         # Derive undercharge and overcharge from lease_summary so the KPI cards always
-        # match the per-row values shown in the lease table (both now use snapshot values).
+        # match the per-row values shown in the lease table (both calculated from unresolved exceptions only).
         property_kpis['total_undercharge'] = sum(
             float(lease.get('total_undercharge', 0) or 0) for lease in lease_summary
         )
         property_kpis['total_overcharge'] = sum(
             float(lease.get('total_overcharge', 0) or 0) for lease in lease_summary
         )
-
-        # Fallback: if snapshot exists for overcharge and lease_summary had none, prefer snapshot.
-        if property_snapshot and property_kpis['total_overcharge'] == 0.0:
-            property_kpis['total_overcharge'] = float(property_snapshot.get('overcharge', 0) or 0)
-        elif not property_buckets.empty and CanonicalField.VARIANCE.value in property_buckets.columns and property_kpis['total_overcharge'] == 0.0:
-            # Convert variance column to numeric, coercing non-numeric strings to NaN
-            variance_series = pd.to_numeric(
-                property_buckets[CanonicalField.VARIANCE.value],
-                errors='coerce'
-            ).fillna(0.0).astype(float)
-            property_kpis['total_overcharge'] = float(variance_series[variance_series > 0.0].sum())
 
         # Keep the KPI card aligned with the lease table's discrepancy column.
         property_exception_count = int(
@@ -4567,13 +4735,16 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             _numeric = pd.to_numeric(_ar_col, errors='coerce')
             _excluded_mask = _numeric.isin(API_POSTED_AR_CODES_SET) | _ar_col.astype(str).str.strip().isin(API_POSTED_AR_CODES_TEXT_SET)
             bucket_results = bucket_results[~_excluded_mask].copy()
-            # Also apply whitelist filter: if allowed_ar_codes is configured, exclude everything not in it
+            # Re-apply the allowed_ar_codes whitelist at display time so the lease detail
+            # only shows findings for whitelisted AR codes (e.g. Rent only when whitelist=[154771]).
             if ALLOWED_AR_CODES_SET:
-                _ar_col = bucket_results[CanonicalField.AR_CODE_ID.value]
-                _numeric = pd.to_numeric(_ar_col, errors='coerce')
-                _not_allowed_mask = ~(_numeric.isin(ALLOWED_AR_CODES_SET) | _ar_col.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET))
-                print(f"[DISPLAY FILTER DEBUG] not_allowed rows to remove={int(_not_allowed_mask.sum())} remaining={int((~_not_allowed_mask).sum())}")
-                bucket_results = bucket_results[~_not_allowed_mask].copy()
+                _ar_col2 = bucket_results[CanonicalField.AR_CODE_ID.value]
+                _numeric2 = pd.to_numeric(_ar_col2, errors='coerce')
+                _whitelist_mask = (
+                    _numeric2.isin(ALLOWED_AR_CODES_SET) |
+                    _ar_col2.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET)
+                )
+                bucket_results = bucket_results[_whitelist_mask].copy()
         else:
             print(f"[DISPLAY FILTER DEBUG] AR_CODE_ID column NOT found in bucket_results")
 
@@ -5423,9 +5594,9 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         total_actual = sum(float(monthly.get('actual_total', 0) or 0) for monthly in unresolved_exception_months)
         total_variance = total_actual - total_expected
 
-        if lease_snapshot:
-            total_undercharge = float(lease_snapshot.get('undercharge', total_undercharge) or 0)
-            total_overcharge = float(lease_snapshot.get('overcharge', total_overcharge) or 0)
+        # NOTE: Do NOT overwrite with lease_snapshot here — the snapshot is static (written at
+        # audit time) and does not reflect resolutions. The totals above are already correctly
+        # calculated from unresolved months only.
 
         # Variance aligns with unresolved-month totals shown in lease workflow rows.
         

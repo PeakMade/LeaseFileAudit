@@ -308,6 +308,15 @@ def fetch_entrata_property_picklist() -> list[dict[str, str]]:
 
     result_rows = list(deduped.values())
 
+    # Filter out excluded properties
+    excluded_ids = _load_excluded_properties()
+    if excluded_ids:
+        original_count = len(result_rows)
+        result_rows = [row for row in result_rows if row.get("property_id") not in excluded_ids]
+        filtered_count = original_count - len(result_rows)
+        if filtered_count > 0:
+            print(f"[PROPERTY FILTER] Excluded {filtered_count} property(ies) from picklist")
+
     # In sandbox mode, replace property IDs with sandbox-specific IDs where defined.
     if get_entrata_environment() == "sandbox":
         sandbox_map = _load_sandbox_property_id_map()
@@ -332,6 +341,17 @@ def _load_sandbox_property_id_map() -> dict[str, str]:
         return json.loads(config_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _load_excluded_properties() -> set[str]:
+    """Load excluded property IDs from excluded_properties.json."""
+    config_path = Path(__file__).parent.parent / "excluded_properties.json"
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        excluded_ids = data.get("excluded_property_ids", [])
+        return {_to_str(prop_id) for prop_id in excluded_ids if prop_id}
+    except Exception:
+        return set()
 
 
 def _extract_lease_nodes(details_payload: dict[str, Any]) -> list[dict[str, Any]]:

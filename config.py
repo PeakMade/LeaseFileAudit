@@ -79,6 +79,28 @@ class StorageConfig:
 
 
 @dataclass
+class SharePointPerformanceConfig:
+    """Performance tuning for SharePoint batch writes."""
+    # Batch sizes (max 20 per Microsoft Graph API limit)
+    batch_size_auditruns: int = field(default_factory=lambda: int(os.getenv('SHAREPOINT_BATCH_SIZE_AUDITRUNS', '20')))
+    batch_size_snapshots: int = field(default_factory=lambda: int(os.getenv('SHAREPOINT_BATCH_SIZE_SNAPSHOTS', '20')))
+    batch_size_default: int = field(default_factory=lambda: int(os.getenv('SHAREPOINT_BATCH_SIZE', '20')))
+    
+    # Batch concurrency (how many batches to process in parallel)
+    batch_concurrency_auditruns: int = field(default_factory=lambda: int(os.getenv('SHAREPOINT_BATCH_CONCURRENCY_AUDITRUNS', '2')))
+    batch_concurrency_snapshots: int = field(default_factory=lambda: int(os.getenv('SHAREPOINT_BATCH_CONCURRENCY_SNAPSHOTS', '2')))
+    batch_concurrency_default: int = field(default_factory=lambda: int(os.getenv('SHAREPOINT_BATCH_CONCURRENCY', '2')))
+    
+    # Async write toggles (write in background thread)
+    async_audit_results_write: bool = field(default_factory=lambda: os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'true').lower() == 'true')
+    async_metrics_write: bool = field(default_factory=lambda: os.getenv('ASYNC_METRICS_WRITE', 'true').lower() == 'true')
+    async_snapshots_write: bool = field(default_factory=lambda: os.getenv('ASYNC_SNAPSHOTS_WRITE', 'true').lower() == 'true')
+    
+    # Future: Row reduction (set to True to write only exceptions to AuditRuns2)
+    write_exceptions_only: bool = field(default_factory=lambda: os.getenv('SHAREPOINT_WRITE_EXCEPTIONS_ONLY', 'false').lower() == 'true')
+
+
+@dataclass
 class AuthConfig:
     """Azure App Service Authentication configuration."""
     # Azure AD settings (loaded from environment variables)
@@ -147,6 +169,9 @@ class AuditConfig:
     
     # Storage settings
     storage: StorageConfig = field(default_factory=StorageConfig)
+    
+    # SharePoint performance tuning
+    sharepoint_performance: SharePointPerformanceConfig = field(default_factory=SharePointPerformanceConfig)
     
     # Authentication settings
     auth: AuthConfig = field(default_factory=AuthConfig)

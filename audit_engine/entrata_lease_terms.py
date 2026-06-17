@@ -141,14 +141,12 @@ def post_entrata(payload: dict, url: str = None) -> dict:
     logger.info("=" * 80)
     logger.info("POST REQUEST TO ENTRATA API")
     logger.info(f"URL: {target_url}")
-    logger.info(f"Payload: {json.dumps(payload, indent=2)}")
 
     resp = requests.post(target_url, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
 
     response_json = resp.json()
     logger.info(f"Response Status: {resp.status_code}")
-    logger.info(f"Response: {json.dumps(response_json, indent=2)}")
     logger.info("=" * 80)
 
     return response_json

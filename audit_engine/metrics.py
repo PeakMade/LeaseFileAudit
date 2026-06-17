@@ -158,3 +158,94 @@ def calculate_property_summary(bucket_results: pd.DataFrame, findings: pd.DataFr
         summaries.append(kpis)
     
     return pd.DataFrame(summaries)
+
+
+def calculate_future_lease_kpis(future_lease_results: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Calculate KPIs specific to future lease audit.
+    
+    Args:
+        future_lease_results: Future lease audit results DataFrame
+    
+    Returns:
+        Dictionary with future lease audit KPIs
+    """
+    if future_lease_results.empty:
+        return {
+            'total_future_leases': 0,
+            'pass_count': 0,
+            'expected_exception_count': 0,
+            'needs_review_count': 0,
+            'true_discrepancy_count': 0,
+            'total_potential_undercharge': 0.0,
+            'total_potential_overcharge': 0.0,
+            'match_rate': 0.0,
+            'avg_variance': 0.0,
+            'max_undercharge': 0.0,
+            'max_overcharge': 0.0
+        }
+    
+    total_leases = len(future_lease_results)
+    
+    # Status counts
+    status_col = CanonicalField.FUTURE_LEASE_AUDIT_STATUS.value
+    status_counts = future_lease_results[status_col].value_counts().to_dict()
+    
+    pass_count = status_counts.get('Pass', 0)
+    expected_exception_count = status_counts.get('Expected Exception', 0)
+    needs_review_count = status_counts.get('Needs Review', 0)
+    true_discrepancy_count = status_counts.get('True Discrepancy', 0)
+    
+    # Variance calculations
+    variance_col = CanonicalField.VARIANCE.value
+    direction_col = CanonicalField.VARIANCE_DIRECTION.value
+    
+    variances = pd.to_numeric(future_lease_results[variance_col], errors='coerce').fillna(0.0)
+    
+    # Calculate undercharge/overcharge only for true discrepancies
+    discrepancy_mask = future_lease_results[status_col] == 'True Discrepancy'
+    discrepancy_results = future_lease_results[discrepancy_mask]
+    
+    if len(discrepancy_results) > 0:
+        undercharge_mask = discrepancy_results[direction_col] == 'undercharge'
+        overcharge_mask = discrepancy_results[direction_col] == 'overcharge'
+        
+        undercharge_variances = pd.to_numeric(
+            discrepancy_results[undercharge_mask][variance_col], 
+            errors='coerce'
+        ).fillna(0.0)
+        overcharge_variances = pd.to_numeric(
+            discrepancy_results[overcharge_mask][variance_col], 
+            errors='coerce'
+        ).fillna(0.0)
+        
+        total_potential_undercharge = float(undercharge_variances.abs().sum())
+        total_potential_overcharge = float(overcharge_variances.abs().sum())
+        max_undercharge = float(undercharge_variances.abs().max()) if len(undercharge_variances) > 0 else 0.0
+        max_overcharge = float(overcharge_variances.abs().max()) if len(overcharge_variances) > 0 else 0.0
+    else:
+        total_potential_undercharge = 0.0
+        total_potential_overcharge = 0.0
+        max_undercharge = 0.0
+        max_overcharge = 0.0
+    
+    # Match rate (Pass + Expected Exception) / Total
+    match_count = pass_count + expected_exception_count
+    match_rate = (match_count / total_leases * 100.0) if total_leases > 0 else 0.0
+    
+    # Average variance (absolute value)
+    avg_variance = float(variances.abs().mean()) if len(variances) > 0 else 0.0
+    
+    return {
+        'total_future_leases': int(total_leases),
+        'pass_count': int(pass_count),
+        'expected_exception_count': int(expected_exception_count),
+        'needs_review_count': int(needs_review_count),
+        'true_discrepancy_count': int(true_discrepancy_count),
+        'total_potential_undercharge': float(total_potential_undercharge),
+        'total_potential_overcharge': float(total_potential_overcharge),
+        'match_rate': float(match_rate),
+        'avg_variance': float(avg_variance),
+        'max_undercharge': float(max_undercharge),
+        'max_overcharge': float(max_overcharge)
+    }

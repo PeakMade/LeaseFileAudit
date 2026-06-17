@@ -1,0 +1,41 @@
+{
+  "enabled": true,
+  "audit_mode": "future_lease_contract_validation",
+  "description": "Phase 1: Compare lease contract amounts against scheduled charge rollup totals for future-status leases",
+  
+  "lease_selection": {
+    "included_lease_modes": ["future"],
+    "excluded_resident_statuses": ["canceled", "denied", "withdrawn"],
+    "require_lease_start_after_today": true,
+    "exclude_test_leases": true,
+    "exclude_model_leases": true,
+    "exclude_corporate_leases": true
+  },
+  
+  "charge_rollup_rules": {
+    "included_usage_categories": ["Base", "Amenity", "Parking", "Pet", "Add Ons"],
+    "excluded_usage_categories": ["Lease Violation", "Maintenance", "Special"],
+    "recurring_only": true,
+    "active_charges_only": true,
+    "apply_scheduled_only": true
+  },
+  
+  "variance_thresholds": {
+    "tolerance_amount": 0.01,
+    "tolerance_percentage": null,
+    "expected_exception_rules": []
+  },
+  
+  "audit_statuses": {
+    "pass": "Pass",
+    "expected_exception": "Expected Exception",
+    "needs_review": "Needs Review",
+    "true_discrepancy": "True Discrepancy"
+  },
+  
+  "reporting": {
+    "suppress_scheduled_not_billed_for_future": true,
+    "include_in_portfolio_dashboard": true,
+    "separate_kpi_section": true
+  }
+}

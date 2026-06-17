@@ -1,0 +1,17 @@
+{
+  "excluded_property_ids": [
+    "639810",
+    "639820",
+    "1320992",
+    "100045645",
+    "100032338"
+  ],
+  "excluded_property_names": [
+    "UNIVERSITY CENTER",
+    "UNIVERSITY GATEWAY",
+    "GEOCENTRAL",
+    "GEOPARK",
+    "GEOTOWNS"
+  ],
+  "notes": "Properties excluded from picklist and auditing. IDs: 639810=UNIVERSITY CENTER (UCC), 639820=UNIVERSITY GATEWAY (Canadian), 1320992=GEOCENTRAL, 100045645=GEOPARK, 100032338=GEOTOWNS"
+}

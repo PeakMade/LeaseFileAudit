@@ -1061,8 +1061,11 @@
                         setStatus(steps[index]);
                         setActiveStep(index);
                     } else {
-                        // All steps shown — server still responding, indicate activity without looping
+                        // All steps shown — server still responding; trigger asymptotic creep so
+                        // the bar keeps visibly moving toward ~99% instead of freezing at 88%.
                         setStatus('Still loading, please wait…');
+                        nudgeProgress(97);
+                        stopPhaseMessages();
                     }
                 }, intervalMs || 4000);
             }

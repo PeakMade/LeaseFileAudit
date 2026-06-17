@@ -283,6 +283,48 @@ def reconcile_buckets(
     else:
         reconciled[lease_mode_col] = 'active'
 
+    # Carry CUSTOMER_NAME from expected_detail or actual_detail to bucket results.
+    # Prefer expected_detail first (scheduled charges), then fallback to actual_detail (AR transactions).
+    customer_name_col = CanonicalField.CUSTOMER_NAME.value
+    customer_name_added = False
+    
+    for source_df, source_name in [(expected_detail, 'expected'), (actual_detail, 'actual')]:
+        if customer_name_col in source_df.columns and not customer_name_added:
+            # Get the first non-null customer name for each bucket
+            name_agg = (
+                source_df[source_df[customer_name_col].notna() & (source_df[customer_name_col].astype(str).str.strip() != '')]
+                .groupby(BUCKET_KEY_COLUMNS)[customer_name_col]
+                .first()
+                .reset_index()
+            )
+            if not name_agg.empty:
+                reconciled = reconciled.merge(name_agg, on=BUCKET_KEY_COLUMNS, how='left')
+                customer_name_added = True
+    
+    if not customer_name_added:
+        reconciled[customer_name_col] = None
+
+    # Carry PROPERTY_NAME from expected_detail or actual_detail to bucket results.
+    # Prefer actual_detail first (typically has property names), then fallback to expected_detail.
+    property_name_col = CanonicalField.PROPERTY_NAME.value
+    property_name_added = False
+    
+    for source_df, source_name in [(actual_detail, 'actual'), (expected_detail, 'expected')]:
+        if property_name_col in source_df.columns and not property_name_added:
+            # Get the first non-null property name for each bucket
+            prop_name_agg = (
+                source_df[source_df[property_name_col].notna() & (source_df[property_name_col].astype(str).str.strip() != '')]
+                .groupby(BUCKET_KEY_COLUMNS)[property_name_col]
+                .first()
+                .reset_index()
+            )
+            if not prop_name_agg.empty:
+                reconciled = reconciled.merge(prop_name_agg, on=BUCKET_KEY_COLUMNS, how='left')
+                property_name_added = True
+    
+    if not property_name_added:
+        reconciled[property_name_col] = None
+
     # Classify status — future buckets use SCHEDULED_ONLY instead of SCHEDULED_NOT_BILLED
     reconciled[CanonicalField.STATUS.value] = reconciled.apply(
         lambda row: _classify_status(row, recon_config),

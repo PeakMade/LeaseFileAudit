@@ -34,12 +34,14 @@ Stop-ListenerOnPort -TargetPort $Port
 
 if (-not $Background) {
     $env:OPEN_BROWSER = "true"
+    $env:PORT = "$Port"
     Write-Host ("Starting {0} in foreground on port {1}; terminal output will stream below." -f $AppFile, $Port)
     & python $AppFile
     exit $LASTEXITCODE
 }
 
 $env:OPEN_BROWSER = "false"
+$env:PORT = "$Port"
 $appProc = Start-Process -FilePath "python" -ArgumentList $AppFile -WorkingDirectory $projectRoot -PassThru
 Write-Host ("Started {0} with PID {1} in background mode" -f $AppFile, $appProc.Id)
 

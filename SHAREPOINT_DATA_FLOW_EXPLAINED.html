@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SharePoint Data Flow & List Architecture</title>
+<style>
+body {
+    font-family: Cambria, serif;
+    font-size: 11pt;
+    line-height: 115%;
+    margin: 1in;
+}
+
+h1 {
+    font-size: 16pt;
+    font-weight: bold;
+    margin-top: 12pt;
+    margin-bottom: 6pt;
+}
+
+h2 {
+    font-size: 14pt;
+    font-weight: bold;
+    margin-top: 10pt;
+    margin-bottom: 6pt;
+}
+
+h3 {
+    font-size: 12pt;
+    font-weight: bold;
+    margin-top: 8pt;
+    margin-bottom: 4pt;
+}
+
+h4 {
+    font-size: 11pt;
+    font-weight: bold;
+    margin-top: 6pt;
+    margin-bottom: 3pt;
+}
+
+p {
+    margin: 0in;
+    margin-bottom: 10pt;
+}
+
+table {
+    border-collapse: collapse;
+    border: solid windowtext 1.0pt;
+    width: 100%;
+    margin-bottom: 10pt;
+}
+
+th, td {
+    border: solid windowtext 0.5pt;
+    padding: 0in 5.4pt 0in 5.4pt;
+    vertical-align: top;
+}
+
+th {
+    background-color: #D9D9D9;
+    font-weight: bold;
+}
+
+ul {
+    margin-left: 0.5in;
+    margin-bottom: 10pt;
+}
+
+li {
+    margin-bottom: 3pt;
+}
+
+.summary-box {
+    background-color: #F2F2F2;
+    border: 1pt solid #BFBFBF;
+    padding: 10pt;
+    margin-bottom: 10pt;
+}
+
+.code-block {
+    font-family: 'Courier New', monospace;
+    font-size: 9pt;
+    background-color: #F5F5F5;
+    border: 1pt solid #CCCCCC;
+    padding: 8pt;
+    margin: 8pt 0;
+    white-space: pre-wrap;
+}
+
+.icon {
+    font-size: 14pt;
+    margin-right: 4pt;
+}
+
+.highlight {
+    background-color: #FFFF00;
+}
+
+strong {
+    font-weight: bold;
+}
+</style>
+</head>
+<body>
+
+<h1>SharePoint Data Flow &amp; List Architecture</h1>
+<p><strong>LeaseFileAudit Application</strong></p>
+<p><strong>Last Updated:</strong> June 11, 2026</p>
+
+<hr>
+
+<h2>Executive Summary</h2>
+
+<div class="summary-box">
+<p>The LeaseFileAudit app writes to <strong>5 SharePoint lists</strong> every time an audit runs. These lists work together to provide both fast portfolio dashboards and detailed drill-down capability. Understanding the data flow helps explain why portfolio totals can reach tens of millions of dollars and why some operations are slower than others.</p>
+
+<p><strong>Key Points:</strong></p>
+<ul>
+<li><strong>AuditRuns2</strong> stores millions of detail rows (the bottleneck)</li>
+<li><strong>RunDisplaySnapshots</strong> stores pre-calculated summaries (the speed layer)</li>
+<li><strong>Audit Run Metrics</strong> stores high-level statistics (the dashboard)</li>
+<li><strong>ExceptionMonths</strong> tracks resolution status (the workflow tracker)</li>
+<li><strong>Lease Terms</strong> stores document intelligence (optional feature)</li>
+</ul>
+</div>
+
+<hr>
+
+<h2>At a Glance</h2>
+
+<table>
+<tr>
+<th>List</th>
+<th>Primary Use</th>
+<th>Row Pattern</th>
+<th>Retention</th>
+</tr>
+<tr>
+<td><strong>AuditRuns2</strong></td>
+<td>Detailed findings and results</td>
+<td>Many rows per run (millions)</td>
+<td>Preserved by cleanup</td>
+</tr>
+<tr>
+<td><strong>RunDisplaySnapshots</strong></td>
+<td>Portfolio, property, and lease dashboard views</td>
+<td>Few rows per run (hundreds)</td>
+<td>Cleared by cleanup</td>
+</tr>
+<tr>
+<td><strong>Audit Run Metrics</strong></td>
+<td>High-level summary statistics</td>
+<td>One row per run</td>
+<td>Cleared by cleanup</td>
+</tr>
+<tr>
+<td><strong>ExceptionMonths</strong></td>
+<td>Month-level unresolved/resolved exception tracking</td>
+<td>Variable, on-demand</td>
+<td>Cleared by cleanup</td>
+</tr>
+<tr>
+<td><strong>LeaseTermSet / LeaseTerms / LeaseTermEvidence</strong></td>
+<td>Lease term intelligence and supporting evidence</td>
+<td>Variable, on-demand</td>
+<td>Cleared by cleanup</td>
+</tr>
+</table>
+
+<hr>
+
+<h2>Overview</h2>
+
+<p>Each audit run writes data to multiple SharePoint lists. This document maps which audit run produces which data for each list, explains the data volume involved, and clarifies how the data flows through the system.</p>
+
+<hr>
+
+<h2>1. AuditRuns2 – The Detail Archive <span class="icon">📊</span></h2>
+
+<p><strong>SharePoint List ID:</strong> d8166180-5dcb-41a9-84c0-0ab104b77c27</p>
+<p><strong>List URL:</strong> https://peakcampus.sharepoint.com/sites/BaseCampApps/Lists/AuditRuns2/AllItems.aspx</p>
+
+<h3>Purpose</h3>
+<p>Stores every single comparison (bucket) from your audit — the complete detail layer that powers drill-down views.</p>
+
+<h3>What Gets Written</h3>
+<p>For each <strong>lease × AR code × audit month</strong> combination:</p>
+
+<h4>Row Structure:</h4>
+<ul>
+<li><strong>RunId</strong> – Unique audit run identifier</li>
+<li><strong>ResultType</strong> – "bucket_result" or "finding"</li>
+<li><strong>PropertyId</strong> – Property being audited</li>
+<li><strong>LeaseIntervalId</strong> – Lease account being audited</li>
+<li><strong>ArCodeId</strong> – AR code (charge type) being audited</li>
+<li><strong>AuditMonth</strong> – Month being audited (normalized to YYYY-MM-DD)</li>
+<li><strong>Status</strong> – "matched", "scheduled_not_billed", "billed_not_scheduled", "amount_mismatch"</li>
+<li><strong>Severity</strong> – "high" or "medium"</li>
+<li><strong>Variance</strong> – Difference between expected and actual</li>
+<li><strong>ExpectedTotal</strong> – Expected amount from scheduled charges</li>
+<li><strong>ActualTotal</strong> – Actual billed amount</li>
+<li><strong>PropertyName</strong> – Property display name (enriched)</li>
+<li><strong>ResidentName</strong> – Resident/lease name (enriched)</li>
+</ul>
+
+<h3>Data Volume Example</h3>
+
+<table>
+<tr>
+<th>Audit Type</th>
+<th>Properties</th>
+<th>Leases</th>
+<th>Months</th>
+<th>AR Codes</th>
+<th>Total Rows Written</th>
+</tr>
+<tr>
+<td>Single Property</td>
+<td>1 (e.g., University Gateway)</td>
+<td>1,250</td>
+<td>12</td>
+<td>3</td>
+<td><strong>45,000 rows</strong></td>
+</tr>
+<tr>
+<td>Full Portfolio</td>
+<td>94 properties</td>
+<td>~117,500</td>
+<td>12</td>
+<td>3</td>
+<td><strong>~4.2 MILLION rows</strong></td>
+</tr>
+</table>
+
+<h3>Write Behavior</h3>
+<ul>
+<li><strong>Write Mode:</strong> Asynchronous (background thread)</li>
+<li><strong>Environment Variable:</strong> ASYNC_AUDIT_RESULTS_WRITE=true</li>
+<li><strong>Triggered By:</strong> Every audit run completion</li>
+<li><strong>Batch Size:</strong> 20 rows per batch (configurable via SHAREPOINT_BATCH_SIZE_AUDITRUNS)</li>
+<li><strong>Performance:</strong> This is the slowest write — can take 10-30 minutes for large audits</li>
+</ul>
+
+<h3>Where It's Read From</h3>
+<ul>
+<li><strong>Property View</strong> (/property/&lt;property_id&gt;) — Loads all buckets for one property</li>
+<li><strong>Lease View</strong> (/lease/&lt;property_id&gt;/&lt;lease_interval_id&gt;) — Loads all buckets for one resident</li>
+<li><strong>AR Status Calculation</strong> — Calculates status badges (Passed/Failed/Partial)</li>
+</ul>
+
+<h3>Retention</h3>
+<p><strong>✅ Preserved by cleanup script</strong> — Historical audit detail is retained</p>
+
+<hr>
+
+<h2>2. RunDisplaySnapshots – The Dashboard Summary <span class="icon">📸</span></h2>
+
+<p><strong>SharePoint List ID:</strong> 613d8abf-958d-4f1f-a142-4d2ed44c37a4</p>
+<p><strong>List Name:</strong> RunDisplaySnapshots</p>
+
+<h3>Purpose</h3>
+<p>Stores pre-calculated totals at portfolio, property, and lease levels so the dashboard loads instantly without re-aggregating millions of detail rows.</p>
+
+<h3>What Gets Written</h3>
+<p>Creates a <strong>3-level hierarchy</strong> of snapshots:</p>
+
+<h4>Portfolio Snapshot (1 row per run):</h4>
+<ul>
+<li>ScopeType = "portfolio"</li>
+<li>ExceptionCountStatic — Total exceptions across all properties</li>
+<li>UnderchargeStatic — Total undercharge amount</li>
+<li>OverchargeStatic — Total overcharge amount</li>
+<li>TotalVarianceStatic — Net variance</li>
+<li>MatchRateStatic — Percentage of buckets that matched</li>
+<li>AuditedThrough — Latest audit month</li>
+</ul>
+
+<h4>Property Snapshots (~94 rows for portfolio audit):</h4>
+<ul>
+<li>ScopeType = "property"</li>
+<li>PropertyId, PropertyNameStatic</li>
+<li>ExceptionCountStatic, UnderchargeStatic, OverchargeStatic</li>
+<li>TotalLeaseIntervalStatic — Number of leases audited</li>
+</ul>
+
+<h4>Lease Snapshots (~117,500 rows for portfolio audit):</h4>
+<ul>
+<li>ScopeType = "lease"</li>
+<li>LeaseIntervalId, PropertyId</li>
+<li>ExceptionCountStatic, UnderchargeStatic, OverchargeStatic</li>
+</ul>
+
+<h3>Example Data</h3>
+
+<div class="code-block">Portfolio Level:
+├─ Run: run_20260422_125827
+│  └─ Total: $50.9M undercharge, $5.7M overcharge, 117,742 exceptions, 87.3% match rate
+│
+Property Level:
+├─ University Gateway (639820)
+│  └─ $11.5M undercharge, $194K overcharge, 15,651 exceptions
+├─ University Center (639810)
+│  └─ $23.5M undercharge, $226K overcharge, 13,127 exceptions
+└─ Cobalt Row (1126176)
+   └─ $15,983 undercharge, $50,847 overcharge, 6,094 exceptions</div>
+
+<h3>Write Behavior</h3>
+<ul>
+<li><strong>Write Mode:</strong> Asynchronous by default</li>
+<li><strong>Environment Variable:</strong> ASYNC_RUN_DISPLAY_SNAPSHOTS=true</li>
+<li><strong>Performance:</strong> Moderate — typically 30-60 seconds for portfolio audit</li>
+<li><strong>Filtering:</strong> Only captures unresolved exceptions (resolved months are excluded)</li>
+</ul>
+
+<h3>Where It's Read From</h3>
+<ul>
+<li><strong>Portfolio Page</strong> (/portfolio) — Main data source for portfolio aggregation</li>
+<li><strong>Property List</strong> — Builds the property table with exception counts</li>
+<li><strong>Dashboard KPIs</strong> — Current undercharge/overcharge totals</li>
+</ul>
+
+<h3>Retention</h3>
+<p><strong>❌ Cleared by cleanup script</strong> — Regenerated on each audit run</p>
+
+<hr>
+
+<h2>3. Audit Run Metrics – The Summary Card <span class="icon">📈</span></h2>
+
+<p><strong>SharePoint List ID:</strong> 0b9b4d90-32c6-4f37-b8df-459c4012d3b5</p>
+<p><strong>List Name:</strong> Audit Run Metrics</p>
+
+<h3>Purpose</h3>
+<p>Stores high-level summary statistics for trend analysis, dashboard displays, and run comparison.</p>
+
+<h3>What Gets Written</h3>
+<p><strong>One row per audit run</strong> with aggregated metrics:</p>
+
+<ul>
+<li>Title — Run ID</li>
+<li>RunDateTime — Timestamp of run execution</li>
+<li>UploadedBy — User who initiated the audit</li>
+<li>TotalScheduled — Sum of all expected amounts</li>
+<li>TotalActual — Sum of all actual billed amounts</li>
+<li>Matched — Count of matched buckets</li>
+<li>TotalVariances — Total exception count</li>
+<li>HighSeverity, MediumSeverity — Severity breakdown</li>
+<li>Properties — JSON object with per-property breakdown</li>
+</ul>
+
+<h3>Example Data</h3>
+
+<div class="code-block">{
+  "RunId": "run_20260422_125827",
+  "RunDateTime": "2026-04-22T12:58:27Z",
+  "UploadedBy": "Tyler Gaskins",
+  "TotalScheduled": 125000000.00,
+  "TotalActual": 119283331.97,
+  "Matched": 4082258,
+  "TotalVariances": 117742,
+  "Properties": {
+    "639820": {"exceptions": 15651, "variance": 11482325.97},
+    "639810": {"exceptions": 13127, "variance": 23528520.87}
+  }
+}</div>
+
+<h3>Write Behavior</h3>
+<ul>
+<li><strong>Write Mode:</strong> Asynchronous by default</li>
+<li><strong>Environment Variable:</strong> ASYNC_METRICS_WRITE=true</li>
+<li><strong>Performance:</strong> Fast — single row write</li>
+</ul>
+
+<h3>Retention</h3>
+<p><strong>❌ Cleared by cleanup script</strong> — Historical metrics removed</p>
+
+<hr>
+
+<h2>4. ExceptionMonths – The Resolution Tracker <span class="icon">✅</span></h2>
+
+<p><strong>SharePoint List ID:</strong> 3638e107-5231-4bac-9a6c-cef9c501db05</p>
+<p><strong>List Name:</strong> ExceptionMonths</p>
+
+<h3>Purpose</h3>
+<p>Tracks which months have been marked as "resolved" for each lease, enabling month-level filtering and resolution workflows.</p>
+
+<h3>What Gets Written</h3>
+<p><strong>Variable rows</strong> — only written when users interact with resolution UI:</p>
+
+<ul>
+<li>PropertyId, LeaseIntervalId, ArCodeId</li>
+<li>AuditMonth — Month with exception (YYYY-MM-DD)</li>
+<li>Status — "Unresolved" or "Resolved"</li>
+<li>ResolvedBy — User who marked as resolved</li>
+<li>ResolvedDate — Timestamp of resolution</li>
+<li>UnderchargeAmount, OverchargeAmount — Tracked separately</li>
+</ul>
+
+<h3>Write Behavior</h3>
+<ul>
+<li><strong>Write Mode:</strong> On-demand (synchronous)</li>
+<li><strong>Triggered By:</strong> User clicks "Mark as Resolved" in UI</li>
+<li><strong>Performance:</strong> Fast — single or small batch writes</li>
+</ul>
+
+<h3>Where It's Read From</h3>
+<ul>
+<li><strong>Portfolio Page</strong> — Subtracts resolved amounts from current totals</li>
+<li><strong>Property View</strong> — Filters out resolved months</li>
+<li><strong>Lease View</strong> — Shows resolution status per month</li>
+</ul>
+
+<h3>Retention</h3>
+<p><strong>❌ Cleared by cleanup script</strong> — Resolution state reset</p>
+
+<hr>
+
+<h2>5. LeaseTermSet / LeaseTerms / LeaseTermEvidence – Lease Intelligence <span class="icon">📄</span></h2>
+
+<p><strong>SharePoint List IDs:</strong></p>
+<ul>
+<li>LeaseTermSet: 959169fb-fd74-4d9f-a3af-5502e999c849</li>
+<li>LeaseTerms: 8c374324-7413-42ae-b6c0-05d1bd248416</li>
+<li>LeaseTermEvidence: 1145d114-2891-4c74-96bd-97b7b4860968</li>
+</ul>
+
+<h3>Purpose</h3>
+<p>Store parsed lease term data extracted from resident documents (lease agreements, addendums, riders) for reconciliation validation and lease intelligence.</p>
+
+<h3>What Gets Written</h3>
+
+<h4>LeaseTermSet (Sets of lease attributes):</h4>
+<ul>
+<li>LeaseKey, SetName, IsActive</li>
+<li>EffectiveDate, ExpirationDate</li>
+<li>DocListFingerprint — Hash for change detection</li>
+</ul>
+
+<h4>LeaseTerms (Individual lease terms):</h4>
+<ul>
+<li>LeaseKey, TermType (rent, concession, utility, etc.)</li>
+<li>Amount, Frequency, ARCode</li>
+</ul>
+
+<h4>LeaseTermEvidence (Supporting documents):</h4>
+<ul>
+<li>LeaseKey, DocumentType, DocumentPage</li>
+<li>ExtractedText, ConfidenceScore</li>
+</ul>
+
+<h3>Write Behavior</h3>
+<ul>
+<li><strong>Write Mode:</strong> On-demand during document processing</li>
+<li><strong>Triggered By:</strong> Individual resident/lease processing with documents</li>
+<li><strong>Caching:</strong> Uses DocListFingerprint to avoid re-parsing unchanged documents</li>
+</ul>
+
+<h3>Retention</h3>
+<p><strong>❌ Cleared by cleanup script</strong> — Re-parsed on next audit run</p>
+
+<hr>
+
+<h2>Data Flow Diagram</h2>
+
+<div class="code-block">┌─────────────────────────────────────────────────────────────┐
+│                    Audit Run Execution                      │
+│                  (Property or Portfolio)                    │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+       ┌───────────────┼───────────────┬────────────────┬─────────────────┐
+       │               │               │                │                 │
+       ▼               ▼               ▼                ▼                 ▼
+┌────────────┐  ┌─────────────┐  ┌──────────┐  ┌─────────────┐  ┌──────────────┐
+│ AuditRuns2 │  │RunDisplay   │  │Audit Run │  │Exception    │  │Lease Terms   │
+│            │  │Snapshots    │  │Metrics   │  │Months       │  │(3 lists)     │
+│ MILLIONS   │  │ HUNDREDS    │  │  ONE     │  │ ON-DEMAND   │  │ ON-DEMAND    │
+│ of rows    │  │ of rows     │  │  row     │  │ (resolution)│  │ (doc parse)  │
+│ Async ⚙️   │  │ Async ⚙️    │  │ Async ⚙️ │  │ Sync ✓      │  │ Sync ✓       │
+│ 10-30 min  │  │ 30-60 sec   │  │ &lt;1 sec   │  │ &lt;1 sec      │  │ variable     │
+└────────────┘  └─────────────┘  └──────────┘  └─────────────┘  └──────────────┘</div>
+
+<hr>
+
+<h2>Understanding Portfolio Totals</h2>
+
+<h3>Why Are the Numbers So High?</h3>
+
+<p>When you see <strong>$50.9M undercharge</strong> and <strong>$5.7M overcharge</strong> on your portfolio page, here's what that represents:</p>
+
+<h4>The Math Behind Large Numbers</h4>
+
+<p><strong>Scenario:</strong> Full portfolio audit for 12 months of history</p>
+
+<table>
+<tr>
+<th>Component</th>
+<th>Count</th>
+<th>Calculation</th>
+</tr>
+<tr>
+<td>Properties</td>
+<td>94</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Leases per property</td>
+<td>~1,250</td>
+<td>Average</td>
+</tr>
+<tr>
+<td>Total leases</td>
+<td>117,500</td>
+<td>94 × 1,250</td>
+</tr>
+<tr>
+<td>Audit months</td>
+<td>12</td>
+<td>Historical period</td>
+</tr>
+<tr>
+<td>AR codes per lease</td>
+<td>~3</td>
+<td>Rent, utilities, parking, etc.</td>
+</tr>
+<tr>
+<td><strong>Total comparisons</strong></td>
+<td><strong>~4.2 million</strong></td>
+<td>94 × 1,250 × 12 × 3</td>
+</tr>
+</table>
+
+<p><strong>Each $5-50 variance adds up:</strong></p>
+<ul>
+<li>If just 2% of buckets have exceptions → 84,000 exceptions</li>
+<li>Average variance: $680 per exception</li>
+<li><strong>Total variance:</strong> 84,000 × $680 = <strong>$57 million</strong></li>
+</ul>
+
+<h3>Cross-Run Aggregation Issue</h3>
+
+<p>If you see unexpectedly high numbers, check if you're viewing:</p>
+
+<p><strong>❌ Default Portfolio Landing (no run selected):</strong></p>
+<ul>
+<li>Loads latest snapshot <strong>per property</strong> across <strong>all runs</strong></li>
+<li>University Gateway snapshot from Run A (April 21)</li>
+<li>University Center snapshot from Run B (April 22)</li>
+<li>Result: Sum of different audits = inflated totals</li>
+</ul>
+
+<p><strong>✅ Selected Run from Dropdown:</strong></p>
+<ul>
+<li>Loads all property snapshots <strong>from one specific run</strong></li>
+<li>All properties audited together in same run</li>
+<li>Result: Accurate totals for that one audit</li>
+</ul>
+
+<hr>
+
+<h2>Write Performance &amp; Optimization</h2>
+
+<h3>Current Configuration</h3>
+
+<div class="code-block"># From your .env file
+SHAREPOINT_AUDIT_RESULTS_LIST_NAME=AuditRuns2
+USE_SHAREPOINT_STORAGE=true
+
+# Async write settings
+ASYNC_AUDIT_RESULTS_WRITE=false  # ⚠️ Currently synchronous!
+ASYNC_RUN_DISPLAY_SNAPSHOTS=true  # ✓ Background write
+ASYNC_METRICS_WRITE=true          # ✓ Background write</div>
+
+<h3>Performance Bottleneck</h3>
+
+<p class="highlight"><strong>AuditRuns2 writes are currently SYNCHRONOUS</strong>, meaning:</p>
+<ul>
+<li>Audit waits for all millions of rows to upload before completing</li>
+<li>Users see "Processing..." for 10-30 minutes</li>
+<li>Risk of timeout failures on large audits</li>
+</ul>
+
+<h3>Recommended Optimization</h3>
+
+<p>Add to your .env file:</p>
+
+<div class="code-block"># Enable async AuditRuns2 writes
+ASYNC_AUDIT_RESULTS_WRITE=true
+
+# Optionally tune batch sizes if experiencing throttling
+SHAREPOINT_BATCH_SIZE_AUDITRUNS=20
+SHAREPOINT_BATCH_CONCURRENCY_AUDITRUNS=2</div>
+
+<p><strong>Result:</strong></p>
+<ul>
+<li>Audit completes immediately</li>
+<li>Detail upload happens in background</li>
+<li>RunDisplaySnapshots writes first (portfolio works immediately)</li>
+<li>AuditRuns2 finishes later (drill-down available after upload completes)</li>
+</ul>
+
+<hr>
+
+<h2>Cleanup &amp; Data Retention</h2>
+
+<p>The cleanup script (<code>clean_sharepoint_lists.py</code>) manages data retention:</p>
+
+<h3>Lists Cleared by Cleanup ❌</h3>
+<ul>
+<li>RunDisplaySnapshots — Stale snapshots removed</li>
+<li>Audit Run Metrics — Summary statistics reset</li>
+<li>LeaseTermSet / LeaseTerms / LeaseTermEvidence — Re-parsed on next run</li>
+<li>ExceptionMonths — Resolution state reset</li>
+</ul>
+
+<h3>Lists Preserved ✅</h3>
+<ul>
+<li><strong>AuditRuns2</strong> — Historical audit detail retained</li>
+</ul>
+
+<hr>
+
+<h2>Quick Reference Table</h2>
+
+<table>
+<tr>
+<th>List Name</th>
+<th>Primary Use</th>
+<th>Rows Per Run</th>
+<th>Write Mode</th>
+<th>Read By</th>
+<th>Cleaned</th>
+</tr>
+<tr>
+<td><strong>AuditRuns2</strong></td>
+<td>Detailed findings &amp; buckets</td>
+<td>MILLIONS (4.2M for portfolio)</td>
+<td>Async</td>
+<td>Property/Lease views</td>
+<td>❌ No</td>
+</tr>
+<tr>
+<td><strong>RunDisplaySnapshots</strong></td>
+<td>Portfolio/property summaries</td>
+<td>HUNDREDS (~200)</td>
+<td>Async</td>
+<td>Portfolio page</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td><strong>Audit Run Metrics</strong></td>
+<td>High-level statistics</td>
+<td>ONE (1)</td>
+<td>Async</td>
+<td>Run list, dashboard</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td><strong>ExceptionMonths</strong></td>
+<td>Resolution tracking</td>
+<td>Variable (on-demand)</td>
+<td>Sync</td>
+<td>Filtering, resolution UI</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td><strong>LeaseTermSet</strong></td>
+<td>Lease attributes</td>
+<td>Variable (on-demand)</td>
+<td>Sync</td>
+<td>Term validation</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td><strong>LeaseTerms</strong></td>
+<td>Individual terms</td>
+<td>Variable (on-demand)</td>
+<td>Sync</td>
+<td>Term validation</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td><strong>LeaseTermEvidence</strong></td>
+<td>Document snippets</td>
+<td>Variable (on-demand)</td>
+<td>Sync</td>
+<td>Document intelligence</td>
+<td>✅ Yes</td>
+</tr>
+</table>
+
+<hr>
+
+<h2>Troubleshooting Common Issues</h2>
+
+<h3>Issue: Portfolio dropdown is empty or doesn't populate</h3>
+<p><strong>Cause:</strong> RunDisplaySnapshots async writes still processing</p>
+<p><strong>Solution:</strong></p>
+<ol>
+<li>Wait 1-2 minutes for async writes to complete</li>
+<li>Refresh the portfolio page</li>
+<li>Check if run appears in dropdown</li>
+</ol>
+
+<h3>Issue: Portfolio shows unexpectedly high totals ($50M+)</h3>
+<p><strong>Cause:</strong> Cross-run aggregation (viewing latest snapshot per property from different runs)</p>
+<p><strong>Solution:</strong></p>
+<ol>
+<li>Select a specific run from the dropdown</li>
+<li>Verify all properties are from the same audit</li>
+<li>Consider running fewer audits (one portfolio audit vs. many single-property audits)</li>
+</ol>
+
+<h3>Issue: Audit takes 10-30 minutes to complete</h3>
+<p><strong>Cause:</strong> AuditRuns2 writes are synchronous (blocking)</p>
+<p><strong>Solution:</strong></p>
+<ol>
+<li>Add ASYNC_AUDIT_RESULTS_WRITE=true to .env</li>
+<li>Restart application</li>
+<li>Next audit completes immediately (background upload)</li>
+</ol>
+
+<h3>Issue: Property drill-down shows "No data"</h3>
+<p><strong>Cause:</strong> AuditRuns2 async write hasn't completed yet</p>
+<p><strong>Solution:</strong></p>
+<ol>
+<li>Wait for background write to finish (check logs)</li>
+<li>In Azure deployment, ensure AuditRuns2 writes are enabled</li>
+<li>CSV fallback works locally but not in Azure</li>
+</ol>
+
+<hr>
+
+<h2>For Azure Deployment</h2>
+
+<h3>Critical Requirements</h3>
+
+<p><strong>✅ Must keep AuditRuns2 enabled</strong></p>
+<ul>
+<li>Azure Web Apps have ephemeral file systems</li>
+<li>CSV files get wiped on restart</li>
+<li>AuditRuns2 is the persistent storage layer</li>
+</ul>
+
+<p><strong>✅ Must use async writes</strong></p>
+<ul>
+<li>Add ASYNC_AUDIT_RESULTS_WRITE=true</li>
+<li>Prevents HTTP timeout on large audits</li>
+</ul>
+
+<p><strong>✅ Must keep all 5 lists configured</strong></p>
+<ul>
+<li>Each list serves a specific purpose</li>
+<li>Removing any list breaks functionality</li>
+</ul>
+
+<h3>Azure Configuration</h3>
+
+<div class="code-block"># Required for Azure deployment
+USE_SHAREPOINT_STORAGE=true
+SHAREPOINT_AUDIT_RESULTS_LIST_NAME=AuditRuns2
+
+# Performance optimization
+ASYNC_AUDIT_RESULTS_WRITE=true
+ASYNC_RUN_DISPLAY_SNAPSHOTS=true
+ASYNC_METRICS_WRITE=true
+
+# Throttling mitigation
+SHAREPOINT_BATCH_SIZE_AUDITRUNS=15
+SHAREPOINT_BATCH_CONCURRENCY_AUDITRUNS=1</div>
+
+<hr>
+
+<h2>Summary</h2>
+
+<p>Your LeaseFileAudit app uses a <strong>5-list architecture</strong> to balance performance and functionality:</p>
+
+<ol>
+<li><strong>AuditRuns2</strong> = Detail layer (slow, large, persistent)</li>
+<li><strong>RunDisplaySnapshots</strong> = Speed layer (fast, small, regenerated)</li>
+<li><strong>Audit Run Metrics</strong> = Summary layer (dashboard, trends)</li>
+<li><strong>ExceptionMonths</strong> = Workflow layer (resolution tracking)</li>
+<li><strong>Lease Terms</strong> = Intelligence layer (document validation)</li>
+</ol>
+
+<p><strong>The portfolio page is fast</strong> because it reads from RunDisplaySnapshots, not AuditRuns2.</p>
+
+<p><strong>The drill-down is detailed</strong> because it reads from AuditRuns2, not summaries.</p>
+
+<p><strong>Together, they provide</strong> both immediate portfolio insights and comprehensive detail investigation.</p>
+
+<hr>
+
+<p><strong>Document Version:</strong> 2.0<br>
+<strong>Created By:</strong> GitHub Copilot (Claude Sonnet 4.5)<br>
+<strong>Source:</strong> LeaseFileAudit codebase analysis and user consultation<br>
+<strong>Last Updated:</strong> June 11, 2026</p>
+
+</body>
+</html>
