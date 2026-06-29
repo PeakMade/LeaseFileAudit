@@ -216,6 +216,17 @@ def cached_load_findings(run_id: str, property_id=None, lease_interval_id=None, 
 
 
 @cache.memoize(timeout=14400)
+def cached_load_variance_detail(run_id: str, property_id=None, lease_interval_id=None, ar_code_id=None, session_cache_key: str = None):
+    """Cached wrapper for variance_detail by run and optional scope."""
+    logger.info(
+        f"[CACHE] ⏬ Cache MISS: Loading variance_detail for run={run_id}, "
+        f"property_id={property_id}, lease_interval_id={lease_interval_id}, ar_code_id={ar_code_id}"
+    )
+    storage = get_storage_service()
+    return storage.load_variance_detail(run_id, property_id=property_id, lease_interval_id=lease_interval_id, ar_code_id=ar_code_id)
+
+
+@cache.memoize(timeout=14400)
 def cached_load_actual_detail(run_id: str, session_cache_key: str = None):
     """Cached wrapper for actual_detail by run."""
     logger.info(f"[CACHE] ⏬ Cache MISS: Loading actual_detail for run={run_id}")
@@ -255,7 +266,7 @@ def cached_load_run_display_snapshot(run_id: str, scope_type: str, property_id=N
     )
 
 
-@cache.memoize(timeout=14400)
+@cache.memoize(timeout=60)  # Short TTL: refreshes quickly after background snapshot writes
 def cached_load_run_display_snapshots_for_property(run_id: str, property_id: int, scope_type: str = 'lease', session_cache_key: str = None):
     """Cached wrapper for all snapshot rows for a property."""
     logger.info(
@@ -339,7 +350,7 @@ def cached_load_lease_exception_months(run_id: str, property_id: int, lease_inte
     return storage.load_lease_exception_months_bulk(run_id, property_id, lease_interval_id)
 
 
-@cache.memoize(timeout=900)  # 15-min TTL: refreshes as resolutions are saved throughout the day
+@cache.memoize(timeout=60)  # 1-min TTL: refreshes quickly after resolutions
 def cached_load_all_resolved_totals(session_cache_key: str = None):
     """
     Cached portfolio-level resolved variance totals from ExceptionMonths SP list.
@@ -351,7 +362,7 @@ def cached_load_all_resolved_totals(session_cache_key: str = None):
     return storage.load_all_resolved_totals()
 
 
-@cache.memoize(timeout=900)  # 15-min TTL: refreshes as resolutions are saved throughout the day
+@cache.memoize(timeout=60)  # 1-min TTL: refreshes quickly after resolutions
 def cached_load_property_audit_status_summary(session_cache_key: str = None):
     """
     Cached per-property resolved/open exception month counts from ExceptionMonths SP list.
@@ -489,7 +500,7 @@ def _start_cache_prewarm(app, run_id: str, property_id_int: int, cache_token: st
                 (cached_load_property_exception_months, (run_id, property_id_int, cache_token)),
                 (cached_load_findings, (run_id, property_id_int, None, cache_token)),
                 # NOTE: cached_load_latest_property_snapshots is intentionally NOT pre-warmed here.
-                # The RunDisplaySnapshots write is async and may not have finished by the time
+                # Snapshot writes are async and may not have finished by the time
                 # this pre-warm runs, which would cache empty/stale portfolio data for 5 minutes.
                 # The 5-minute TTL ensures the portfolio sees fresh data on the next page load.
             ]
@@ -1296,7 +1307,7 @@ def get_property_picklist_api():
         return jsonify({'properties': []})
 
 
-@cache.memoize(timeout=3600)  # Cache metrics for 1 hour per session
+@cache.memoize(timeout=60)  # Cache metrics for 1 minute - refreshes quickly after resolutions
 def calculate_cumulative_metrics(session_cache_key: str = None) -> dict:
     """Calculate cumulative portfolio metrics across all audit runs."""
     logger.info("[CACHE] ⏬ Cache MISS: Calculating cumulative metrics")
@@ -2713,10 +2724,28 @@ def upload():
             f"starting post-save UI prep"
         )
         
-        # 🧹 CLEAR CACHE after new upload
+        # PRE-CACHE run data with in-memory DataFrames (supports CSV-optional mode)
+        try:
+            cache_token = _session_cache_token()
+            run_data_to_cache = {
+                'expected_detail': results["expected_detail"],
+                'actual_detail': results["actual_detail"],
+                'bucket_results': results["bucket_results"],
+                'findings': results["findings"],
+                'variance_detail': results.get("variance_detail"),
+                'metadata': metadata,
+                'property_name_map': results.get("property_name_map", {})
+            }
+            cache.set(f'memoize:{cached_load_run.__module__}.{cached_load_run.__name__}:{run_id}:{cache_token}', 
+                      run_data_to_cache, timeout=14400)
+            logger.info(f"[CACHE] Pre-cached run data for {run_id} (4-hour TTL, CSV-optional mode)")
+        except Exception as e:
+            logger.warning(f"[CACHE] Failed to pre-cache run data: {e}")
+        
+        # 🧹 CLEAR CACHE after new upload (skip run-specific cache to preserve pre-cached data)
         logger.info(f"[CACHE] Clearing cache after new upload (run_id: {run_id})")
         cache_clear_started = perf_counter()
-        clear_run_cache(run_id)
+        # Note: We skip clear_run_cache(run_id) to preserve pre-cached data
         cache_clear_seconds = perf_counter() - cache_clear_started
         logger.info(
             f"[UPLOAD DEBUG] run cache cleared for run_id={run_id} in {cache_clear_seconds:.2f}s"
@@ -3030,9 +3059,29 @@ def upload_api_property():
         session['last_saved_run_id'] = run_id
         logger.info(f"[SESSION] Stored run {run_id} as last_saved_run_id")
 
+        # PRE-CACHE run data with in-memory DataFrames (supports CSV-optional mode)
+        # This ensures expected_detail and actual_detail are available for 4 hours
+        # even if DISABLE_CSV_WRITES=true
+        try:
+            cache_token = _session_cache_token()
+            run_data_to_cache = {
+                'expected_detail': results["expected_detail"],
+                'actual_detail': results["actual_detail"],
+                'bucket_results': results["bucket_results"],
+                'findings': results["findings"],
+                'variance_detail': results.get("variance_detail"),
+                'metadata': metadata,
+                'property_name_map': results.get("property_name_map", {})
+            }
+            cache.set(f'memoize:{cached_load_run.__module__}.{cached_load_run.__name__}:{run_id}:{cache_token}', 
+                      run_data_to_cache, timeout=14400)
+            logger.info(f"[CACHE] Pre-cached run data for {run_id} (4-hour TTL, CSV-optional mode)")
+        except Exception as e:
+            logger.warning(f"[CACHE] Failed to pre-cache run data: {e}")
+
         cache_clear_started = perf_counter()
         invalidate_runs_cache()
-        clear_run_cache(run_id)
+        # Note: We skip clear_run_cache(run_id) here to preserve the pre-cached data
         cache_clear_seconds = perf_counter() - cache_clear_started
         logger.info(
             f"[API UPLOAD DEBUG] run cache invalidated/cleared for run_id={run_id} "
@@ -3268,8 +3317,26 @@ def _run_bulk_audit_job(app, job_id: str, properties: list, from_date: str, to_d
                     property_name_map=results.get('property_name_map'),
                 )
 
+                # PRE-CACHE run data with in-memory DataFrames (supports CSV-optional mode)
+                try:
+                    cache_token = _session_cache_token()
+                    run_data_to_cache = {
+                        'expected_detail': results['expected_detail'],
+                        'actual_detail': results['actual_detail'],
+                        'bucket_results': results['bucket_results'],
+                        'findings': results['findings'],
+                        'variance_detail': results.get('variance_detail'),
+                        'metadata': metadata,
+                        'property_name_map': results.get('property_name_map', {})
+                    }
+                    cache.set(f'memoize:{cached_load_run.__module__}.{cached_load_run.__name__}:{run_id}:{cache_token}', 
+                              run_data_to_cache, timeout=14400)
+                    logger.info(f"[CACHE] Pre-cached run data for {run_id} (bulk audit, CSV-optional mode)")
+                except Exception as e:
+                    logger.warning(f"[CACHE] Failed to pre-cache run data: {e}")
+
                 invalidate_runs_cache()
-                clear_run_cache(run_id)  # clears cached_load_latest_property_snapshots so portfolio reflects new data
+                # Note: Skip clear_run_cache(run_id) to preserve pre-cached data
 
                 job['properties'][idx].update({'status': 'done', 'run_id': run_id})
             except Exception as exc:
@@ -3503,9 +3570,27 @@ def upload_api_lease():
         )
         save_run_seconds = perf_counter() - save_run_started
 
+        # PRE-CACHE run data with in-memory DataFrames (supports CSV-optional mode)
+        try:
+            cache_token = _session_cache_token()
+            run_data_to_cache = {
+                'expected_detail': results["expected_detail"],
+                'actual_detail': results["actual_detail"],
+                'bucket_results': results["bucket_results"],
+                'findings': results["findings"],
+                'variance_detail': results.get("variance_detail"),
+                'metadata': metadata,
+                'property_name_map': results.get("property_name_map", {})
+            }
+            cache.set(f'memoize:{cached_load_run.__module__}.{cached_load_run.__name__}:{run_id}:{cache_token}', 
+                      run_data_to_cache, timeout=14400)
+            logger.info(f"[CACHE] Pre-cached run data for {run_id} (lease audit, CSV-optional mode)")
+        except Exception as e:
+            logger.warning(f"[CACHE] Failed to pre-cache run data: {e}")
+
         cache_clear_started = perf_counter()
         invalidate_runs_cache()
-        clear_run_cache(run_id)
+        # Note: Skip clear_run_cache(run_id) to preserve pre-cached data
         cache_clear_seconds = perf_counter() - cache_clear_started
 
         activity_log_seconds = 0.0
@@ -4103,7 +4188,7 @@ def property_view(property_id: str, run_id: str = None):
         stage_started = perf_counter()
         if property_snapshot:
             logger.info(
-                f"[SNAPSHOT][PROPERTY] Using RunDisplaySnapshots for run {run_id}, property {property_id}: "
+                f"[SNAPSHOT][PROPERTY] Using snapshot for run {run_id}, property {property_id}: "
                 f"exception_count={property_snapshot.get('exception_count')}, "
                 f"undercharge={property_snapshot.get('undercharge')}, "
                 f"overcharge={property_snapshot.get('overcharge')}"
@@ -4126,24 +4211,56 @@ def property_view(property_id: str, run_id: str = None):
                     property_name = non_empty_property_names[0]
                     break
         
-        # Get all unique leases for this property
-        lease_id_column = CanonicalField.LEASE_INTERVAL_ID.value
-        normalized_lease_ids = pd.to_numeric(all_property_buckets[lease_id_column], errors='coerce')
-        valid_lease_id_mask = normalized_lease_ids.notna()
-        if valid_lease_id_mask.sum() != len(all_property_buckets):
-            logger.warning(
-                f"[PROPERTY_VIEW] Dropping {len(all_property_buckets) - int(valid_lease_id_mask.sum())} row(s) "
-                f"with non-numeric lease_interval_id for run {run_id}, property {property_id}"
+        # Get all unique leases for this property from snapshots
+        if lease_snapshot_map:
+            all_lease_ids = sorted([int(float(lid)) for lid in lease_snapshot_map.keys()])
+            logger.info(
+                f"[PROPERTY_VIEW] Using lease_snapshot_map: {len(all_lease_ids)} lease(s) for "
+                f"run {run_id}, property {property_id}"
             )
-        all_property_buckets = all_property_buckets[valid_lease_id_mask].copy()
-        all_property_buckets[lease_id_column] = normalized_lease_ids[valid_lease_id_mask].astype(int)
-        all_lease_ids = sorted(all_property_buckets[lease_id_column].unique().tolist())
+        else:
+            # Fallback to bucket results if snapshots not available
+            lease_id_column = CanonicalField.LEASE_INTERVAL_ID.value
+            if not all_property_buckets.empty and lease_id_column in all_property_buckets.columns:
+                normalized_lease_ids = pd.to_numeric(all_property_buckets[lease_id_column], errors='coerce')
+                valid_lease_id_mask = normalized_lease_ids.notna()
+                if valid_lease_id_mask.sum() != len(all_property_buckets):
+                    logger.warning(
+                        f"[PROPERTY_VIEW] Dropping {len(all_property_buckets) - int(valid_lease_id_mask.sum())} row(s) "
+                        f"with non-numeric lease_interval_id for run {run_id}, property {property_id}"
+                    )
+                all_property_buckets = all_property_buckets[valid_lease_id_mask].copy()
+                all_property_buckets[lease_id_column] = normalized_lease_ids[valid_lease_id_mask].astype(int)
+                all_lease_ids = sorted(all_property_buckets[lease_id_column].unique().tolist())
+                logger.info(
+                    f"[PROPERTY_VIEW] Fallback to bucket results: {len(all_lease_ids)} lease(s) for "
+                    f"run {run_id}, property {property_id}"
+                )
+            else:
+                all_lease_ids = []
+                logger.warning(
+                    f"[PROPERTY_VIEW] No lease data available from snapshots or buckets for "
+                    f"run {run_id}, property {property_id}"
+                )
 
         lease_customer_names = {}
         lease_parent_ids = {}
         lease_start_date_map = {}
         try:
             lease_ids_normalized = {int(float(lease_id)) for lease_id in all_lease_ids}
+
+            # PRIORITY 1: Get resident names from lease snapshots
+            for lease_key, lease_snapshot in lease_snapshot_map.items():
+                snapshot_resident_name = lease_snapshot.get('resident_name') or lease_snapshot.get('ResidentName')
+                if snapshot_resident_name:
+                    lease_customer_names[lease_key] = str(snapshot_resident_name).strip()
+                
+                snapshot_lease_id = lease_snapshot.get('lease_id') or lease_snapshot.get('LeaseId')
+                if snapshot_lease_id:
+                    try:
+                        lease_parent_ids[lease_key] = int(float(snapshot_lease_id))
+                    except:
+                        pass
 
             def _build_name_map_for_source(source_df: pd.DataFrame) -> dict:
                 """Vectorized: build lease_id -> best customer name using pandas groupby."""
@@ -4235,18 +4352,29 @@ def property_view(property_id: str, run_id: str = None):
                 lid_col_p = CanonicalField.LEASE_INTERVAL_ID.value
                 parent_col = CanonicalField.LEASE_ID.value
                 if lid_col_p not in source_df.columns or parent_col not in source_df.columns:
+                    logger.warning(
+                        f"[PROPERTY_VIEW] Missing columns for LEASE_ID extraction: "
+                        f"lid_col_p={lid_col_p in source_df.columns if source_df is not None else False}, "
+                        f"parent_col={parent_col in source_df.columns if source_df is not None else False}, "
+                        f"available_columns={list(source_df.columns) if source_df is not None and not source_df.empty else []}"
+                    )
                     continue
                 _lp_df = source_df[[lid_col_p, parent_col]].copy()
                 _lp_df[lid_col_p] = pd.to_numeric(_lp_df[lid_col_p], errors='coerce')
                 _lp_df[parent_col] = pd.to_numeric(_lp_df[parent_col], errors='coerce')
                 _lp_df = _lp_df.dropna()
+                logger.info(
+                    f"[PROPERTY_VIEW] LEASE_ID extraction: source_rows={len(source_df)}, "
+                    f"after_dropna={len(_lp_df)}, has_data={not _lp_df.empty}"
+                )
                 _lp_df[lid_col_p] = _lp_df[lid_col_p].astype(int)
                 _lp_df[parent_col] = _lp_df[parent_col].astype(int)
                 _lp_df = _lp_df[~_lp_df[lid_col_p].isin(lease_parent_ids)]
                 if not _lp_df.empty:
-                    lease_parent_ids.update(
-                        _lp_df.drop_duplicates(subset=[lid_col_p]).set_index(lid_col_p)[parent_col].to_dict()
-                    )
+                    new_mappings = _lp_df.drop_duplicates(subset=[lid_col_p]).set_index(lid_col_p)[parent_col].to_dict()
+                    logger.info(f"[PROPERTY_VIEW] Adding {len(new_mappings)} LEASE_ID mappings from source")
+                    lease_parent_ids.update(new_mappings)
+            logger.info(f"[PROPERTY_VIEW] Total LEASE_ID mappings loaded: {len(lease_parent_ids)}")
         except Exception as name_error:
             logger.warning(f"[PROPERTY_VIEW] Failed to load resident names for lease rows: {name_error}")
         logger.info(
@@ -4359,13 +4487,18 @@ def property_view(property_id: str, run_id: str = None):
                     except Exception:
                         pass
             
-            # Get all buckets for this lease
-            lease_all_buckets = all_property_buckets[
-                all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
-            ]
-            matched_count = len(lease_all_buckets[
-                lease_all_buckets[CanonicalField.STATUS.value] == config.reconciliation.status_matched
-            ])
+            # Get matched count from lease snapshot (prefer snapshots over buckets)
+            matched_count = 0
+            if lease_snapshot:
+                matched_count = int(lease_snapshot.get('MatchedBucketsStatic', 0))
+            elif not all_property_buckets.empty and CanonicalField.LEASE_INTERVAL_ID.value in all_property_buckets.columns:
+                # Fallback to bucket results if snapshot not available
+                lease_all_buckets = all_property_buckets[
+                    all_property_buckets[CanonicalField.LEASE_INTERVAL_ID.value] == lease_id
+                ]
+                matched_count = len(lease_all_buckets[
+                    lease_all_buckets[CanonicalField.STATUS.value] == config.reconciliation.status_matched
+                ])
             
             # Calculate lease status based on exception states
             unresolved_exception_count = len(lease_groups.get(lease_id, []))
@@ -4702,6 +4835,12 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
 
         expected_detail = cached_load_expected_detail(run_id, cache_token)
         actual_detail = cached_load_actual_detail(run_id, cache_token)
+        variance_detail = cached_load_variance_detail(
+            run_id,
+            property_id=normalized_property_id,
+            lease_interval_id=normalized_lease_interval_id,
+            session_cache_key=cache_token
+        )
         try:
             run_metadata = cached_load_metadata(run_id, cache_token)
         except Exception:
@@ -4714,7 +4853,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         lease_snapshot = _property_lease_snapshots.get(normalized_lease_interval_id) if _property_lease_snapshots else None
         if lease_snapshot:
             logger.info(
-                f"[SNAPSHOT][LEASE] Using RunDisplaySnapshots for run {run_id}, property {property_id}, "
+                f"[SNAPSHOT][LEASE] Using snapshot for run {run_id}, property {property_id}, "
                 f"lease {lease_interval_id}: undercharge={lease_snapshot.get('undercharge')}, "
                 f"overcharge={lease_snapshot.get('overcharge')}"
             )

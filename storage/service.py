@@ -47,6 +47,10 @@ class StorageService:
     _GLOBAL_SNAPSHOT_COLUMNS_CACHE: Dict[str, Dict[str, Any]] = {}
     _GLOBAL_SNAPSHOT_COLUMNS_CACHE_LOCK = threading.Lock()
     
+    # In-memory cache for audit results (bucket_results and findings)
+    _IN_MEMORY_RESULTS_CACHE: Dict[str, Dict[str, pd.DataFrame]] = {}
+    _IN_MEMORY_CACHE_LOCK = threading.Lock()
+    
     def __init__(self, base_dir: Path, use_sharepoint: bool = False, sharepoint_site_url: str = None,
                  library_name: str = None, access_token: str = None, audit_results_list_name: str = None):
         self.base_dir = Path(base_dir)
@@ -886,8 +890,7 @@ class StorageService:
             if audit_month_str is not None:
                 row_payload['AuditMonth'] = audit_month_str
             
-            # NOTE: ResidentName and LeaseId fields commented out - columns don't exist in SharePoint
-            # To enable: Add these columns to SharePoint RunDisplaySnapshots list first, then uncomment
+            # COMMENTED: ResidentName and LeaseId columns don't exist in SharePoint list
             # if scope_type == 'lease':
             #     if resident_name:
             #         row_payload['ResidentName'] = resident_name
@@ -1357,12 +1360,14 @@ class StorageService:
 
                     if batch_response.status_code == 200:
                         batch_success = True
+                        print(f"[BATCH_DEBUG] Batch {batch_index}/{total_batches_local} POST succeeded (200)")
                         break
 
                     logger.warning(
                         f"[STORAGE] Batch {batch_index}/{total_batches_local} failed for {context_label} "
                         f"(HTTP {batch_response.status_code}); falling back to single posts"
                     )
+                    print(f"[BATCH_DEBUG] Batch POST failed with status {batch_response.status_code}")
                     break
                 except Exception as e:
                     if attempt < 2:
@@ -1384,6 +1389,7 @@ class StorageService:
             if batch_success and batch_response is not None:
                 response_parse_started = perf_counter()
                 response_items = batch_response.json().get('responses', [])
+                print(f"[BATCH_DEBUG] Batch response has {len(response_items)} response items for {len(chunk)} requests")
                 batch_response_parse_seconds += float(perf_counter() - response_parse_started)
                 response_map = {item.get('id'): item for item in response_items}
 
@@ -1402,11 +1408,29 @@ class StorageService:
                         continue
 
                     status_code = response_item.get('status')
+                    response_body = response_item.get('body')
+                    
+                    # Debug: log the full response for first item
+                    if offset == 0:
+                        print(f"[BATCH_DEBUG] First item response:")
+                        print(f"  Status: {status_code}")
+                        print(f"  Body keys: {list(response_body.keys()) if response_body else 'None'}")
+                        if response_body:
+                            print(f"  Item ID: {response_body.get('id', 'N/A')}")
+                            print(f"  Created: {response_body.get('createdDateTime', 'N/A')}")
+                            if 'fields' in response_body:
+                                fields = response_body['fields']
+                                print(f"  RunId (field_1): {fields.get('field_1', 'N/A')}")
+                        if response_body and 'error' in response_body:
+                            print(f"  ERROR: {response_body['error']}")
+                    
                     if status_code in [200, 201]:
                         created_local += 1
+                        print(f"[BATCH_DEBUG] Row {row_idx} created successfully (status {status_code})")
                         continue
 
                     if status_code == 429:
+                        print(f"[BATCH_DEBUG] Row {row_idx} throttled (429)")
                         retry_after = 5
                         item_headers_resp = response_item.get('headers') or {}
                         ra_str = item_headers_resp.get('Retry-After') or item_headers_resp.get('retry-after')
@@ -1605,17 +1629,28 @@ class StorageService:
                     self.access_token = new_token
             except Exception as _token_err:
                 logger.warning(f"[STORAGE] Token refresh failed in async results write: {_token_err}")
-            logger.info(f"[STORAGE] 🚀 Background AuditRuns2 write started for {run_id}")
-            self._write_results_to_sharepoint_list(
+            logger.info(f"[STORAGE] Background AuditRuns2 write started for {run_id}")
+            print(f"[AUDITRUNS2_ASYNC] Starting background write for {run_id}...")
+            print(f"[AUDITRUNS2_ASYNC]    bucket_results: {len(bucket_results)} rows")
+            print(f"[AUDITRUNS2_ASYNC]    findings: {len(findings)} rows")
+            
+            write_result = self._write_results_to_sharepoint_list(
                 run_id,
                 bucket_results,
                 findings,
                 actual_detail=actual_detail,
                 expected_detail=expected_detail,
             )
-            logger.info(f"[STORAGE] ✅ Background AuditRuns2 write finished for {run_id}")
+            
+            if write_result:
+                logger.info(f"[STORAGE] Background AuditRuns2 write finished for {run_id}")
+                print(f"[AUDITRUNS2_ASYNC] [OK] Background write completed for {run_id}")
+            else:
+                logger.warning(f"[STORAGE] Background AuditRuns2 write returned False for {run_id}")
+                print(f"[AUDITRUNS2_ASYNC] [WARN] Background write returned False for {run_id}")
         except Exception as e:
             logger.error(f"[STORAGE] Background AuditRuns2 write failed for {run_id}: {e}", exc_info=True)
+            print(f"[AUDITRUNS2_ASYNC] [ERROR] Background write failed for {run_id}: {e}")
     
     def _write_metrics_to_sharepoint_list_async(
         self,
@@ -2316,6 +2351,8 @@ class StorageService:
                     "skipping list-backed result persistence"
                 )
                 return False
+            
+            print(f"[AUDITRUNS2_DEBUG] Writing to list_id: {list_id} (target: {target_list_name})")
 
             headers = {
                 'Authorization': f'Bearer {self.access_token}',
@@ -2390,8 +2427,11 @@ class StorageService:
                             f"[STORAGE] Skipping writes to '{target_list_name}' for run {run_id}: "
                             f"missing required SharePoint columns: {', '.join(missing_required)}"
                         )
+                        print(f"[AUDITRUNS2_DEBUG] SCHEMA VALIDATION FAILED - Missing columns: {missing_required}")
                         return False
                     schema_loaded_ok = True
+                    print(f"[AUDITRUNS2_DEBUG] Schema loaded OK - Found {len(audit_field_name_map)} field mappings")
+                    print(f"[AUDITRUNS2_DEBUG] Field mappings: {audit_field_name_map}")
                 else:
                     logger.warning(
                         f"[STORAGE] Could not read {target_list_name} columns: "
@@ -2407,7 +2447,10 @@ class StorageService:
                     f"[STORAGE] Skipping writes to '{target_list_name}' for run {run_id}: "
                     "schema detection failed"
                 )
+                print(f"[AUDITRUNS2_DEBUG] ABORTING WRITE - schema_loaded_ok={schema_loaded_ok}")
                 return False
+            
+            print(f"[AUDITRUNS2_DEBUG] Schema validation passed, proceeding with writes")
 
             def _normalize_person_name(value: Any) -> str:
                 if value is None:
@@ -2598,14 +2641,20 @@ class StorageService:
                         if resident_name_value:
                             fields_payload[resident_name_field] = resident_name_value
 
+                    # Debug: log first payload to see what we're sending
+                    if idx == 0:
+                        print(f"[AUDITRUNS2_DEBUG] Sample fields_payload for {result_type}: {fields_payload}")
+                    
                     row_payloads.append({'fields': fields_payload})
 
+                print(f"[AUDITRUNS2_DEBUG] About to call _post_list_rows_in_batches with {len(row_payloads)} payloads")
                 rows_written += self._post_list_rows_in_batches(
                     site_id=site_id,
                     list_id=list_id,
                     row_payloads=row_payloads,
                     context_label=f"{target_list_name} {result_type} run={run_id}",
                 )
+                print(f"[AUDITRUNS2_DEBUG] _post_list_rows_in_batches returned: {rows_written} rows written")
 
                 return rows_written
 
@@ -2616,7 +2665,8 @@ class StorageService:
 
             # Optional: Filter out matched buckets to reduce list size
             filtered_bucket_results = bucket_results
-            if self.config.sharepoint_performance.write_exceptions_only:
+            write_exceptions_only = os.getenv('SHAREPOINT_WRITE_EXCEPTIONS_ONLY', 'false').lower() == 'true'
+            if write_exceptions_only:
                 original_count = len(bucket_results)
                 # Only write exceptions (Status != "Matched")
                 # Handle missing Status column or NaN values gracefully
@@ -2650,8 +2700,12 @@ class StorageService:
             bucket_rows_written = rows_written_by_type['bucket_result']
             finding_rows_written = rows_written_by_type['finding']
             logger.info(
-                f"[STORAGE] ✅ Wrote {target_list_name} rows for {run_id}: "
+                f"[STORAGE] Wrote {target_list_name} rows for {run_id}: "
                 f"bucket_result={bucket_rows_written}, finding={finding_rows_written}"
+            )
+            print(
+                f"[AUDITRUNS2_WRITE] [OK] Wrote {bucket_rows_written} bucket_result rows "
+                f"and {finding_rows_written} finding rows to {target_list_name} for {run_id}"
             )
             return True
         except Exception as e:
@@ -2665,18 +2719,76 @@ class StorageService:
         property_id: Optional[int] = None,
         lease_interval_id: Optional[int] = None,
     ) -> Optional[pd.DataFrame]:
-        """Load result rows for a run/type from SharePoint list 'AuditRuns2'."""
+        """Load result rows for a run/type from in-memory cache or CSV fallback."""
+        
+        # Check in-memory cache first
+        with self._IN_MEMORY_CACHE_LOCK:
+            if run_id in self._IN_MEMORY_RESULTS_CACHE:
+                cache_data = self._IN_MEMORY_RESULTS_CACHE[run_id]
+                
+                if result_type == 'bucket_result' and 'bucket_results' in cache_data:
+                    logger.info(f"[STORAGE] ✅ Found bucket_results in memory cache for run {run_id}")
+                    df = cache_data['bucket_results'].copy()
+                    
+                    # Apply filters if specified
+                    if property_id is not None:
+                        from audit_engine.canonical_fields import CanonicalField
+                        prop_col = CanonicalField.PROPERTY_ID.value
+                        if prop_col in df.columns:
+                            df = df[df[prop_col] == property_id].copy()
+                    
+                    if lease_interval_id is not None:
+                        from audit_engine.canonical_fields import CanonicalField
+                        lease_col = CanonicalField.LEASE_INTERVAL_ID.value
+                        if lease_col in df.columns:
+                            df = df[df[lease_col] == lease_interval_id].copy()
+                    
+                    return df
+                
+                elif result_type == 'finding' and 'findings' in cache_data:
+                    logger.info(f"[STORAGE] ✅ Found findings in memory cache for run {run_id}")
+                    df = cache_data['findings'].copy()
+                    
+                    # Apply filters if specified
+                    if property_id is not None:
+                        from audit_engine.canonical_fields import CanonicalField
+                        prop_col = CanonicalField.PROPERTY_ID.value
+                        if prop_col in df.columns:
+                            df = df[df[prop_col] == property_id].copy()
+                    
+                    if lease_interval_id is not None:
+                        from audit_engine.canonical_fields import CanonicalField
+                        lease_col = CanonicalField.LEASE_INTERVAL_ID.value
+                        if lease_col in df.columns:
+                            df = df[df[lease_col] == lease_interval_id].copy()
+                    
+                    return df
+        
+        # Not in memory cache - log and return None to trigger CSV fallback
+        logger.info(
+            f"[STORAGE] Results not in memory cache for run={run_id}, type={result_type}. "
+            "Will use CSV fallback."
+        )
+        return None
+        
+        logger.info(f"[AUDITRUNS2_DEBUG] Starting _load_results_from_sharepoint_list for run={run_id}, type={result_type}")
+        
         if not self._can_use_sharepoint_lists():
+            logger.warning(f"[AUDITRUNS2_DEBUG] Cannot use SharePoint lists - _can_use_sharepoint_lists() returned False")
             return None
 
         try:
             site_id = self._get_site_id()
             if not site_id:
+                logger.warning(f"[AUDITRUNS2_DEBUG] Site ID not found - _get_site_id() returned None")
                 return None
+            logger.info(f"[AUDITRUNS2_DEBUG] Site ID resolved: {site_id}")
 
             list_id = self._get_audit_results_list_id()
             if not list_id:
+                logger.warning(f"[AUDITRUNS2_DEBUG] List ID not found - _get_audit_results_list_id() returned None")
                 return None
+            logger.info(f"[AUDITRUNS2_DEBUG] AuditRuns2 list ID resolved: {list_id}")
 
             headers = {
                 'Authorization': f'Bearer {self.access_token}',
@@ -2693,9 +2805,14 @@ class StorageService:
             try:
                 columns_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/columns"
                 columns_params = {'$select': 'name,displayName', '$top': 200}
+                logger.info(f"[AUDITRUNS2_DEBUG] Querying columns schema from: {columns_url}")
                 columns_response = requests.get(columns_url, headers=headers, params=columns_params, timeout=60)
+                logger.info(f"[AUDITRUNS2_DEBUG] Columns query status: {columns_response.status_code}")
+                
                 if columns_response.status_code == 200:
                     column_defs = columns_response.json().get('value', [])
+                    logger.info(f"[AUDITRUNS2_DEBUG] Found {len(column_defs)} columns in AuditRuns2 list")
+                    
                     column_name_by_display: Dict[str, str] = {}
                     column_names = set()
                     for column in column_defs:
@@ -2720,6 +2837,9 @@ class StorageService:
                         elif logical_name in column_name_by_display:
                             field_name_map[logical_name] = column_name_by_display[logical_name]
 
+                    logger.info(f"[AUDITRUNS2_DEBUG] Field name map created with {len(field_name_map)} mappings")
+                    logger.info(f"[AUDITRUNS2_DEBUG] Key fields - RunId: {field_name_map.get('RunId')}, ResultType: {field_name_map.get('ResultType')}")
+                    
                     uses_generic_field_names = any(
                         v.startswith('field_') for v in field_name_map.values()
                     )
@@ -2736,6 +2856,9 @@ class StorageService:
             run_id_field = field_name_map.get('RunId')
             result_type_field = field_name_map.get('ResultType')
             if not run_id_field or not result_type_field:
+                logger.warning(
+                    f"[AUDITRUNS2_DEBUG] Missing required fields! RunId field: {run_id_field}, ResultType field: {result_type_field}"
+                )
                 logger.warning(
                     "[STORAGE] Cannot query audit results list: missing RunId/ResultType column mapping"
                 )
@@ -2766,8 +2889,13 @@ class StorageService:
                 '$top': 5000
             }
 
+            logger.info(f"[AUDITRUNS2_DEBUG] Executing query with filters: {params['$filter']}")
             response = requests.get(items_url, headers=headers, params=params, timeout=60)
+            logger.info(f"[AUDITRUNS2_DEBUG] Query response status: {response.status_code}")
             if response.status_code != 200:
+                logger.warning(
+                    f"[AUDITRUNS2_DEBUG] Query failed with error: {response.text[:500]}"
+                )
                 logger.warning(
                     f"[STORAGE] Failed loading audit results for run={run_id}, type={result_type}: "
                     f"{response.status_code} - {response.text}"
@@ -2775,7 +2903,10 @@ class StorageService:
                 return None
 
             items = response.json().get('value', [])
+            logger.info(f"[AUDITRUNS2_DEBUG] Query returned {len(items)} items")
+            
             if not items:
+                logger.info(f"[AUDITRUNS2_DEBUG] No items found - returning None (will fallback to CSV)")
                 return None
 
             rows: List[Dict[str, Any]] = []
@@ -2864,18 +2995,15 @@ class StorageService:
         property_id: Optional[int] = None,
         lease_interval_id: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Load bucket results from SharePoint list (primary) with CSV fallback."""
+        """Load bucket results from SharePoint list (primary) with snapshot then CSV fallback."""
         scope = f"run={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}"
         
-        # Try SharePoint list first (primary data source)
-        bucket_results = self._load_results_from_sharepoint_list(
-            run_id,
-            'bucket_result',
-            property_id=property_id,
-            lease_interval_id=lease_interval_id,
-        )
-        if bucket_results is not None:
-            list_results = self._normalize_loaded_dataframe(bucket_results)
+        # Try SharePoint AuditRuns2 list first (if available)
+        list_results = self._load_results_from_sharepoint_list(run_id, 'bucket_result',
+                                                                property_id=property_id,
+                                                                lease_interval_id=lease_interval_id)
+        if list_results is not None and len(list_results) > 0:
+            list_results = self._normalize_loaded_dataframe(list_results)
             list_results.attrs['read_source'] = 'sharepoint_list'
             list_results.attrs['read_reason'] = 'preferred'
             list_results.attrs['read_scope'] = scope
@@ -2885,32 +3013,181 @@ class StorageService:
                 f"rows={len(list_results)}"
             )
             return list_results
-
-        # CSV fallback when SharePoint unavailable
-        bucket_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
-        if bucket_results is not None:
-            if property_id is not None and 'PROPERTY_ID' in bucket_results.columns:
-                bucket_results = bucket_results[bucket_results['PROPERTY_ID'] == float(property_id)]
-            if lease_interval_id is not None and 'LEASE_INTERVAL_ID' in bucket_results.columns:
-                bucket_results = bucket_results[bucket_results['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
-            bucket_results.attrs['read_source'] = 'csv'
-            bucket_results.attrs['read_reason'] = 'list_unavailable'
-            bucket_results.attrs['read_scope'] = scope
-            bucket_results.attrs['csv_rows'] = len(bucket_results)
+        
+        # Fallback to RunDisplaySnapshots (reconstruct from month-level snapshots)
+        snapshot_results = self._load_bucket_results_from_snapshots(run_id, property_id, lease_interval_id)
+        if snapshot_results is not None and len(snapshot_results) > 0:
+            snapshot_results = self._normalize_loaded_dataframe(snapshot_results)
+            snapshot_results.attrs['read_source'] = 'snapshots'
+            snapshot_results.attrs['read_reason'] = 'auditruns2_unavailable'
+            snapshot_results.attrs['read_scope'] = scope
             logger.info(
-                f"[READ SOURCE][bucket_results] source=csv reason=list_unavailable scope=({scope}) rows={len(bucket_results)}"
+                f"[READ SOURCE][bucket_results] source=snapshots reason=auditruns2_unavailable scope=({scope}) rows={len(snapshot_results)}"
             )
-            return self._normalize_loaded_dataframe(bucket_results.copy())
-
+            return snapshot_results
+        
+        # Fallback to CSV
+        csv_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
+        if csv_results is not None and len(csv_results) > 0:
+            csv_results = self._normalize_loaded_dataframe(csv_results)
+            csv_results.attrs['read_source'] = 'csv'
+            csv_results.attrs['read_reason'] = 'snapshots_unavailable'
+            csv_results.attrs['read_scope'] = scope
+            logger.info(
+                f"[READ SOURCE][bucket_results] source=csv reason=snapshots_unavailable scope=({scope}) rows={len(csv_results)}"
+            )
+            return csv_results
+        
         # No data found
         empty_results = pd.DataFrame()
         empty_results.attrs['read_source'] = 'none'
-        empty_results.attrs['read_reason'] = 'no_list_and_no_csv'
+        empty_results.attrs['read_reason'] = 'not_found'
         empty_results.attrs['read_scope'] = scope
         logger.warning(
-            f"[READ SOURCE][bucket_results] source=none reason=no_list_and_no_csv scope=({scope})"
+            f"[READ SOURCE][bucket_results] source=none reason=not_found scope=({scope})"
         )
         return empty_results
+
+    def _load_bucket_results_from_snapshots(
+        self,
+        run_id: str,
+        property_id: Optional[int] = None,
+        lease_interval_id: Optional[int] = None,
+    ) -> Optional[pd.DataFrame]:
+        """Reconstruct bucket_results DataFrame from RunDisplaySnapshots month-level rows."""
+        try:
+            # Query for month-level snapshots (most detailed level with bucket data)
+            filter_parts = [f"RunId eq '{run_id}'", "ScopeType eq 'month'"]
+            if property_id is not None:
+                filter_parts.append(f"PropertyId eq {property_id}")
+            if lease_interval_id is not None:
+                filter_parts.append(f"LeaseIntervalId eq {lease_interval_id}")
+            
+            filter_str = " and ".join(filter_parts)
+            
+            # Get snapshots
+            snapshots = self._query_snapshots_by_filter(run_id, filter_str)
+            if not snapshots:
+                return None
+            
+            # Reconstruct bucket_results DataFrame from snapshots
+            rows = []
+            for snap in snapshots:
+                row = {
+                    'PROPERTY_ID': snap.get('PropertyId'),
+                    'LEASE_INTERVAL_ID': snap.get('LeaseIntervalId'),
+                    'AR_CODE_ID': snap.get('ArCodeId'),
+                    'AUDIT_MONTH': snap.get('AuditMonth'),
+                    'STATUS': snap.get('Status', ''),
+                    'AR_CODE_NAME': snap.get('ArCodeName', ''),
+                    'EXPECTED_TOTAL': snap.get('ExpectedTotal', 0.0),
+                    'ACTUAL_TOTAL': snap.get('ActualTotal', 0.0),
+                    'VARIANCE': snap.get('Variance', 0.0),
+                }
+                rows.append(row)
+            
+            df = pd.DataFrame(rows)
+            return df if len(df) > 0 else None
+            
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to load bucket_results from snapshots: {e}")
+            return None
+    
+    def _load_findings_from_snapshots(
+        self,
+        run_id: str,
+        property_id: Optional[int] = None,
+        lease_interval_id: Optional[int] = None,
+    ) -> Optional[pd.DataFrame]:
+        """Reconstruct findings DataFrame from RunDisplaySnapshots month-level rows with variance != 0."""
+        try:
+            # Query for month-level snapshots with variance (findings)
+            filter_parts = [f"RunId eq '{run_id}'", "ScopeType eq 'month'"]
+            if property_id is not None:
+                filter_parts.append(f"PropertyId eq {property_id}")
+            if lease_interval_id is not None:
+                filter_parts.append(f"LeaseIntervalId eq {lease_interval_id}")
+            
+            filter_str = " and ".join(filter_parts)
+            
+            # Get snapshots
+            snapshots = self._query_snapshots_by_filter(run_id, filter_str)
+            if not snapshots:
+                return None
+            
+            # Filter to only rows with variance != 0 (findings)
+            findings_snapshots = [s for s in snapshots if s.get('Variance', 0.0) != 0.0]
+            if not findings_snapshots:
+                return None
+            
+            # Reconstruct findings DataFrame from snapshots
+            rows = []
+            for snap in findings_snapshots:
+                variance = snap.get('Variance', 0.0)
+                row = {
+                    'property_id': snap.get('PropertyId'),
+                    'lease_interval_id': snap.get('LeaseIntervalId'),
+                    'ar_code_id': snap.get('ArCodeId'),
+                    'audit_month': snap.get('AuditMonth'),
+                    'status': snap.get('Status', ''),
+                    'ar_code_name': snap.get('ArCodeName', ''),
+                    'variance': variance,
+                    'severity': 'overcharge' if variance > 0 else 'undercharge',
+                    'expected': snap.get('ExpectedTotal', 0.0),
+                    'actual': snap.get('ActualTotal', 0.0),
+                }
+                rows.append(row)
+            
+            df = pd.DataFrame(rows)
+            return df if len(df) > 0 else None
+            
+        except Exception as e:
+            logger.error(f"[STORAGE] Failed to load findings from snapshots: {e}")
+            return None
+    
+    def _query_snapshots_by_filter(
+        self,
+        run_id: str,
+        filter_str: str,
+        select_fields: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Query RunDisplaySnapshots with OData filter."""
+        try:
+            list_id = self._get_sharepoint_list_id('RunDisplaySnapshots')
+            if not list_id:
+                return []
+            
+            site_id = self._get_site_id()
+            if not site_id:
+                return []
+            
+            token = self.access_token
+            if not token:
+                return []
+            
+            # Build query URL
+            url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            params = {
+                '$filter': filter_str,
+                '$expand': 'fields',
+                '$top': 5000,
+            }
+            if select_fields:
+                params['$select'] = ','.join(['id'] + select_fields)
+            
+            headers = {'Authorization': f'Bearer {token}'}
+            r = requests.get(url, headers=headers, params=params, timeout=60)
+            
+            if r.status_code != 200:
+                logger.warning(f"[STORAGE] Failed querying RunDisplaySnapshots: {r.status_code} - {r.text}")
+                return []
+            
+            items = r.json().get('value', [])
+            return [item.get('fields', {}) for item in items]
+            
+        except Exception as e:
+            logger.error(f"[STORAGE] Error querying snapshots: {e}")
+            return []
 
     def load_findings(
         self,
@@ -2918,18 +3195,15 @@ class StorageService:
         property_id: Optional[int] = None,
         lease_interval_id: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Load findings from SharePoint list (primary) with CSV fallback."""
+        """Load findings from SharePoint list (primary) with snapshot then CSV fallback."""
         scope = f"run={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}"
         
-        # Try SharePoint list first (primary data source)
-        findings = self._load_results_from_sharepoint_list(
-            run_id,
-            'finding',
-            property_id=property_id,
-            lease_interval_id=lease_interval_id,
-        )
-        if findings is not None:
-            list_findings = self._normalize_loaded_dataframe(findings)
+        # Try SharePoint AuditRuns2 list first (if available)
+        list_findings = self._load_results_from_sharepoint_list(run_id, 'finding',
+                                                                 property_id=property_id,
+                                                                 lease_interval_id=lease_interval_id)
+        if list_findings is not None and len(list_findings) > 0:
+            list_findings = self._normalize_loaded_dataframe(list_findings)
             list_findings.attrs['read_source'] = 'sharepoint_list'
             list_findings.attrs['read_reason'] = 'preferred'
             list_findings.attrs['read_scope'] = scope
@@ -2938,53 +3212,118 @@ class StorageService:
                 f"[READ SOURCE][findings] source=sharepoint_list reason=preferred scope=({scope}) rows={len(list_findings)}"
             )
             return list_findings
-
-        # CSV fallback when SharePoint unavailable
-        findings = self._load_dataframe(run_id, "outputs/findings.csv")
-        if findings is not None:
-            if property_id is not None:
-                if 'property_id' in findings.columns:
-                    findings = findings[findings['property_id'] == float(property_id)]
-                elif 'PROPERTY_ID' in findings.columns:
-                    findings = findings[findings['PROPERTY_ID'] == float(property_id)]
-
-            if lease_interval_id is not None:
-                if 'lease_interval_id' in findings.columns:
-                    findings = findings[findings['lease_interval_id'] == float(lease_interval_id)]
-                elif 'LEASE_INTERVAL_ID' in findings.columns:
-                    findings = findings[findings['LEASE_INTERVAL_ID'] == float(lease_interval_id)]
-            findings.attrs['read_source'] = 'csv'
-            findings.attrs['read_reason'] = 'list_unavailable'
-            findings.attrs['read_scope'] = scope
-            findings.attrs['csv_rows'] = len(findings)
+        
+        # Fallback to RunDisplaySnapshots (reconstruct from month-level snapshots)
+        snapshot_findings = self._load_findings_from_snapshots(run_id, property_id, lease_interval_id)
+        if snapshot_findings is not None and len(snapshot_findings) > 0:
+            snapshot_findings = self._normalize_loaded_dataframe(snapshot_findings)
+            snapshot_findings.attrs['read_source'] = 'snapshots'
+            snapshot_findings.attrs['read_reason'] = 'auditruns2_unavailable'
+            snapshot_findings.attrs['read_scope'] = scope
             logger.info(
-                f"[READ SOURCE][findings] source=csv reason=list_unavailable scope=({scope}) rows={len(findings)}"
+                f"[READ SOURCE][findings] source=snapshots reason=auditruns2_unavailable scope=({scope}) rows={len(snapshot_findings)}"
             )
-            return self._normalize_loaded_dataframe(findings.copy())
-
+            return snapshot_findings
+        
+        # Fallback to CSV
+        csv_findings = self._load_dataframe(run_id, "outputs/findings.csv")
+        if csv_findings is not None and len(csv_findings) > 0:
+            csv_findings = self._normalize_loaded_dataframe(csv_findings)
+            csv_findings.attrs['read_source'] = 'csv'
+            csv_findings.attrs['read_reason'] = 'snapshots_unavailable'
+            csv_findings.attrs['read_scope'] = scope
+            logger.info(
+                f"[READ SOURCE][findings] source=csv reason=snapshots_unavailable scope=({scope}) rows={len(csv_findings)}"
+            )
+            return csv_findings
+        
         # No data found
         empty_results = pd.DataFrame()
         empty_results.attrs['read_source'] = 'none'
-        empty_results.attrs['read_reason'] = 'no_list_and_no_csv'
+        empty_results.attrs['read_reason'] = 'not_found'
         empty_results.attrs['read_scope'] = scope
         logger.warning(
-            f"[READ SOURCE][findings] source=none reason=no_list_and_no_csv scope=({scope})"
+            f"[READ SOURCE][findings] source=none reason=not_found scope=({scope})"
         )
         return empty_results
 
+    def load_variance_detail(
+        self,
+        run_id: str,
+        property_id: Optional[int] = None,
+        lease_interval_id: Optional[int] = None,
+        ar_code_id: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Load variance_detail from in-memory cache, optionally filtered by property/lease/AR code."""
+        from audit_engine.canonical_fields import CanonicalField
+        
+        scope = f"run={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}, ar_code_id={ar_code_id}"
+        
+        # Load variance_detail from memory cache
+        variance_detail = None
+        with self._IN_MEMORY_CACHE_LOCK:
+            if run_id in self._IN_MEMORY_RESULTS_CACHE:
+                variance_detail = self._IN_MEMORY_RESULTS_CACHE[run_id].get('variance_detail', pd.DataFrame())
+                if not variance_detail.empty:
+                    variance_detail = variance_detail.copy()
+        
+        if variance_detail is None or variance_detail.empty:
+            empty_results = pd.DataFrame()
+            empty_results.attrs['read_source'] = 'none'
+            empty_results.attrs['read_reason'] = 'not_found_in_memory'
+            empty_results.attrs['read_scope'] = scope
+            logger.warning(
+                f"[READ SOURCE][variance_detail] source=none reason=not_found_in_memory scope=({scope})"
+            )
+            return empty_results
+        
+        # Normalize first
+        variance_detail = self._normalize_loaded_dataframe(variance_detail)
+        
+        # Apply filters if specified
+        filtered = variance_detail
+        if property_id is not None:
+            prop_col = next((c for c in [CanonicalField.PROPERTY_ID.value, 'property_id', 'PROPERTY_ID'] if c in filtered.columns), None)
+            if prop_col:
+                filtered = filtered[filtered[prop_col] == property_id].copy()
+        
+        if lease_interval_id is not None:
+            lease_col = next((c for c in [CanonicalField.LEASE_INTERVAL_ID.value, 'lease_interval_id', 'LEASE_INTERVAL_ID'] if c in filtered.columns), None)
+            if lease_col:
+                filtered = filtered[filtered[lease_col] == lease_interval_id].copy()
+        
+        if ar_code_id is not None:
+            ar_col = next((c for c in [CanonicalField.AR_CODE_ID.value, 'ar_code_id', 'AR_CODE_ID'] if c in filtered.columns), None)
+            if ar_col:
+                filtered = filtered[filtered[ar_col] == ar_code_id].copy()
+        
+        filtered.attrs['read_source'] = 'memory'
+        filtered.attrs['read_reason'] = 'in_memory_cache'
+        filtered.attrs['read_scope'] = scope
+        logger.info(
+            f"[READ SOURCE][variance_detail] source=memory reason=in_memory_cache scope=({scope}) rows={len(filtered)}"
+        )
+        return filtered
+
     def load_expected_detail(self, run_id: str) -> pd.DataFrame:
-        """Load expected_detail for a run from persisted inputs."""
-        expected_detail = self._load_dataframe(run_id, "inputs_normalized/expected_detail.csv")
-        if expected_detail is None:
-            return pd.DataFrame()
-        return self._normalize_loaded_dataframe(expected_detail)
+        """Load expected_detail for a run from in-memory cache."""
+        with self._IN_MEMORY_CACHE_LOCK:
+            if run_id in self._IN_MEMORY_RESULTS_CACHE:
+                expected_detail = self._IN_MEMORY_RESULTS_CACHE[run_id].get('expected_detail', pd.DataFrame())
+                if not expected_detail.empty:
+                    return self._normalize_loaded_dataframe(expected_detail.copy())
+        logger.warning(f"[STORAGE] Expected detail not found in memory for run {run_id}")
+        return pd.DataFrame()
 
     def load_actual_detail(self, run_id: str) -> pd.DataFrame:
-        """Load actual_detail for a run from persisted inputs."""
-        actual_detail = self._load_dataframe(run_id, "inputs_normalized/actual_detail.csv")
-        if actual_detail is None:
-            return pd.DataFrame()
-        return self._normalize_loaded_dataframe(actual_detail)
+        """Load actual_detail for a run from in-memory cache."""
+        with self._IN_MEMORY_CACHE_LOCK:
+            if run_id in self._IN_MEMORY_RESULTS_CACHE:
+                actual_detail = self._IN_MEMORY_RESULTS_CACHE[run_id].get('actual_detail', pd.DataFrame())
+                if not actual_detail.empty:
+                    return self._normalize_loaded_dataframe(actual_detail.copy())
+        logger.warning(f"[STORAGE] Actual detail not found in memory for run {run_id}")
+        return pd.DataFrame()
 
     def _normalize_ar_code_value(self, value: Any) -> str:
         if value is None or pd.isna(value):
@@ -4571,12 +4910,28 @@ class StorageService:
         print(f"  - Findings: {findings.shape}")
         if variance_detail is not None:
             print(f"  - Variance detail: {variance_detail.shape}")
+        
+        # Delete the most recent run before saving this one
+        print(f"\n[STORAGE] Checking for previous runs to overwrite...")
+        recent_runs = self.list_runs(limit=1)
+        if recent_runs:
+            most_recent_run_id = recent_runs[0]['run_id']
+            print(f"[STORAGE] Found previous run: {most_recent_run_id}")
+            print(f"[STORAGE] Deleting previous run to overwrite...")
+            self.delete_run(most_recent_run_id)
+        else:
+            print(f"[STORAGE] No previous runs found - this will be the first run")
+        
         self.create_run_dir(run_id)
 
         write_details_async = os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'false').lower() == 'true'
         write_metrics_async = os.getenv('ASYNC_METRICS_WRITE', 'true').lower() == 'true'
         write_snapshots_async = os.getenv('ASYNC_RUN_DISPLAY_SNAPSHOTS', 'true').lower() == 'true'
         snapshot_validation_async = os.getenv('ASYNC_SNAPSHOT_VALIDATION', 'true').lower() == 'true'
+        
+        print(f"[SAVE_RUN DEBUG] write_details_async={write_details_async} (env ASYNC_AUDIT_RESULTS_WRITE={os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'NOT_SET')})")
+        print(f"[SAVE_RUN DEBUG] write_metrics_async={write_metrics_async}")
+        print(f"[SAVE_RUN DEBUG] write_snapshots_async={write_snapshots_async}")
         
         files_saved = []
         files_failed = []
@@ -4594,31 +4949,75 @@ class StorageService:
             files_saved.append(original_file_path.name)
             print(f"[STORAGE] ✓ Saved: {original_file_path.name}")
         
-        print(f"\n[STORAGE] Step 2/7: Saving CSV input files...")
-        logger.info(f"[STORAGE] 📊 CSV input file writes...")
-        self._save_dataframe(expected_detail, run_id, "inputs_normalized/expected_detail.csv")
-        print(f"[STORAGE] ✓ Saved: expected_detail.csv ({len(expected_detail)} rows)")
-        files_saved.append("expected_detail.csv")
+        # Check if CSV writes are disabled
+        disable_csv_writes = os.getenv('DISABLE_CSV_WRITES', 'false').lower() == 'true'
         
-        self._save_dataframe(actual_detail, run_id, "inputs_normalized/actual_detail.csv")
-        print(f"[STORAGE] ✓ Saved: actual_detail.csv ({len(actual_detail)} rows)")
-        files_saved.append("actual_detail.csv")
+        # CSV WRITES DISABLED - Using in-memory cache only
+        print(f"\n[STORAGE] Step 2/7: CSV writes DISABLED (using in-memory cache)")
+        print(f"[STORAGE] Step 3/7: CSV writes DISABLED (using in-memory cache)")
+        logger.info(f"[STORAGE] CSV writes disabled, using in-memory cache only")
         
-        print(f"\n[STORAGE] Step 3/7: Saving CSV output files...")
-        logger.info(f"[STORAGE] 📈 CSV output file writes...")
-        self._save_dataframe(bucket_results, run_id, "outputs/bucket_results.csv")
-        print(f"[STORAGE] ✓ Saved: bucket_results.csv ({len(bucket_results)} rows)")
-        files_saved.append("bucket_results.csv")
+        # Store bucket_results and findings in memory for fast access
+        with self._IN_MEMORY_CACHE_LOCK:
+            self._IN_MEMORY_RESULTS_CACHE[run_id] = {
+                'bucket_results': bucket_results.copy(),
+                'findings': findings.copy(),
+                'expected_detail': expected_detail.copy() if expected_detail is not None else pd.DataFrame(),
+                'actual_detail': actual_detail.copy() if actual_detail is not None else pd.DataFrame(),
+                'variance_detail': variance_detail.copy() if variance_detail is not None and len(variance_detail) > 0 else pd.DataFrame(),
+                'timestamp': datetime.now().isoformat()
+            }
+        print(f"[STORAGE] ✓ Cached complete run data in memory for {run_id}")
+        logger.info(f"[STORAGE] Cached {len(bucket_results)} bucket results, {len(findings)} findings, and detail data in memory")
         
-        self._save_dataframe(findings, run_id, "outputs/findings.csv")
-        print(f"[STORAGE] ✓ Saved: findings.csv ({len(findings)} rows)")
-        files_saved.append("findings.csv")
-        
-        # Save variance detail if provided
-        if variance_detail is not None and len(variance_detail) > 0:
-            self._save_dataframe(variance_detail, run_id, "outputs/variance_detail.csv")
-            print(f"[STORAGE] ✓ Saved: variance_detail.csv ({len(variance_detail)} rows)")
-            files_saved.append("variance_detail.csv")
+        # if disable_csv_writes:
+        #     print(f"\n[STORAGE] Step 2/7: CSV writes DISABLED (DISABLE_CSV_WRITES=true)")
+        #     print(f"[STORAGE] Step 3/7: CSV writes DISABLED (DISABLE_CSV_WRITES=true)")
+        #     logger.info(f"[STORAGE] CSV writes disabled via DISABLE_CSV_WRITES environment variable")
+        # else:
+        #     print(f"\n[STORAGE] Step 2/7: Saving CSV input files...")
+        #     logger.info(f"[STORAGE] 📊 CSV input file writes...")
+        #     try:
+        #         self._save_dataframe(expected_detail, run_id, "inputs_normalized/expected_detail.csv")
+        #         print(f"[STORAGE] ✓ Saved: expected_detail.csv ({len(expected_detail)} rows)")
+        #         files_saved.append("expected_detail.csv")
+        #         
+        #         self._save_dataframe(actual_detail, run_id, "inputs_normalized/actual_detail.csv")
+        #         print(f"[STORAGE] ✓ Saved: actual_detail.csv ({len(actual_detail)} rows)")
+        #         files_saved.append("actual_detail.csv")
+        #     except Exception as e:
+        #         print(f"[STORAGE] ⚠️  CSV input file writes failed: {e}")
+        #         logger.warning(f"[STORAGE] Failed to write CSV input files: {e}")
+        #     
+        #     print(f"\n[STORAGE] Step 3/7: Saving CSV output files...")
+        #     logger.info(f"[STORAGE] 📈 CSV output file writes...")
+        #     try:
+        #         self._save_dataframe(bucket_results, run_id, "outputs/bucket_results.csv")
+        #         print(f"[STORAGE] ✓ Saved: bucket_results.csv ({len(bucket_results)} rows)")
+        #         files_saved.append("bucket_results.csv")
+        #         
+        #         self._save_dataframe(findings, run_id, "outputs/findings.csv")
+        #         print(f"[STORAGE] ✓ Saved: findings.csv ({len(findings)} rows)")
+        #         files_saved.append("findings.csv")
+        #         
+        #         # Store bucket_results and findings in memory for fast access
+        #         with self._IN_MEMORY_CACHE_LOCK:
+        #             self._IN_MEMORY_RESULTS_CACHE[run_id] = {
+        #                 'bucket_results': bucket_results.copy(),
+        #                 'findings': findings.copy(),
+        #                 'timestamp': datetime.now().isoformat()
+        #             }
+        #         print(f"[STORAGE] ✓ Cached results in memory for run {run_id}")
+        #         logger.info(f"[STORAGE] Cached {len(bucket_results)} bucket results and {len(findings)} findings in memory")
+        #         
+        #         # Save variance detail if provided
+        #         if variance_detail is not None and len(variance_detail) > 0:
+        #             self._save_dataframe(variance_detail, run_id, "outputs/variance_detail.csv")
+        #             print(f"[STORAGE] ✓ Saved: variance_detail.csv ({len(variance_detail)} rows)")
+        #             files_saved.append("variance_detail.csv")
+        #     except Exception as e:
+        #         print(f"[STORAGE] ⚠️  CSV output file writes failed: {e}")
+        #         logger.warning(f"[STORAGE] Failed to write CSV output files: {e}")
         
         # Save metadata
         print(f"\n[STORAGE] Step 4/7: Saving metadata...")
@@ -4732,34 +5131,38 @@ class StorageService:
             print(f"[STORAGE] ⚠️  Display snapshots write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
 
-        # Write detailed results to SharePoint list (list-backed results DB).
-        print(f"\n[STORAGE] Step 7/7: Writing detailed results to SharePoint List (AuditRuns2)...")
-        if write_details_async and can_write_sharepoint_lists:
-            print(f"[STORAGE] 🚀 Dispatching async detailed results write...")
-            details_thread = threading.Thread(
-                target=self._write_results_to_sharepoint_list_async,
-                args=(run_id, bucket_results, findings),
-                kwargs={'actual_detail': actual_detail, 'expected_detail': expected_detail},
-                daemon=True,
-                name=f"details-write-{run_id}",
-            )
-            details_thread.start()
-            print(f"[STORAGE] ✓ Detailed results write dispatched (async mode)")
-        elif can_write_sharepoint_lists:
-            print(f"[STORAGE] Writing detailed results synchronously...")
-            write_ok = self._write_results_to_sharepoint_list(
-                run_id,
-                bucket_results,
-                findings,
-                actual_detail=actual_detail,
-                expected_detail=expected_detail,
-            )
-            if write_ok:
-                print(f"[STORAGE] ✓ Detailed results written successfully")
-            else:
-                print(f"[STORAGE] ⚠️  Detailed results write failed")
-        else:
-            print(f"[STORAGE] ⚠️  SharePoint lists not available, skipping detailed results write")
+        # # Write detailed results to SharePoint list (list-backed results DB).
+        # print(f"\n[STORAGE] Step 7/7: Writing detailed results to SharePoint List (AuditRuns2)...")
+        # print(f"[STEP 7 DEBUG] write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
+        # print(f"[STEP 7 DEBUG] access_token={'SET' if self.access_token else 'MISSING'}, sharepoint_site_url={self.sharepoint_site_url}")
+        
+        # if write_details_async and can_write_sharepoint_lists:
+        #     print(f"[STORAGE] 🚀 Dispatching async detailed results write...")
+        #     details_thread = threading.Thread(
+        #         target=self._write_results_to_sharepoint_list_async,
+        #         args=(run_id, bucket_results, findings),
+        #         kwargs={'actual_detail': actual_detail, 'expected_detail': expected_detail},
+        #         daemon=True,
+        #         name=f"details-write-{run_id}",
+        #     )
+        #     details_thread.start()
+        #     print(f"[STORAGE] ✓ Detailed results write dispatched (async mode)")
+        # elif can_write_sharepoint_lists:
+        #     print(f"[STORAGE] Writing detailed results synchronously...")
+        #     write_ok = self._write_results_to_sharepoint_list(
+        #         run_id,
+        #         bucket_results,
+        #         findings,
+        #         actual_detail=actual_detail,
+        #         expected_detail=expected_detail,
+        #     )
+        #     if write_ok:
+        #         print(f"[STORAGE] ✓ Detailed results written successfully")
+        #     else:
+        #         print(f"[STORAGE] ⚠️  Detailed results write failed")
+        # else:
+        #     print(f"[STORAGE] ⚠️  SharePoint lists not available, skipping detailed results write")
+        #     print(f"[STEP 7 DEBUG] Why? write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
 
         logger.info(
             f"[STORAGE TIMER] run_id={run_id} "
@@ -4788,29 +5191,33 @@ class StorageService:
             logger.info(f"[STORAGE] 📍 Location: {self.base_dir}/{run_id}")
     
     def load_run(self, run_id: str) -> Dict[str, Any]:
-        """Load complete audit run from storage."""
-        expected_detail = self._load_dataframe(run_id, "inputs_normalized/expected_detail.csv")
-        actual_detail = self._load_dataframe(run_id, "inputs_normalized/actual_detail.csv")
-
-        # Load results from SharePoint list first, fallback to CSV if unavailable
-        bucket_results = self._load_results_from_sharepoint_list(run_id, 'bucket_result')
-        if bucket_results is None:
-            bucket_results = self._load_dataframe(run_id, "outputs/bucket_results.csv")
-
-        findings = self._load_results_from_sharepoint_list(run_id, 'finding')
-        if findings is None:
-            findings = self._load_dataframe(run_id, "outputs/findings.csv")
-
-        variance_detail = self._load_dataframe(run_id, "outputs/variance_detail.csv")
+        """Load complete audit run from in-memory cache."""
+        logger.info(f"[STORAGE] Loading run {run_id} from in-memory cache")
         
-        if expected_detail is None or actual_detail is None or bucket_results is None or findings is None:
-            raise ValueError(f"Run {run_id} not found or incomplete")
+        # Check in-memory cache
+        with self._IN_MEMORY_CACHE_LOCK:
+            if run_id not in self._IN_MEMORY_RESULTS_CACHE:
+                raise ValueError(f"Run {run_id} not found in memory cache. Please run a new audit.")
+            
+            cache_data = self._IN_MEMORY_RESULTS_CACHE[run_id]
+            expected_detail = cache_data.get('expected_detail', pd.DataFrame()).copy()
+            actual_detail = cache_data.get('actual_detail', pd.DataFrame()).copy()
+            bucket_results = cache_data.get('bucket_results', pd.DataFrame()).copy()
+            findings = cache_data.get('findings', pd.DataFrame()).copy()
+            variance_detail = cache_data.get('variance_detail', pd.DataFrame()).copy()
+        
+        logger.info(f"[STORAGE] ✅ Loaded run {run_id} from memory: {len(bucket_results)} buckets, {len(findings)} findings")
+        
+        # Bucket results and findings are mandatory
+        if bucket_results is None or bucket_results.empty or findings is None or findings.empty:
+            raise ValueError(f"Run {run_id} incomplete in memory cache (missing bucket_results or findings)")
 
         for df in [expected_detail, actual_detail, bucket_results, findings]:
-            self._normalize_loaded_dataframe(df)
+            if not df.empty:
+                self._normalize_loaded_dataframe(df)
         
         # Also convert dates in variance_detail if loaded
-        if variance_detail is not None:
+        if variance_detail is not None and not variance_detail.empty:
             date_columns = ['AUDIT_MONTH', 'PERIOD_START', 'PERIOD_END', 'POST_DATE', 'audit_month']
             for col in date_columns:
                 if col in variance_detail.columns:
@@ -4905,13 +5312,22 @@ class StorageService:
                 '$top': max(1, int(limit))
             }
             
+            logger.info(f"[LIST_RUNS_DEBUG] Querying {items_url} with filter: {params['$filter']}")
             response = requests.get(items_url, headers=headers, params=params, timeout=30)
+            logger.info(f"[LIST_RUNS_DEBUG] Response status: {response.status_code}")
+            
             if response.status_code != 200:
+                logger.error(
+                    f"[LIST_RUNS_DEBUG] Failed query response: {response.text[:500]}"
+                )
                 logger.error(
                     f"[STORAGE] Failed to list runs from RunDisplaySnapshots: "
                     f"{response.status_code} - {response.text}"
                 )
                 return runs
+            
+            items = response.json().get('value', [])
+            logger.info(f"[LIST_RUNS_DEBUG] Query returned {len(items)} portfolio snapshots")
             
             for item in response.json().get('value', []):
                 fields = item.get('fields', {})
@@ -4936,6 +5352,120 @@ class StorageService:
             logger.error(f"[STORAGE] Error listing runs from RunDisplaySnapshots: {e}", exc_info=True)
 
         return runs
+    
+    def delete_run(self, run_id: str) -> bool:
+        """Delete a run from all storage locations (SharePoint lists, document library, and local files)."""
+        if not run_id:
+            logger.warning("[STORAGE] delete_run called with empty run_id")
+            return False
+            
+        logger.info(f"[STORAGE] 🗑️ Deleting run: {run_id}")
+        deleted_from = []
+        
+        try:
+            # Delete from SharePoint lists if available
+            if self._can_use_sharepoint_lists():
+                site_id = self._get_site_id()
+                if site_id:
+                    headers = {
+                        'Authorization': f'Bearer {self.access_token}',
+                        'Content-Type': 'application/json',
+                        'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+                    }
+                    
+                    # Delete from AuditRuns2 list
+                    try:
+                        list_id = self._get_audit_results_list_id() or self._get_sharepoint_list_id('AuditRuns2')
+                        if list_id:
+                            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+                            params = {'$select': 'id', '$expand': 'fields', '$filter': f"fields/RunId eq '{run_id}'", '$top': 5000}
+                            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+                            if response.status_code == 200:
+                                items = response.json().get('value', [])
+                                for item in items:
+                                    delete_response = requests.delete(f"{items_url}/{item['id']}", headers=headers, timeout=30)
+                                    if delete_response.status_code not in [200, 204]:
+                                        logger.warning(f"[STORAGE] Failed to delete AuditRuns2 item {item['id']}: {delete_response.status_code}")
+                                if items:
+                                    deleted_from.append(f"AuditRuns2 ({len(items)} items)")
+                                    logger.info(f"[STORAGE] Deleted {len(items)} items from AuditRuns2")
+                    except Exception as e:
+                        logger.warning(f"[STORAGE] Error deleting from AuditRuns2: {e}")
+                    
+                    # Delete from Audit Run Metrics list
+                    try:
+                        list_id = self._get_sharepoint_list_id('Audit Run Metrics')
+                        if list_id:
+                            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+                            params = {'$select': 'id', '$expand': 'fields', '$filter': f"fields/Title eq '{run_id}'", '$top': 5000}
+                            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+                            if response.status_code == 200:
+                                items = response.json().get('value', [])
+                                for item in items:
+                                    delete_response = requests.delete(f"{items_url}/{item['id']}", headers=headers, timeout=30)
+                                    if delete_response.status_code not in [200, 204]:
+                                        logger.warning(f"[STORAGE] Failed to delete Metrics item {item['id']}: {delete_response.status_code}")
+                                if items:
+                                    deleted_from.append(f"Audit Run Metrics ({len(items)} items)")
+                                    logger.info(f"[STORAGE] Deleted {len(items)} items from Audit Run Metrics")
+                    except Exception as e:
+                        logger.warning(f"[STORAGE] Error deleting from Audit Run Metrics: {e}")
+                    
+                    # Delete from RunDisplaySnapshots list
+                    try:
+                        list_id = self._get_run_display_snapshots_list_id()
+                        if list_id:
+                            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+                            params = {'$select': 'id', '$expand': 'fields', '$filter': f"fields/RunId eq '{run_id}'", '$top': 5000}
+                            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+                            if response.status_code == 200:
+                                items = response.json().get('value', [])
+                                for item in items:
+                                    delete_response = requests.delete(f"{items_url}/{item['id']}", headers=headers, timeout=30)
+                                    if delete_response.status_code not in [200, 204]:
+                                        logger.warning(f"[STORAGE] Failed to delete RunDisplaySnapshots item {item['id']}: {delete_response.status_code}")
+                                if items:
+                                    deleted_from.append(f"RunDisplaySnapshots ({len(items)} items)")
+                                    logger.info(f"[STORAGE] Deleted {len(items)} items from RunDisplaySnapshots")
+                    except Exception as e:
+                        logger.warning(f"[STORAGE] Error deleting from RunDisplaySnapshots: {e}")
+            
+            # Delete from SharePoint document library if using SharePoint storage
+            if self.use_sharepoint:
+                try:
+                    _, drive_id = self._get_site_and_drive_id()
+                    if drive_id:
+                        folder_path = f"/{run_id}"
+                        folder_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{folder_path}"
+                        headers = {'Authorization': f'Bearer {self.access_token}'}
+                        delete_response = requests.delete(folder_url, headers=headers, timeout=60)
+                        if delete_response.status_code in [200, 204]:
+                            deleted_from.append(f"Document Library folder")
+                            logger.info(f"[STORAGE] Deleted folder from document library: {run_id}")
+                        elif delete_response.status_code != 404:
+                            logger.warning(f"[STORAGE] Failed to delete document library folder: {delete_response.status_code}")
+                except Exception as e:
+                    logger.warning(f"[STORAGE] Error deleting from document library: {e}")
+            
+            # Delete from local filesystem
+            else:
+                local_path = self.base_dir / run_id
+                if local_path.exists():
+                    import shutil
+                    shutil.rmtree(local_path)
+                    deleted_from.append(f"Local filesystem")
+                    logger.info(f"[STORAGE] Deleted local folder: {local_path}")
+            
+            if deleted_from:
+                logger.info(f"[STORAGE] ✅ Successfully deleted run {run_id} from: {', '.join(deleted_from)}")
+                return True
+            else:
+                logger.info(f"[STORAGE] No data found to delete for run {run_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[STORAGE] Error deleting run {run_id}: {e}", exc_info=True)
+            return False
     
     def get_run_exists(self, run_id: str) -> bool:
         """Check if run exists."""
