@@ -1,0 +1,272 @@
+File is not valid JSON, extracting with regex...
+
+Total AR Codes Found: 266
+
+AR_CODE | NAME | USAGE
+----------------------------------------------------------------------------------------------------
+154771 | Rent | Base
+154774 | Deposit | Base
+154775 | Utility Allowance | Base
+154776 | Payment | Base
+154777 | Late Charges | Base
+154778 | 10 Month Premium | Base
+154779 | Beginning Balance | Base
+154780 | Beginning Deposit Adjustment | Base
+154781 | Beginning Deposit Held | Base
+154782 | Refund Payable | Base
+154783 | Termination Fee | Base
+154784 | Cancellation Charge | Base
+154785 | NSF Check Fee | Base
+154786 | Month To Month Charges | Base
+154787 | Transfer Fee | Base
+154788 | Application Fee | Base
+154789 | Resident Fines | Lease Violation
+154790 | Peak Protection Ins - Monthly | Add Ons
+154794 | Repayment Agreement | Base
+154795 | Equity Draw Request | Base
+154796 | HUDWRITEOFF | Base
+154797 | Investor Loan Request | Base
+154992 | Other Deposit Received | Base
+154993 | Corporate Lease Rental | Base
+154994 | Utility Pkg Incl with Rent | Base
+154995 | Community Advisor | Base
+154996 | Resident Asst Credit | Base
+154997 | Courtesy Officer Rent Allowance | Base
+154998 | Employee Unit Rent Credit | Base
+154999 | Rent Concession | Special
+155000 | Development Delays | Base
+155001 | Rent (Entire Lease) Concession | Special
+155002 | 5 Month Premium | Base
+155003 | 6 Month Premium | Base
+155004 | 9 Month Premium | Base
+155005 | Hold Over Fee | Base
+155006 | 3 Month Premium | Base
+155007 | Amenity Premium | Amenity
+155008 | Double Up Premium | Base
+155009 | Rent Discount | Base
+155010 | Lock Off Discount | Base
+155011 | Final Application Fee | Base
+155012 | Admin Fees | Base
+155013 | Reservation Fee | Base
+155014 | Final Administrative Fee | Base
+155015 | Early Move in Fee | Base
+155016 | Re-Let Fee | Base
+155017 | Re-Assignment Fee | Base
+155018 | Accelerated rent | Base
+155019 | Final Accelerated Rent | Base
+155020 | Concession Chargeback | Base
+155021 | Telecom | Base
+155022 | Electric Charge | Base
+155023 | Electricity | Base
+155024 | Prior Year Electric | Base
+155025 | Final Electricity | Base
+155026 | Utility Fee | Base
+155027 | Billing Fee | Base
+155028 | Gas Charge | Base
+155029 | Gas Reimbursement | Base
+155030 | Water, Sewer Charge | Base
+155031 | Water Reimbursement | Base
+155032 | NSF for Transactions in Previous Period | Base
+155033 | Storage Fee | Base
+155034 | Pet | Pet
+155035 | Final Pet Damage | Pet
+155036 | Trash Fines | Base
+155037 | Key Fine/Charge | Base
+155038 | Final Keys/Locks | Base
+155039 | Final Trash | Base
+155040 | Turn Key/Fine Charge | Maintenance
+155041 | Turn Trash | Maintenance
+155042 | Forfeiture Of Other Deposit | Base
+155043 | Forfeiture Of Deposit | Base
+155044 | Clubhouse Fee Or Reservation | Base
+155045 | Vending Income | Base
+155046 | Cable Television | Base
+155047 | Other Income | Base
+155048 | Guest Suites | Base
+155049 | Court/Collection Fees | Base
+155050 | Laundry Income | Base
+155051 | Parking Concession | Special
+155052 | Parking | Add Ons
+155053 | Resident Life Programs | Base
+155054 | Furniture Income | Add Ons
+155055 | Interest On Deposit Held | Base
+155056 | Retail Rent | Base
+155058 | Retail CAM | Base
+155059 | Retail Real Estate Tax | Base
+155060 | Retail Trash Income | Base
+155061 | Prior Year CAM Adjustment | Base
+155062 | Retail Gas Revenue | Base
+155063 | Credit Card Fee Expense | Base
+155065 | Shuttle Fees | Base
+155066 | Forgiveness of Debt | Base
+155067 | Bad Debt Recovery | Base
+155068 | In House Bad Debt Recovery | Base
+155069 | Leasing Referral Credit | Base
+155070 | Non Turn Damage Billback | Maintenance
+155071 | Cleaning Fee | Base
+155072 | Final Cleaning | Base
+155073 | Turn Cleaning Fee | Maintenance
+155074 | Damage Fee | Base
+155075 | Final Damage | Base
+155076 | Turn Damage Fee | Maintenance
+155078 | Internet | Base
+155079 | Prior Year CAM Credit | Base
+155080 | Electricity Credit | Base
+155081 | HOA Dues | Base
+155082 | Lock Off Premium | Base
+155083 | Misc Fines | Base
+155084 | Retail Electric Revenue | Base
+155085 | Retail Parking Revenue | Base
+155086 | Retail Water Revenue | Base
+155087 | Retail Parking | Base
+155088 | Seller Balance Forward (SBF) | Base
+155089 | Short Term Premium | Base
+155090 | Tanning | Base
+155091 | Utility Package | Base
+155092 | Pet Deposit | Pet
+155093 | Model | Base
+155095 | Application Fee (Move In) | Base
+155096 | Prior Year RET Adjustment - Retail | Base
+155097 | Prior Year RET Credit | Base
+155098 | Payment Correction | Base
+155099 | Lost to Uncollectible | Base
+155100 | Office | Base
+155101 | Activity Fee | Base
+155102 | Property Protection Fee | Add Ons
+155103 | City/County Sales Tax | Base
+155104 | Security Deposit Interest | Base
+155105 | Beginning Balance Adjustment | Base
+155106 | Monthly Utility Credit | Base
+155107 | Retail INS Income | Base
+155108 | Pest Control Fee | Base
+155109 | Office Storage | Base
+155110 | Holding Deposit | Base
+155111 | Short Term Housing Income | Base
+155112 | Summer Housing Income | Base
+155114 | Forced Place Insurance Option | Add Ons
+155115 | Amenity Premium-Add On | Add Ons
+155116 | Garage Rental | Add Ons
+155117 | Storage-Add On | Add Ons
+155118 | Peak Protection Ins Credit | Base
+155119 | Trash Service Income | Base
+155120 | Prepaid - Other | Base
+155121 | MEAL PLAN-TAXABLE | Base
+155122 | Resident Assistant Fees | Base
+155123 | MEAL PLAN | Base
+155124 | MEAL PLAN ADMIN | Base
+155125 | Admin Fees (Move In) | Base
+155126 | Admin Fee (Lease Approval) | Base
+155127 | Retail CAM Concession | Base
+155129 | Food Commission | Base
+155130 | Resident Life Coordinator Expense | Base
+155131 | Screening Fee | Base
+155132 | Deposit - Lease Complete | Base
+155133 | MO-Summer Concession | Special
+155135 | Retail Tenant Specific Billback | Base
+155136 | Rent Concession-Infectious Disease | Special
+155143 | Peak Protection Ins - 3.0 | Add Ons
+155144 | Inspection Fees | Base
+155146 | Facilities Fee | Base
+155147 | Transfer Fee (monthly) | Base
+155148 | Foxen Liability - HSRE | Base
+155149 | Green Fee | Base
+155151 | Amenity Premium - Monthly | Base
+155155 | Percentage Rent | Base
+155156 | Retail Late Fee | Base
+155157 | MTM - Retail | Base
+155158 | Retail Rent Concessions | Base
+155160 | TV Rental | Base
+155161 | TV Rental Concession | Special
+155162 | Deposit - Lease Approved | Base
+155164 | Retail Delinquency Interest | Base
+155165 | CAM Pool | Reimbursable Expense
+155166 | RET Pool | Reimbursable Expense
+155167 | INS Pool | Reimbursable Expense
+155168 | Prior Year INS Adjustment-Retail | Base
+155169 | Non Turn Damage Billback - Work Order | Maintenance
+155171 | Lease Guarantee Svc | Base
+155172 | Last Month Rent | Base
+155173 | Resident Fines-Inspections | Maintenance
+155174 | Resident Life Rec Credit | Base
+155176 | Utility Credit Card Storage Fee | Base
+155178 | Account Set-Up Fee | Base
+155180 | Guarantor Waiver Fee | Base
+155181 | Pet Concession | Base
+155182 | Telecom Concession | Base
+155183 | Redpoint Consulting Project-Bulk Internet | Base
+155184 | Redpoint Consulting Project-Bulk Cable | Base
+155185 | Redpoint Consulting Project-Low Voltage Design | Base
+155186 | Redpoint Consulting Project-Infrastructure | Base
+155187 | Redpoint Consulting Project-Camera System | Base
+155188 | Redpoint Telecommunications Products-Bandwidth | Base
+155189 | Redpoint Telecommunications Products-WIFI | Base
+155190 | Redpoint Desktop Support | Base
+155191 | Redpoint Managed Hardware | Base
+155192 | Redpoint Managed Software | Base
+155193 | Redpoint Technology Transition Services | Base
+155194 | Redpoint Technology Due Diligence Services | Base
+155195 | Redpoint Office Phone Service | Base
+155196 | Redpoint Fire/Life Safety Lines | Base
+155199 | Non-Revenue Units | Base
+155200 | Biennial Rental Certification Fee | Base
+155201 | Code Enforcement Program | Base
+155202 | Rentistry | Base
+155203 | Damage Liability Waiver | Base
+155204 | Scooter/Bike Parking | Add Ons
+155205 | Rooftop Tenant Rent | Base
+155206 | Alarm Fee | Base
+155207 | RENT - HUD | Base
+155213 | Section 8 Rent | Base
+155214 | Washer/Dryer Fee | Amenity
+155217 | RentPlus | Base
+155250 | Water Credit | Base
+155251 | Gas Credit | Base
+155284 | 7 Month Premium | Base
+155285 | 8 Month Premium | Base
+155286 | 11 Month Premium | Base
+155319 | Trash Service | Base
+155352 | Abatement Reduction | Base
+155385 | Reserved Parking | Add Ons
+155832 | Cleaning Service | Base
+155833 | Retail Termination Fee | Base
+155866 | LMR | Base
+155966 | Full Unit Premium | Base
+155967 | Full Unit Discount | Base
+156000 | Parking - Other | Base
+156134 | First Month Rent | Base
+156167 | DNU - Migration Import | Add Ons
+156168 | Amenity Fee | Base
+156169 | Amenity Fee - Coliving | Base
+156236 | DNU - Deposit Migration Import | Base
+156269 | Turn Paint Fee | Maintenance
+156335 | Amenity Reservation | Add Ons
+156368 | Resident Credit Reporting | Base
+156401 | Rent Accrual | Base
+156434 | Protection Fee | Base
+156467 | Tangible Concession | Base
+156468 | Tangible Concession Offset | Base
+156534 | Composting Fee | Base
+156669 | Damage Liability Waiver - POPIC | Base
+156702 | Lease Buyout | Base
+156735 | Resident Experience Credit (Non-Recurring 6010-00) | Base
+156801 | Admin Fees Concession | Special
+156802 | Application Fee Concession | Special
+156835 | DNU - Security Deposit Concession | Base
+156868 | Collection Fee | Base
+156901 | Group - Summer Housing Income | Base
+156934 | Group - Conference Housing | Base
+156935 | Group - Short Term Housing Income | Base
+156968 | Keys/Access Device | Add Ons
+157001 | Guarantor Waiver Program - TheGuarantors | Base
+157135 | TheGuarantors Waiver Program Accrual | Base
+157201 | Furniture Package | Amenity
+157267 | Guest Suite Reservation | Amenity
+157300 | Community Fee | Base
+157399 | Homebody Master Policy | Base
+157400 | Homebody Deposit Alternative | Base
+157401 | Homebody Guaranty | Base
+157437 | Rent - RevMgmt | Base
+157470 | Amenity Premium - RevMgmt | Amenity
+157536 | Transfer Concession | Special
+157602 | Re-Let Fee Concession | Base
+157603 | Utility Package Concession | Base

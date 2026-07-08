@@ -1,0 +1,1598 @@
+[
+  {
+    "ar_code": 154771,
+    "code_number": 2,
+    "name": "Rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154774,
+    "code_number": 7,
+    "name": "Deposit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154775,
+    "code_number": 2,
+    "name": "Utility Allowance",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154776,
+    "code_number": 1,
+    "name": "Payment",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154777,
+    "code_number": 3,
+    "name": "Late Charges",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154778,
+    "code_number": 3,
+    "name": "10 Month Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154779,
+    "code_number": 3,
+    "name": "Beginning Balance",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154780,
+    "code_number": 3,
+    "name": "Beginning Deposit Adjustment",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154781,
+    "code_number": 7,
+    "name": "Beginning Deposit Held",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154782,
+    "code_number": 8,
+    "name": "Refund Payable",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154783,
+    "code_number": 3,
+    "name": "Termination Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154784,
+    "code_number": 3,
+    "name": "Cancellation Charge",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154785,
+    "code_number": 3,
+    "name": "NSF Check Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154786,
+    "code_number": 3,
+    "name": "Month To Month Charges",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154787,
+    "code_number": 3,
+    "name": "Transfer Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154788,
+    "code_number": 3,
+    "name": "Application Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154789,
+    "code_number": 3,
+    "name": "Resident Fines",
+    "usage_category": "Lease Violation"
+  },
+  {
+    "ar_code": 154790,
+    "code_number": 9,
+    "name": "Peak Protection Ins - Monthly",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 154794,
+    "code_number": 3,
+    "name": "Repayment Agreement",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154795,
+    "code_number": 6,
+    "name": "Equity Draw Request",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154796,
+    "code_number": 3,
+    "name": "HUDWRITEOFF",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154797,
+    "code_number": 9,
+    "name": "Investor Loan Request",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154992,
+    "code_number": 7,
+    "name": "Other Deposit Received",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154993,
+    "code_number": 3,
+    "name": "Corporate Lease Rental",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154994,
+    "code_number": 2,
+    "name": "Utility Pkg Incl with Rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154995,
+    "code_number": 3,
+    "name": "Community Advisor",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154996,
+    "code_number": 3,
+    "name": "Resident Asst Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154997,
+    "code_number": 3,
+    "name": "Courtesy Officer Rent Allowance",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154998,
+    "code_number": 3,
+    "name": "Employee Unit Rent Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 154999,
+    "code_number": 3,
+    "name": "Rent Concession",
+    "usage_category": "Special"
+  },
+  {
+    "ar_code": 155000,
+    "code_number": 3,
+    "name": "Development Delays",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155001,
+    "code_number": 3,
+    "name": "Rent (Entire Lease) Concession",
+    "usage_category": "Special"
+  },
+  {
+    "ar_code": 155002,
+    "code_number": 3,
+    "name": "5 Month Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155003,
+    "code_number": 3,
+    "name": "6 Month Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155004,
+    "code_number": 3,
+    "name": "9 Month Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155005,
+    "code_number": 3,
+    "name": "Hold Over Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155006,
+    "code_number": 3,
+    "name": "3 Month Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155007,
+    "code_number": 3,
+    "name": "Amenity Premium",
+    "usage_category": "Amenity"
+  },
+  {
+    "ar_code": 155008,
+    "code_number": 3,
+    "name": "Double Up Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155009,
+    "code_number": 3,
+    "name": "Rent Discount",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155010,
+    "code_number": 3,
+    "name": "Lock Off Discount",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155011,
+    "code_number": 3,
+    "name": "Final Application Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155012,
+    "code_number": 3,
+    "name": "Admin Fees",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155013,
+    "code_number": 3,
+    "name": "Reservation Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155014,
+    "code_number": 3,
+    "name": "Final Administrative Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155015,
+    "code_number": 3,
+    "name": "Early Move in Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155016,
+    "code_number": 3,
+    "name": "Re-Let Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155017,
+    "code_number": 3,
+    "name": "Re-Assignment Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155018,
+    "code_number": 3,
+    "name": "Accelerated rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155019,
+    "code_number": 3,
+    "name": "Final Accelerated Rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155020,
+    "code_number": 3,
+    "name": "Concession Chargeback",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155021,
+    "code_number": 3,
+    "name": "Telecom",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155022,
+    "code_number": 3,
+    "name": "Electric Charge",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155023,
+    "code_number": 3,
+    "name": "Electricity",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155024,
+    "code_number": 3,
+    "name": "Prior Year Electric",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155025,
+    "code_number": 3,
+    "name": "Final Electricity",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155026,
+    "code_number": 3,
+    "name": "Utility Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155027,
+    "code_number": 3,
+    "name": "Billing Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155028,
+    "code_number": 3,
+    "name": "Gas Charge",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155029,
+    "code_number": 3,
+    "name": "Gas Reimbursement",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155030,
+    "code_number": 3,
+    "name": "Water, Sewer Charge",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155031,
+    "code_number": 3,
+    "name": "Water Reimbursement",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155032,
+    "code_number": 3,
+    "name": "NSF for Transactions in Previous Period",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155033,
+    "code_number": 3,
+    "name": "Storage Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155034,
+    "code_number": 3,
+    "name": "Pet",
+    "usage_category": "Pet"
+  },
+  {
+    "ar_code": 155035,
+    "code_number": 3,
+    "name": "Final Pet Damage",
+    "usage_category": "Pet"
+  },
+  {
+    "ar_code": 155036,
+    "code_number": 3,
+    "name": "Trash Fines",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155037,
+    "code_number": 3,
+    "name": "Key Fine/Charge",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155038,
+    "code_number": 3,
+    "name": "Final Keys/Locks",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155039,
+    "code_number": 3,
+    "name": "Final Trash",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155040,
+    "code_number": 3,
+    "name": "Turn Key/Fine Charge",
+    "usage_category": "Maintenance"
+  },
+  {
+    "ar_code": 155041,
+    "code_number": 3,
+    "name": "Turn Trash",
+    "usage_category": "Maintenance"
+  },
+  {
+    "ar_code": 155042,
+    "code_number": 3,
+    "name": "Forfeiture Of Other Deposit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155043,
+    "code_number": 3,
+    "name": "Forfeiture Of Deposit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155044,
+    "code_number": 3,
+    "name": "Clubhouse Fee Or Reservation",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155045,
+    "code_number": 3,
+    "name": "Vending Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155046,
+    "code_number": 3,
+    "name": "Cable Television",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155047,
+    "code_number": 3,
+    "name": "Other Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155048,
+    "code_number": 3,
+    "name": "Guest Suites",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155049,
+    "code_number": 3,
+    "name": "Court/Collection Fees",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155050,
+    "code_number": 3,
+    "name": "Laundry Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155051,
+    "code_number": 3,
+    "name": "Parking Concession",
+    "usage_category": "Special"
+  },
+  {
+    "ar_code": 155052,
+    "code_number": 3,
+    "name": "Parking",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155053,
+    "code_number": 3,
+    "name": "Resident Life Programs",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155054,
+    "code_number": 3,
+    "name": "Furniture Income",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155055,
+    "code_number": 3,
+    "name": "Interest On Deposit Held",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155056,
+    "code_number": 2,
+    "name": "Retail Rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155058,
+    "code_number": 3,
+    "name": "Retail CAM",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155059,
+    "code_number": 3,
+    "name": "Retail Real Estate Tax",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155060,
+    "code_number": 3,
+    "name": "Retail Trash Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155061,
+    "code_number": 3,
+    "name": "Prior Year CAM Adjustment",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155062,
+    "code_number": 3,
+    "name": "Retail Gas Revenue",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155063,
+    "code_number": 4,
+    "name": "Credit Card Fee Expense",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155065,
+    "code_number": 3,
+    "name": "Shuttle Fees",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155066,
+    "code_number": 4,
+    "name": "Forgiveness of Debt",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155067,
+    "code_number": 4,
+    "name": "Bad Debt Recovery",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155068,
+    "code_number": 4,
+    "name": "In House Bad Debt Recovery",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155069,
+    "code_number": 4,
+    "name": "Leasing Referral Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155070,
+    "code_number": 4,
+    "name": "Non Turn Damage Billback",
+    "usage_category": "Maintenance"
+  },
+  {
+    "ar_code": 155071,
+    "code_number": 4,
+    "name": "Cleaning Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155072,
+    "code_number": 4,
+    "name": "Final Cleaning",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155073,
+    "code_number": 4,
+    "name": "Turn Cleaning Fee",
+    "usage_category": "Maintenance"
+  },
+  {
+    "ar_code": 155074,
+    "code_number": 4,
+    "name": "Damage Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155075,
+    "code_number": 4,
+    "name": "Final Damage",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155076,
+    "code_number": 4,
+    "name": "Turn Damage Fee",
+    "usage_category": "Maintenance"
+  },
+  {
+    "ar_code": 155078,
+    "code_number": 3,
+    "name": "Internet",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155079,
+    "code_number": 3,
+    "name": "Prior Year CAM Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155080,
+    "code_number": 3,
+    "name": "Electricity Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155081,
+    "code_number": 3,
+    "name": "HOA Dues",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155082,
+    "code_number": 3,
+    "name": "Lock Off Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155083,
+    "code_number": 3,
+    "name": "Misc Fines",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155084,
+    "code_number": 3,
+    "name": "Retail Electric Revenue",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155085,
+    "code_number": 3,
+    "name": "Retail Parking Revenue",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155086,
+    "code_number": 3,
+    "name": "Retail Water Revenue",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155087,
+    "code_number": 3,
+    "name": "Retail Parking",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155088,
+    "code_number": 9,
+    "name": "Seller Balance Forward (SBF)",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155089,
+    "code_number": 3,
+    "name": "Short Term Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155090,
+    "code_number": 3,
+    "name": "Tanning",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155091,
+    "code_number": 3,
+    "name": "Utility Package",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155092,
+    "code_number": 7,
+    "name": "Pet Deposit",
+    "usage_category": "Pet"
+  },
+  {
+    "ar_code": 155093,
+    "code_number": 3,
+    "name": "Model",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155095,
+    "code_number": 3,
+    "name": "Application Fee (Move In)",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155096,
+    "code_number": 3,
+    "name": "Prior Year RET Adjustment - Retail",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155097,
+    "code_number": 3,
+    "name": "Prior Year RET Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155098,
+    "code_number": 3,
+    "name": "Payment Correction",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155099,
+    "code_number": 4,
+    "name": "Lost to Uncollectible",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155100,
+    "code_number": 3,
+    "name": "Office",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155101,
+    "code_number": 3,
+    "name": "Activity Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155102,
+    "code_number": 3,
+    "name": "Property Protection Fee",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155103,
+    "code_number": 9,
+    "name": "City/County Sales Tax",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155104,
+    "code_number": 9,
+    "name": "Security Deposit Interest",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155105,
+    "code_number": 9,
+    "name": "Beginning Balance Adjustment",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155106,
+    "code_number": 3,
+    "name": "Monthly Utility Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155107,
+    "code_number": 3,
+    "name": "Retail INS Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155108,
+    "code_number": 3,
+    "name": "Pest Control Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155109,
+    "code_number": 3,
+    "name": "Office Storage",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155110,
+    "code_number": 7,
+    "name": "Holding Deposit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155111,
+    "code_number": 3,
+    "name": "Short Term Housing Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155112,
+    "code_number": 3,
+    "name": "Summer Housing Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155114,
+    "code_number": 9,
+    "name": "Forced Place Insurance Option",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155115,
+    "code_number": 3,
+    "name": "Amenity Premium-Add On",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155116,
+    "code_number": 3,
+    "name": "Garage Rental",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155117,
+    "code_number": 3,
+    "name": "Storage-Add On",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155118,
+    "code_number": 9,
+    "name": "Peak Protection Ins Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155119,
+    "code_number": 3,
+    "name": "Trash Service Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155120,
+    "code_number": 9,
+    "name": "Prepaid - Other",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155121,
+    "code_number": 3,
+    "name": "MEAL PLAN-TAXABLE",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155122,
+    "code_number": 3,
+    "name": "Resident Assistant Fees",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155123,
+    "code_number": 3,
+    "name": "MEAL PLAN",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155124,
+    "code_number": 3,
+    "name": "MEAL PLAN ADMIN",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155125,
+    "code_number": 3,
+    "name": "Admin Fees (Move In)",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155126,
+    "code_number": 3,
+    "name": "Admin Fee (Lease Approval)",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155127,
+    "code_number": 3,
+    "name": "Retail CAM Concession",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155129,
+    "code_number": 3,
+    "name": "Food Commission",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155130,
+    "code_number": 4,
+    "name": "Resident Life Coordinator Expense",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155131,
+    "code_number": 3,
+    "name": "Screening Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155132,
+    "code_number": 7,
+    "name": "Deposit - Lease Complete",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155133,
+    "code_number": 3,
+    "name": "MO-Summer Concession",
+    "usage_category": "Special"
+  },
+  {
+    "ar_code": 155135,
+    "code_number": 4,
+    "name": "Retail Tenant Specific Billback",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155136,
+    "code_number": 3,
+    "name": "Rent Concession-Infectious Disease",
+    "usage_category": "Special"
+  },
+  {
+    "ar_code": 155143,
+    "code_number": 9,
+    "name": "Peak Protection Ins - 3.0",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155144,
+    "code_number": 3,
+    "name": "Inspection Fees",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155146,
+    "code_number": 3,
+    "name": "Facilities Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155147,
+    "code_number": 3,
+    "name": "Transfer Fee (monthly)",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155148,
+    "code_number": 3,
+    "name": "Foxen Liability - HSRE",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155149,
+    "code_number": 3,
+    "name": "Green Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155151,
+    "code_number": 3,
+    "name": "Amenity Premium - Monthly",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155155,
+    "code_number": 3,
+    "name": "Percentage Rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155156,
+    "code_number": 3,
+    "name": "Retail Late Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155157,
+    "code_number": 3,
+    "name": "MTM - Retail",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155158,
+    "code_number": 3,
+    "name": "Retail Rent Concessions",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155160,
+    "code_number": 3,
+    "name": "TV Rental",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155161,
+    "code_number": 3,
+    "name": "TV Rental Concession",
+    "usage_category": "Special"
+  },
+  {
+    "ar_code": 155162,
+    "code_number": 7,
+    "name": "Deposit - Lease Approved",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155164,
+    "code_number": 3,
+    "name": "Retail Delinquency Interest",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155165,
+    "code_number": 3,
+    "name": "CAM Pool",
+    "usage_category": "Reimbursable Expense"
+  },
+  {
+    "ar_code": 155166,
+    "code_number": 3,
+    "name": "RET Pool",
+    "usage_category": "Reimbursable Expense"
+  },
+  {
+    "ar_code": 155167,
+    "code_number": 3,
+    "name": "INS Pool",
+    "usage_category": "Reimbursable Expense"
+  },
+  {
+    "ar_code": 155168,
+    "code_number": 3,
+    "name": "Prior Year INS Adjustment-Retail",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155169,
+    "code_number": 4,
+    "name": "Non Turn Damage Billback - Work Order",
+    "usage_category": "Maintenance"
+  },
+  {
+    "ar_code": 155171,
+    "code_number": 3,
+    "name": "Lease Guarantee Svc",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155172,
+    "code_number": 7,
+    "name": "Last Month Rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155173,
+    "code_number": 3,
+    "name": "Resident Fines-Inspections",
+    "usage_category": "Maintenance"
+  },
+  {
+    "ar_code": 155174,
+    "code_number": 3,
+    "name": "Resident Life Rec Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155176,
+    "code_number": 3,
+    "name": "Utility Credit Card Storage Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155178,
+    "code_number": 3,
+    "name": "Account Set-Up Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155180,
+    "code_number": 3,
+    "name": "Guarantor Waiver Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155181,
+    "code_number": 3,
+    "name": "Pet Concession",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155182,
+    "code_number": 3,
+    "name": "Telecom Concession",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155183,
+    "code_number": 3,
+    "name": "Redpoint Consulting Project-Bulk Internet",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155184,
+    "code_number": 3,
+    "name": "Redpoint Consulting Project-Bulk Cable",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155185,
+    "code_number": 3,
+    "name": "Redpoint Consulting Project-Low Voltage Design",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155186,
+    "code_number": 3,
+    "name": "Redpoint Consulting Project-Infrastructure",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155187,
+    "code_number": 3,
+    "name": "Redpoint Consulting Project-Camera System",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155188,
+    "code_number": 3,
+    "name": "Redpoint Telecommunications Products-Bandwidth",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155189,
+    "code_number": 3,
+    "name": "Redpoint Telecommunications Products-WIFI",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155190,
+    "code_number": 3,
+    "name": "Redpoint Desktop Support",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155191,
+    "code_number": 3,
+    "name": "Redpoint Managed Hardware",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155192,
+    "code_number": 3,
+    "name": "Redpoint Managed Software",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155193,
+    "code_number": 3,
+    "name": "Redpoint Technology Transition Services",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155194,
+    "code_number": 3,
+    "name": "Redpoint Technology Due Diligence Services",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155195,
+    "code_number": 3,
+    "name": "Redpoint Office Phone Service",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155196,
+    "code_number": 3,
+    "name": "Redpoint Fire/Life Safety Lines",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155199,
+    "code_number": 3,
+    "name": "Non-Revenue Units",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155200,
+    "code_number": 3,
+    "name": "Biennial Rental Certification Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155201,
+    "code_number": 3,
+    "name": "Code Enforcement Program",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155202,
+    "code_number": 3,
+    "name": "Rentistry",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155203,
+    "code_number": 9,
+    "name": "Damage Liability Waiver",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155204,
+    "code_number": 3,
+    "name": "Scooter/Bike Parking",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155205,
+    "code_number": 3,
+    "name": "Rooftop Tenant Rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155206,
+    "code_number": 3,
+    "name": "Alarm Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155207,
+    "code_number": 2,
+    "name": "RENT - HUD",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155213,
+    "code_number": 2,
+    "name": "Section 8 Rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155214,
+    "code_number": 3,
+    "name": "Washer/Dryer Fee",
+    "usage_category": "Amenity"
+  },
+  {
+    "ar_code": 155217,
+    "code_number": 9,
+    "name": "RentPlus",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155250,
+    "code_number": 3,
+    "name": "Water Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155251,
+    "code_number": 3,
+    "name": "Gas Credit",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155284,
+    "code_number": 3,
+    "name": "7 Month Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155285,
+    "code_number": 3,
+    "name": "8 Month Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155286,
+    "code_number": 3,
+    "name": "11 Month Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155319,
+    "code_number": 3,
+    "name": "Trash Service",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155352,
+    "code_number": 3,
+    "name": "Abatement Reduction",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155385,
+    "code_number": 3,
+    "name": "Reserved Parking",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 155832,
+    "code_number": 3,
+    "name": "Cleaning Service",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155833,
+    "code_number": 3,
+    "name": "Retail Termination Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155866,
+    "code_number": 9,
+    "name": "LMR",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155966,
+    "code_number": 3,
+    "name": "Full Unit Premium",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 155967,
+    "code_number": 3,
+    "name": "Full Unit Discount",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156000,
+    "code_number": 3,
+    "name": "Parking - Other",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156134,
+    "code_number": 7,
+    "name": "First Month Rent",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156167,
+    "code_number": 3,
+    "name": "DNU - Migration Import",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 156168,
+    "code_number": 3,
+    "name": "Amenity Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156169,
+    "code_number": 3,
+    "name": "Amenity Fee - Coliving",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156236,
+    "code_number": 9,
+    "name": "DNU - Deposit Migration Import",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156269,
+    "code_number": 4,
+    "name": "Turn Paint Fee",
+    "usage_category": "Maintenance"
+  },
+  {
+    "ar_code": 156335,
+    "code_number": 3,
+    "name": "Amenity Reservation",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 156368,
+    "code_number": 3,
+    "name": "Resident Credit Reporting",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156401,
+    "code_number": 3,
+    "name": "Rent Accrual",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156434,
+    "code_number": 3,
+    "name": "Protection Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156467,
+    "code_number": 3,
+    "name": "Tangible Concession",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156468,
+    "code_number": 3,
+    "name": "Tangible Concession Offset",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156534,
+    "code_number": 3,
+    "name": "Composting Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156669,
+    "code_number": 9,
+    "name": "Damage Liability Waiver - POPIC",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156702,
+    "code_number": 4,
+    "name": "Lease Buyout",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156735,
+    "code_number": 4,
+    "name": "Resident Experience Credit (Non-Recurring 6010-00)",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156801,
+    "code_number": 3,
+    "name": "Admin Fees Concession",
+    "usage_category": "Special"
+  },
+  {
+    "ar_code": 156802,
+    "code_number": 3,
+    "name": "Application Fee Concession",
+    "usage_category": "Special"
+  },
+  {
+    "ar_code": 156835,
+    "code_number": 7,
+    "name": "DNU - Security Deposit Concession",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156868,
+    "code_number": 4,
+    "name": "Collection Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156901,
+    "code_number": 3,
+    "name": "Group - Summer Housing Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156934,
+    "code_number": 3,
+    "name": "Group - Conference Housing",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156935,
+    "code_number": 3,
+    "name": "Group - Short Term Housing Income",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 156968,
+    "code_number": 3,
+    "name": "Keys/Access Device",
+    "usage_category": "Add Ons"
+  },
+  {
+    "ar_code": 157001,
+    "code_number": 3,
+    "name": "Guarantor Waiver Program - TheGuarantors",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 157135,
+    "code_number": 3,
+    "name": "TheGuarantors Waiver Program Accrual",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 157201,
+    "code_number": 3,
+    "name": "Furniture Package",
+    "usage_category": "Amenity"
+  },
+  {
+    "ar_code": 157267,
+    "code_number": 3,
+    "name": "Guest Suite Reservation",
+    "usage_category": "Amenity"
+  },
+  {
+    "ar_code": 157300,
+    "code_number": 3,
+    "name": "Community Fee",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 157399,
+    "code_number": 3,
+    "name": "Homebody Master Policy",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 157400,
+    "code_number": 3,
+    "name": "Homebody Deposit Alternative",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 157401,
+    "code_number": 3,
+    "name": "Homebody Guaranty",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 157437,
+    "code_number": 2,
+    "name": "Rent - RevMgmt",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 157470,
+    "code_number": 2,
+    "name": "Amenity Premium - RevMgmt",
+    "usage_category": "Amenity"
+  },
+  {
+    "ar_code": 157536,
+    "code_number": 3,
+    "name": "Transfer Concession",
+    "usage_category": "Special"
+  },
+  {
+    "ar_code": 157602,
+    "code_number": 3,
+    "name": "Re-Let Fee Concession",
+    "usage_category": "Base"
+  },
+  {
+    "ar_code": 157603,
+    "code_number": 3,
+    "name": "Utility Package Concession",
+    "usage_category": "Base"
+  }
+]

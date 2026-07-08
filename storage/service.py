@@ -388,6 +388,19 @@ class StorageService:
             return int(float(value))
         except Exception:
             return None
+    
+    def _safe_field_value(self, value: Any) -> Any:
+        """
+        Safely handle SharePoint field values that might be 'NA' strings.
+        Converts 'NA', 'N/A', '#N/A' strings to None to avoid pandas ambiguity errors.
+        """
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            if normalized in ('NA', 'N/A', '#N/A', ''):
+                return None
+        return value
 
     def _normalize_snapshot_key_value(self, value: Any, cast_type=str):
         """Normalize key values for snapshot resolved-month matching."""
@@ -676,6 +689,8 @@ class StorageService:
             'expected_total': ['ExpectedTotal'],
             'actual_total': ['ActualTotal'],
             'variance': ['Variance'],
+            'resident_name': ['ResidentName'],
+            'lease_id': ['LeaseId'],
         }
         resolved = {
             'property_name': None,
@@ -688,6 +703,8 @@ class StorageService:
             'expected_total': None,
             'actual_total': None,
             'variance': None,
+            'resident_name': None,
+            'lease_id': None,
         }
 
         try:
@@ -890,12 +907,12 @@ class StorageService:
             if audit_month_str is not None:
                 row_payload['AuditMonth'] = audit_month_str
             
-            # COMMENTED: ResidentName and LeaseId columns don't exist in SharePoint list
-            # if scope_type == 'lease':
-            #     if resident_name:
-            #         row_payload['ResidentName'] = resident_name
-            #     if lease_id_value:
-            #         row_payload['LeaseId'] = lease_id_value
+            # Include ResidentName and LeaseId for lease-level snapshots
+            if scope_type == 'lease':
+                if resident_name:
+                    row_payload['ResidentName'] = resident_name
+                if lease_id_value:
+                    row_payload['LeaseId'] = lease_id_value
             
             if run_scope_type_field:
                 row_payload[run_scope_type_field] = run_scope_type or ''
@@ -1053,6 +1070,31 @@ class StorageService:
 
             snapshot_filter_started = perf_counter()
             filtered_bucket_results = self._filter_bucket_results_for_unresolved_snapshot(run_id, bucket_results)
+            
+            # Apply AR code whitelist filter before creating snapshots to match property/lease detail views
+            try:
+                from audit_engine.mappings import ALLOWED_AR_CODES_SET, ALLOWED_AR_CODES_TEXT_SET
+                if ALLOWED_AR_CODES_SET and 'AR_CODE_ID' in filtered_bucket_results.columns:
+                    initial_rows = len(filtered_bucket_results)
+                    _ar_col = filtered_bucket_results['AR_CODE_ID']
+                    _numeric = pd.to_numeric(_ar_col, errors='coerce')
+                    _whitelist_mask = (
+                        _numeric.isin(ALLOWED_AR_CODES_SET).fillna(False) |
+                        _ar_col.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET).fillna(False)
+                    )
+                    filtered_bucket_results = filtered_bucket_results[_whitelist_mask].copy()
+                    print(f"[STORAGE] Applied AR code whitelist filter: {initial_rows} → {len(filtered_bucket_results)} rows (codes={list(ALLOWED_AR_CODES_SET)})")
+                    logger.info(f"[STORAGE] AR code whitelist filter for snapshots: {initial_rows} → {len(filtered_bucket_results)} rows")
+                    
+                    # Debug: check if we have any data left
+                    if len(filtered_bucket_results) == 0:
+                        logger.warning(f"[STORAGE] ⚠️  AR code whitelist removed ALL rows! No snapshots will be created for run {run_id}")
+                        print(f"[STORAGE] ⚠️  WARNING: AR code whitelist removed all data for run {run_id}")
+            except ImportError:
+                logger.warning("[STORAGE] Could not import ALLOWED_AR_CODES_SET; snapshot will include all AR codes")
+            except Exception as e:
+                logger.warning(f"[STORAGE] AR code whitelist filter failed for snapshots: {e}")
+            
             if stage_timers is not None:
                 stage_timers['snapshot_filter_seconds'] = float(perf_counter() - snapshot_filter_started)
 
@@ -1063,6 +1105,8 @@ class StorageService:
             # so the subsequent _resolve_snapshot_optional_field_names call will see them.
             self._ensure_list_column_exists(site_id, list_id, 'AuditedThrough', column_type='text')
             self._ensure_list_column_exists(site_id, list_id, 'RunScopeType', column_type='text')
+            self._ensure_list_column_exists(site_id, list_id, 'ResidentName', column_type='text')
+            self._ensure_list_column_exists(site_id, list_id, 'LeaseId', column_type='number')
             # ArCodeId and AuditMonth columns must be manually created in SharePoint
             # self._ensure_list_column_exists(site_id, list_id, 'ArCodeId', column_type='number')
             # self._ensure_list_column_exists(site_id, list_id, 'AuditMonth', column_type='text')
@@ -1826,25 +1870,25 @@ class StorageService:
                 return None
 
             fields = items[0].get('fields', {})
-            exception_count = fields.get('ExceptionCountStatic')
+            exception_count = self._safe_field_value(fields.get('ExceptionCountStatic'))
             if exception_count is None:
-                exception_count = fields.get('ExceptionCountStatistic')
+                exception_count = self._safe_field_value(fields.get('ExceptionCountStatistic'))
 
             snapshot = {
-                'snapshot_key': fields.get('SnapshotKey'),
-                'run_id': fields.get('RunId', run_id),
-                'scope_type': fields.get('ScopeType', scope_type),
-                'property_id': fields.get('PropertyId'),
-                'lease_interval_id': fields.get('LeaseIntervalId'),
-                'property_name': fields.get('PropertyNameStatic') or fields.get('PropertyName'),
+                'snapshot_key': self._safe_field_value(fields.get('SnapshotKey')),
+                'run_id': self._safe_field_value(fields.get('RunId')) or run_id,
+                'scope_type': self._safe_field_value(fields.get('ScopeType')) or scope_type,
+                'property_id': self._safe_field_value(fields.get('PropertyId')),
+                'lease_interval_id': self._safe_field_value(fields.get('LeaseIntervalId')),
+                'property_name': self._safe_field_value(fields.get('PropertyNameStatic')) or self._safe_field_value(fields.get('PropertyName')),
                 'exception_count': int(float(exception_count or 0)),
-                'undercharge': float(fields.get('UnderchargeStatic') or 0),
-                'overcharge': float(fields.get('OverchargeStatic') or 0),
-                'total_variance': float(fields.get('TotalVarianceStatic') or 0),
-                'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalStatic') or 0)),
-                'match_rate': float(fields.get('MatchRateStatic') or 0),
-                'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
-                'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
+                'undercharge': float(self._safe_field_value(fields.get('UnderchargeStatic')) or 0),
+                'overcharge': float(self._safe_field_value(fields.get('OverchargeStatic')) or 0),
+                'total_variance': float(self._safe_field_value(fields.get('TotalVarianceStatic')) or 0),
+                'total_lease_intervals': int(float(self._safe_field_value(fields.get('TotalLeaseIntervalStatic')) or 0)),
+                'match_rate': float(self._safe_field_value(fields.get('MatchRateStatic')) or 0),
+                'total_buckets': int(float(self._safe_field_value(fields.get('TotalBucketsStatic')) or 0)),
+                'matched_buckets': int(float(self._safe_field_value(fields.get('MatchedBucketsStatic')) or 0)),
             }
 
             if not snapshot['total_variance']:
@@ -1906,34 +1950,34 @@ class StorageService:
             snapshot_map: Dict[int, Dict[str, Any]] = {}
             for item in response.json().get('value', []):
                 fields = item.get('fields', {})
-                lease_interval_id = self._safe_int(fields.get('LeaseIntervalId'))
+                lease_interval_id = self._safe_int(self._safe_field_value(fields.get('LeaseIntervalId')))
                 if lease_interval_id is None:
                     continue
 
-                exception_count = fields.get('ExceptionCountStatic')
+                exception_count = self._safe_field_value(fields.get('ExceptionCountStatic'))
                 if exception_count is None:
-                    exception_count = fields.get('ExceptionCountStatistic')
+                    exception_count = self._safe_field_value(fields.get('ExceptionCountStatistic'))
 
-                undercharge = float(fields.get('UnderchargeStatic') or 0)
-                overcharge = float(fields.get('OverchargeStatic') or 0)
+                undercharge = float(self._safe_field_value(fields.get('UnderchargeStatic')) or 0)
+                overcharge = float(self._safe_field_value(fields.get('OverchargeStatic')) or 0)
 
                 snapshot_map[lease_interval_id] = {
-                    'snapshot_key': fields.get('SnapshotKey'),
-                    'run_id': fields.get('RunId', run_id),
-                    'scope_type': fields.get('ScopeType', scope_type),
-                    'property_id': self._safe_int(fields.get('PropertyId')),
+                    'snapshot_key': self._safe_field_value(fields.get('SnapshotKey')),
+                    'run_id': self._safe_field_value(fields.get('RunId')) or run_id,
+                    'scope_type': self._safe_field_value(fields.get('ScopeType')) or scope_type,
+                    'property_id': self._safe_int(self._safe_field_value(fields.get('PropertyId'))),
                     'lease_interval_id': lease_interval_id,
-                    'property_name': fields.get('PropertyNameStatic') or fields.get('PropertyName'),
+                    'property_name': self._safe_field_value(fields.get('PropertyNameStatic')) or self._safe_field_value(fields.get('PropertyName')),
                     'exception_count': int(float(exception_count or 0)),
                     'undercharge': undercharge,
                     'overcharge': overcharge,
-                    'total_variance': float(fields.get('TotalVarianceStatic') or (undercharge + overcharge)),
-                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalStatic') or 1)),
-                    'match_rate': float(fields.get('MatchRateStatic') or 0),
-                    'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
-                    'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
-                    'resident_name': fields.get('ResidentName'),  # NEW: Load resident name from snapshot
-                    'lease_id': self._safe_int(fields.get('LeaseId')),  # NEW: Load lease ID from snapshot
+                    'total_variance': float(self._safe_field_value(fields.get('TotalVarianceStatic')) or (undercharge + overcharge)),
+                    'total_lease_intervals': int(float(self._safe_field_value(fields.get('TotalLeaseIntervalStatic')) or 1)),
+                    'match_rate': float(self._safe_field_value(fields.get('MatchRateStatic')) or 0),
+                    'total_buckets': int(float(self._safe_field_value(fields.get('TotalBucketsStatic')) or 0)),
+                    'matched_buckets': int(float(self._safe_field_value(fields.get('MatchedBucketsStatic')) or 0)),
+                    'resident_name': self._safe_field_value(fields.get('ResidentName')),  # NEW: Load resident name from snapshot
+                    'lease_id': self._safe_int(self._safe_field_value(fields.get('LeaseId'))),  # NEW: Load lease ID from snapshot
                 }
 
             logger.info(
@@ -2020,30 +2064,30 @@ class StorageService:
             for item in response.json().get('value', []):
                 fields = item.get('fields', {})
 
-                exception_count = fields.get('ExceptionCountStatic')
+                exception_count = self._safe_field_value(fields.get('ExceptionCountStatic'))
                 if exception_count is None:
-                    exception_count = fields.get('ExceptionCountStatistic')
+                    exception_count = self._safe_field_value(fields.get('ExceptionCountStatistic'))
 
-                property_id_int = self._safe_int(fields.get('PropertyId'))
-                lease_interval_id_int = self._safe_int(fields.get('LeaseIntervalId'))
-                undercharge = float(fields.get('UnderchargeStatic') or 0)
-                overcharge = float(fields.get('OverchargeStatic') or 0)
+                property_id_int = self._safe_int(self._safe_field_value(fields.get('PropertyId')))
+                lease_interval_id_int = self._safe_int(self._safe_field_value(fields.get('LeaseIntervalId')))
+                undercharge = float(self._safe_field_value(fields.get('UnderchargeStatic')) or 0)
+                overcharge = float(self._safe_field_value(fields.get('OverchargeStatic')) or 0)
 
                 snapshot_rows.append({
-                    'snapshot_key': fields.get('SnapshotKey'),
-                    'run_id': fields.get('RunId', run_id),
-                    'scope_type': fields.get('ScopeType', scope_type),
+                    'snapshot_key': self._safe_field_value(fields.get('SnapshotKey')),
+                    'run_id': self._safe_field_value(fields.get('RunId')) or run_id,
+                    'scope_type': self._safe_field_value(fields.get('ScopeType')) or scope_type,
                     'property_id': property_id_int,
                     'lease_interval_id': lease_interval_id_int,
-                    'property_name': fields.get('PropertyNameStatic') or fields.get('PropertyName'),
+                    'property_name': self._safe_field_value(fields.get('PropertyNameStatic')) or self._safe_field_value(fields.get('PropertyName')),
                     'exception_count': int(float(exception_count or 0)),
                     'undercharge': undercharge,
                     'overcharge': overcharge,
-                    'total_variance': float(fields.get('TotalVarianceStatic') or (undercharge + overcharge)),
-                    'match_rate': float(fields.get('MatchRateStatic') or 0),
-                    'total_buckets': int(float(fields.get('TotalBucketsStatic') or 0)),
-                    'matched_buckets': int(float(fields.get('MatchedBucketsStatic') or 0)),
-                    'total_lease_intervals': int(float(fields.get('TotalLeaseIntervalStatic') or lease_counts_by_property.get(property_id_int, 0) or 0))
+                    'total_variance': float(self._safe_field_value(fields.get('TotalVarianceStatic')) or (undercharge + overcharge)),
+                    'match_rate': float(self._safe_field_value(fields.get('MatchRateStatic')) or 0),
+                    'total_buckets': int(float(self._safe_field_value(fields.get('TotalBucketsStatic')) or 0)),
+                    'matched_buckets': int(float(self._safe_field_value(fields.get('MatchedBucketsStatic')) or 0)),
+                    'total_lease_intervals': int(float(self._safe_field_value(fields.get('TotalLeaseIntervalStatic')) or lease_counts_by_property.get(property_id_int, 0) or 0))
                 })
 
             snapshot_rows.sort(key=lambda row: (row.get('property_id') is None, row.get('property_id', 0)))
@@ -3057,11 +3101,11 @@ class StorageService:
         """Reconstruct bucket_results DataFrame from RunDisplaySnapshots month-level rows."""
         try:
             # Query for month-level snapshots (most detailed level with bucket data)
-            filter_parts = [f"RunId eq '{run_id}'", "ScopeType eq 'month'"]
+            filter_parts = [f"fields/RunId eq '{run_id}'", "fields/ScopeType eq 'month'"]
             if property_id is not None:
-                filter_parts.append(f"PropertyId eq {property_id}")
+                filter_parts.append(f"fields/PropertyId eq {property_id}")
             if lease_interval_id is not None:
-                filter_parts.append(f"LeaseIntervalId eq {lease_interval_id}")
+                filter_parts.append(f"fields/LeaseIntervalId eq {lease_interval_id}")
             
             filter_str = " and ".join(filter_parts)
             
@@ -3083,6 +3127,8 @@ class StorageService:
                     'EXPECTED_TOTAL': snap.get('ExpectedTotal', 0.0),
                     'ACTUAL_TOTAL': snap.get('ActualTotal', 0.0),
                     'VARIANCE': snap.get('Variance', 0.0),
+                    'CUSTOMER_NAME': snap.get('ResidentName', ''),  # Use canonical field name
+                    'LEASE_ID': snap.get('LeaseId'),
                 }
                 rows.append(row)
             
@@ -3102,11 +3148,11 @@ class StorageService:
         """Reconstruct findings DataFrame from RunDisplaySnapshots month-level rows with variance != 0."""
         try:
             # Query for month-level snapshots with variance (findings)
-            filter_parts = [f"RunId eq '{run_id}'", "ScopeType eq 'month'"]
+            filter_parts = [f"fields/RunId eq '{run_id}'", "fields/ScopeType eq 'month'"]
             if property_id is not None:
-                filter_parts.append(f"PropertyId eq {property_id}")
+                filter_parts.append(f"fields/PropertyId eq {property_id}")
             if lease_interval_id is not None:
-                filter_parts.append(f"LeaseIntervalId eq {lease_interval_id}")
+                filter_parts.append(f"fields/LeaseIntervalId eq {lease_interval_id}")
             
             filter_str = " and ".join(filter_parts)
             
@@ -3175,7 +3221,10 @@ class StorageService:
             if select_fields:
                 params['$select'] = ','.join(['id'] + select_fields)
             
-            headers = {'Authorization': f'Bearer {token}'}
+            headers = {
+                'Authorization': f'Bearer {token}',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
             r = requests.get(url, headers=headers, params=params, timeout=60)
             
             if r.status_code != 200:
@@ -3183,6 +3232,24 @@ class StorageService:
                 return []
             
             items = r.json().get('value', [])
+            logger.info(f"[STORAGE][QUERY DEBUG] filter='{filter_str}' returned {len(items)} items")
+            if len(items) == 0:
+                logger.warning(f"[STORAGE][QUERY DEBUG] Zero results for filter: {filter_str}")
+                # Debug: try querying without ScopeType filter to see what exists
+                if 'ScopeType' in filter_str:
+                    try:
+                        debug_filter = filter_str.split(' and fields/ScopeType')[0]  # Remove ScopeType filter
+                        debug_params = {'$filter': debug_filter, '$expand': 'fields', '$top': 10}
+                        debug_r = requests.get(url, headers=headers, params=debug_params, timeout=60)
+                        if debug_r.status_code == 200:
+                            debug_items = debug_r.json().get('value', [])
+                            if debug_items:
+                                scope_types = [item.get('fields', {}).get('ScopeType') for item in debug_items[:5]]
+                                logger.warning(f"[STORAGE][QUERY DEBUG] Found {len(debug_items)} items without ScopeType filter. Sample ScopeType values: {scope_types}")
+                            else:
+                                logger.warning(f"[STORAGE][QUERY DEBUG] Zero items even without ScopeType filter - run may not exist")
+                    except Exception as e:
+                        logger.warning(f"[STORAGE][QUERY DEBUG] Debug query failed: {e}")
             return [item.get('fields', {}) for item in items]
             
         except Exception as e:
@@ -3259,7 +3326,7 @@ class StorageService:
         
         scope = f"run={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}, ar_code_id={ar_code_id}"
         
-        # Load variance_detail from memory cache
+        # Load from in-memory cache only
         variance_detail = None
         with self._IN_MEMORY_CACHE_LOCK:
             if run_id in self._IN_MEMORY_RESULTS_CACHE:
@@ -3306,23 +3373,59 @@ class StorageService:
         return filtered
 
     def load_expected_detail(self, run_id: str) -> pd.DataFrame:
-        """Load expected_detail for a run from in-memory cache."""
+        """Load expected_detail for a run from in-memory cache or CSV."""
+        print(f"[STORAGE][DEBUG] load_expected_detail called for run_id={run_id}")
+        
+        # Try in-memory cache first
         with self._IN_MEMORY_CACHE_LOCK:
+            print(f"[STORAGE][DEBUG] Checking in-memory cache, run_id in cache: {run_id in self._IN_MEMORY_RESULTS_CACHE}")
             if run_id in self._IN_MEMORY_RESULTS_CACHE:
-                expected_detail = self._IN_MEMORY_RESULTS_CACHE[run_id].get('expected_detail', pd.DataFrame())
+                cache_data = self._IN_MEMORY_RESULTS_CACHE[run_id]
+                print(f"[STORAGE][DEBUG] Cache data keys: {list(cache_data.keys())}")
+                expected_detail = cache_data.get('expected_detail', pd.DataFrame())
+                print(f"[STORAGE][DEBUG] expected_detail from cache shape: {expected_detail.shape}")
                 if not expected_detail.empty:
+                    print(f"[STORAGE][DEBUG] ✓ Returning expected_detail from cache: {expected_detail.shape}")
                     return self._normalize_loaded_dataframe(expected_detail.copy())
-        logger.warning(f"[STORAGE] Expected detail not found in memory for run {run_id}")
+                print(f"[STORAGE][DEBUG] ⚠ expected_detail in cache is empty")
+        
+        # Fall back to CSV file
+        print(f"[STORAGE][DEBUG] Falling back to CSV file for expected_detail")
+        csv_df = self._load_dataframe(run_id, "inputs_normalized/expected_detail.csv")
+        if csv_df is not None and not csv_df.empty:
+            print(f"[STORAGE][DEBUG] ✓ Loaded expected_detail from CSV: {csv_df.shape}")
+            return self._normalize_loaded_dataframe(csv_df)
+        
+        logger.warning(f"[STORAGE] Expected detail not found for run {run_id}")
+        print(f"[STORAGE][DEBUG] ❌ Returning empty DataFrame for expected_detail")
         return pd.DataFrame()
 
     def load_actual_detail(self, run_id: str) -> pd.DataFrame:
-        """Load actual_detail for a run from in-memory cache."""
+        """Load actual_detail for a run from in-memory cache or CSV."""
+        print(f"[STORAGE][DEBUG] load_actual_detail called for run_id={run_id}")
+        
+        # Try in-memory cache first
         with self._IN_MEMORY_CACHE_LOCK:
+            print(f"[STORAGE][DEBUG] Checking in-memory cache, run_id in cache: {run_id in self._IN_MEMORY_RESULTS_CACHE}")
             if run_id in self._IN_MEMORY_RESULTS_CACHE:
-                actual_detail = self._IN_MEMORY_RESULTS_CACHE[run_id].get('actual_detail', pd.DataFrame())
+                cache_data = self._IN_MEMORY_RESULTS_CACHE[run_id]
+                print(f"[STORAGE][DEBUG] Cache data keys: {list(cache_data.keys())}")
+                actual_detail = cache_data.get('actual_detail', pd.DataFrame())
+                print(f"[STORAGE][DEBUG] actual_detail from cache shape: {actual_detail.shape}")
                 if not actual_detail.empty:
+                    print(f"[STORAGE][DEBUG] ✓ Returning actual_detail from cache: {actual_detail.shape}")
                     return self._normalize_loaded_dataframe(actual_detail.copy())
-        logger.warning(f"[STORAGE] Actual detail not found in memory for run {run_id}")
+                print(f"[STORAGE][DEBUG] ⚠ actual_detail in cache is empty")
+        
+        # Fall back to CSV file
+        print(f"[STORAGE][DEBUG] Falling back to CSV file for actual_detail")
+        csv_df = self._load_dataframe(run_id, "inputs_normalized/actual_detail.csv")
+        if csv_df is not None and not csv_df.empty:
+            print(f"[STORAGE][DEBUG] ✓ Loaded actual_detail from CSV: {csv_df.shape}")
+            return self._normalize_loaded_dataframe(csv_df)
+        
+        logger.warning(f"[STORAGE] Actual detail not found for run {run_id}")
+        print(f"[STORAGE][DEBUG] ❌ Returning empty DataFrame for actual_detail")
         return pd.DataFrame()
 
     def _normalize_ar_code_value(self, value: Any) -> str:
@@ -4555,7 +4658,7 @@ class StorageService:
             logger.error(f"[STORAGE] ❌ Exception uploading {file_path}: {e}", exc_info=True)
             return False
     
-    def _download_file_from_sharepoint(self, file_path: str) -> Optional[str]:
+    def _download_file_from_sharepoint(self, file_path: str, is_binary: bool = False) -> Optional[str | bytes]:
         """Download file from SharePoint document library."""
         try:
             site_id, drive_id = self._get_site_and_drive_id()
@@ -4568,7 +4671,7 @@ class StorageService:
             response = requests.get(url, headers=headers, timeout=30)
             
             if response.status_code == 200:
-                return response.text
+                return response.content if is_binary else response.text
             else:
                 if response.status_code == 404:
                     logger.debug(f"[STORAGE] SharePoint file not found (404): {file_path}")
@@ -4911,16 +5014,18 @@ class StorageService:
         if variance_detail is not None:
             print(f"  - Variance detail: {variance_detail.shape}")
         
-        # Delete the most recent run before saving this one
-        print(f"\n[STORAGE] Checking for previous runs to overwrite...")
-        recent_runs = self.list_runs(limit=1)
-        if recent_runs:
-            most_recent_run_id = recent_runs[0]['run_id']
-            print(f"[STORAGE] Found previous run: {most_recent_run_id}")
-            print(f"[STORAGE] Deleting previous run to overwrite...")
-            self.delete_run(most_recent_run_id)
-        else:
-            print(f"[STORAGE] No previous runs found - this will be the first run")
+        # OVERWRITE DISABLED - Keep all runs (no automatic deletion)
+        # # Delete the most recent run before saving this one
+        # print(f"\n[STORAGE] Checking for previous runs to overwrite...")
+        # recent_runs = self.list_runs(limit=1)
+        # if recent_runs:
+        #     most_recent_run_id = recent_runs[0]['run_id']
+        #     print(f"[STORAGE] Found previous run: {most_recent_run_id}")
+        #     print(f"[STORAGE] Deleting previous run to overwrite...")
+        #     self.delete_run(most_recent_run_id)
+        # else:
+        #     print(f"[STORAGE] No previous runs found - this will be the first run")
+        print(f"\n[STORAGE] Overwrite disabled - keeping all runs")
         
         self.create_run_dir(run_id)
 
@@ -4952,12 +5057,17 @@ class StorageService:
         # Check if CSV writes are disabled
         disable_csv_writes = os.getenv('DISABLE_CSV_WRITES', 'false').lower() == 'true'
         
-        # CSV WRITES DISABLED - Using in-memory cache only
-        print(f"\n[STORAGE] Step 2/7: CSV writes DISABLED (using in-memory cache)")
-        print(f"[STORAGE] Step 3/7: CSV writes DISABLED (using in-memory cache)")
-        logger.info(f"[STORAGE] CSV writes disabled, using in-memory cache only")
-        
         # Store bucket_results and findings in memory for fast access
+        print(f"\n[STORAGE][DEBUG] BEFORE CACHE SAVE:")
+        print(f"[STORAGE][DEBUG]   expected_detail type: {type(expected_detail)}, is None: {expected_detail is None}")
+        if expected_detail is not None:
+            print(f"[STORAGE][DEBUG]   expected_detail shape: {expected_detail.shape}")
+            print(f"[STORAGE][DEBUG]   expected_detail columns: {list(expected_detail.columns)[:10]}")
+        print(f"[STORAGE][DEBUG]   actual_detail type: {type(actual_detail)}, is None: {actual_detail is None}")
+        if actual_detail is not None:
+            print(f"[STORAGE][DEBUG]   actual_detail shape: {actual_detail.shape}")
+            print(f"[STORAGE][DEBUG]   actual_detail columns: {list(actual_detail.columns)[:10]}")
+        
         with self._IN_MEMORY_CACHE_LOCK:
             self._IN_MEMORY_RESULTS_CACHE[run_id] = {
                 'bucket_results': bucket_results.copy(),
@@ -4968,56 +5078,59 @@ class StorageService:
                 'timestamp': datetime.now().isoformat()
             }
         print(f"[STORAGE] ✓ Cached complete run data in memory for {run_id}")
+        print(f"[STORAGE][DEBUG] IN-MEMORY CACHE NOW CONTAINS:")
+        print(f"[STORAGE][DEBUG]   expected_detail: {len(self._IN_MEMORY_RESULTS_CACHE[run_id]['expected_detail'])} rows")
+        print(f"[STORAGE][DEBUG]   actual_detail: {len(self._IN_MEMORY_RESULTS_CACHE[run_id]['actual_detail'])} rows")
         logger.info(f"[STORAGE] Cached {len(bucket_results)} bucket results, {len(findings)} findings, and detail data in memory")
         
-        # if disable_csv_writes:
-        #     print(f"\n[STORAGE] Step 2/7: CSV writes DISABLED (DISABLE_CSV_WRITES=true)")
-        #     print(f"[STORAGE] Step 3/7: CSV writes DISABLED (DISABLE_CSV_WRITES=true)")
-        #     logger.info(f"[STORAGE] CSV writes disabled via DISABLE_CSV_WRITES environment variable")
-        # else:
-        #     print(f"\n[STORAGE] Step 2/7: Saving CSV input files...")
-        #     logger.info(f"[STORAGE] 📊 CSV input file writes...")
-        #     try:
-        #         self._save_dataframe(expected_detail, run_id, "inputs_normalized/expected_detail.csv")
-        #         print(f"[STORAGE] ✓ Saved: expected_detail.csv ({len(expected_detail)} rows)")
-        #         files_saved.append("expected_detail.csv")
-        #         
-        #         self._save_dataframe(actual_detail, run_id, "inputs_normalized/actual_detail.csv")
-        #         print(f"[STORAGE] ✓ Saved: actual_detail.csv ({len(actual_detail)} rows)")
-        #         files_saved.append("actual_detail.csv")
-        #     except Exception as e:
-        #         print(f"[STORAGE] ⚠️  CSV input file writes failed: {e}")
-        #         logger.warning(f"[STORAGE] Failed to write CSV input files: {e}")
-        #     
-        #     print(f"\n[STORAGE] Step 3/7: Saving CSV output files...")
-        #     logger.info(f"[STORAGE] 📈 CSV output file writes...")
-        #     try:
-        #         self._save_dataframe(bucket_results, run_id, "outputs/bucket_results.csv")
-        #         print(f"[STORAGE] ✓ Saved: bucket_results.csv ({len(bucket_results)} rows)")
-        #         files_saved.append("bucket_results.csv")
-        #         
-        #         self._save_dataframe(findings, run_id, "outputs/findings.csv")
-        #         print(f"[STORAGE] ✓ Saved: findings.csv ({len(findings)} rows)")
-        #         files_saved.append("findings.csv")
-        #         
-        #         # Store bucket_results and findings in memory for fast access
-        #         with self._IN_MEMORY_CACHE_LOCK:
-        #             self._IN_MEMORY_RESULTS_CACHE[run_id] = {
-        #                 'bucket_results': bucket_results.copy(),
-        #                 'findings': findings.copy(),
-        #                 'timestamp': datetime.now().isoformat()
-        #             }
-        #         print(f"[STORAGE] ✓ Cached results in memory for run {run_id}")
-        #         logger.info(f"[STORAGE] Cached {len(bucket_results)} bucket results and {len(findings)} findings in memory")
-        #         
-        #         # Save variance detail if provided
-        #         if variance_detail is not None and len(variance_detail) > 0:
-        #             self._save_dataframe(variance_detail, run_id, "outputs/variance_detail.csv")
-        #             print(f"[STORAGE] ✓ Saved: variance_detail.csv ({len(variance_detail)} rows)")
-        #             files_saved.append("variance_detail.csv")
-        #     except Exception as e:
-        #         print(f"[STORAGE] ⚠️  CSV output file writes failed: {e}")
-        #         logger.warning(f"[STORAGE] Failed to write CSV output files: {e}")
+        if disable_csv_writes:
+            print(f"\n[STORAGE] Step 2/7: CSV writes DISABLED (DISABLE_CSV_WRITES=true)")
+            print(f"[STORAGE] Step 3/7: CSV writes DISABLED (DISABLE_CSV_WRITES=true)")
+            logger.info(f"[STORAGE] CSV writes disabled via DISABLE_CSV_WRITES environment variable")
+        else:
+            print(f"\n[STORAGE] Step 2/7: Saving CSV input files...")
+            logger.info(f"[STORAGE] 📊 CSV input file writes...")
+            try:
+                self._save_dataframe(expected_detail, run_id, "inputs_normalized/expected_detail.csv")
+                print(f"[STORAGE] ✓ Saved: expected_detail.csv ({len(expected_detail)} rows)")
+                files_saved.append("expected_detail.csv")
+                
+                self._save_dataframe(actual_detail, run_id, "inputs_normalized/actual_detail.csv")
+                print(f"[STORAGE] ✓ Saved: actual_detail.csv ({len(actual_detail)} rows)")
+                files_saved.append("actual_detail.csv")
+            except Exception as e:
+                print(f"[STORAGE] ⚠️  CSV input file writes failed: {e}")
+                logger.warning(f"[STORAGE] Failed to write CSV input files: {e}")
+            
+            print(f"\n[STORAGE] Step 3/7: Saving CSV output files...")
+            logger.info(f"[STORAGE] 📈 CSV output file writes...")
+            try:
+                self._save_dataframe(bucket_results, run_id, "outputs/bucket_results.csv")
+                print(f"[STORAGE] ✓ Saved: bucket_results.csv ({len(bucket_results)} rows)")
+                files_saved.append("bucket_results.csv")
+                
+                self._save_dataframe(findings, run_id, "outputs/findings.csv")
+                print(f"[STORAGE] ✓ Saved: findings.csv ({len(findings)} rows)")
+                files_saved.append("findings.csv")
+                
+                # Store bucket_results and findings in memory for fast access
+                with self._IN_MEMORY_CACHE_LOCK:
+                    self._IN_MEMORY_RESULTS_CACHE[run_id] = {
+                        'bucket_results': bucket_results.copy(),
+                        'findings': findings.copy(),
+                        'timestamp': datetime.now().isoformat()
+                    }
+                print(f"[STORAGE] ✓ Cached results in memory for run {run_id}")
+                logger.info(f"[STORAGE] Cached {len(bucket_results)} bucket results and {len(findings)} findings in memory")
+                
+                # Save variance detail if provided
+                if variance_detail is not None and len(variance_detail) > 0:
+                    self._save_dataframe(variance_detail, run_id, "outputs/variance_detail.csv")
+                    print(f"[STORAGE] ✓ Saved: variance_detail.csv ({len(variance_detail)} rows)")
+                    files_saved.append("variance_detail.csv")
+            except Exception as e:
+                print(f"[STORAGE] ⚠️  CSV output file writes failed: {e}")
+                logger.warning(f"[STORAGE] Failed to write CSV output files: {e}")
         
         # Save metadata
         print(f"\n[STORAGE] Step 4/7: Saving metadata...")
@@ -5131,38 +5244,38 @@ class StorageService:
             print(f"[STORAGE] ⚠️  Display snapshots write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
 
-        # # Write detailed results to SharePoint list (list-backed results DB).
-        # print(f"\n[STORAGE] Step 7/7: Writing detailed results to SharePoint List (AuditRuns2)...")
-        # print(f"[STEP 7 DEBUG] write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
-        # print(f"[STEP 7 DEBUG] access_token={'SET' if self.access_token else 'MISSING'}, sharepoint_site_url={self.sharepoint_site_url}")
+        # Write detailed results to SharePoint list (list-backed results DB).
+        print(f"\n[STORAGE] Step 7/7: Writing detailed results to SharePoint List (AuditRuns2)...")
+        print(f"[STEP 7 DEBUG] write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
+        print(f"[STEP 7 DEBUG] access_token={'SET' if self.access_token else 'MISSING'}, sharepoint_site_url={self.sharepoint_site_url}")
         
-        # if write_details_async and can_write_sharepoint_lists:
-        #     print(f"[STORAGE] 🚀 Dispatching async detailed results write...")
-        #     details_thread = threading.Thread(
-        #         target=self._write_results_to_sharepoint_list_async,
-        #         args=(run_id, bucket_results, findings),
-        #         kwargs={'actual_detail': actual_detail, 'expected_detail': expected_detail},
-        #         daemon=True,
-        #         name=f"details-write-{run_id}",
-        #     )
-        #     details_thread.start()
-        #     print(f"[STORAGE] ✓ Detailed results write dispatched (async mode)")
-        # elif can_write_sharepoint_lists:
-        #     print(f"[STORAGE] Writing detailed results synchronously...")
-        #     write_ok = self._write_results_to_sharepoint_list(
-        #         run_id,
-        #         bucket_results,
-        #         findings,
-        #         actual_detail=actual_detail,
-        #         expected_detail=expected_detail,
-        #     )
-        #     if write_ok:
-        #         print(f"[STORAGE] ✓ Detailed results written successfully")
-        #     else:
-        #         print(f"[STORAGE] ⚠️  Detailed results write failed")
-        # else:
-        #     print(f"[STORAGE] ⚠️  SharePoint lists not available, skipping detailed results write")
-        #     print(f"[STEP 7 DEBUG] Why? write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
+        if write_details_async and can_write_sharepoint_lists:
+            print(f"[STORAGE] 🚀 Dispatching async detailed results write...")
+            details_thread = threading.Thread(
+                target=self._write_results_to_sharepoint_list_async,
+                args=(run_id, bucket_results, findings),
+                kwargs={'actual_detail': actual_detail, 'expected_detail': expected_detail},
+                daemon=True,
+                name=f"details-write-{run_id}",
+            )
+            details_thread.start()
+            print(f"[STORAGE] ✓ Detailed results write dispatched (async mode)")
+        elif can_write_sharepoint_lists:
+            print(f"[STORAGE] Writing detailed results synchronously...")
+            write_ok = self._write_results_to_sharepoint_list(
+                run_id,
+                bucket_results,
+                findings,
+                actual_detail=actual_detail,
+                expected_detail=expected_detail,
+            )
+            if write_ok:
+                print(f"[STORAGE] ✓ Detailed results written successfully")
+            else:
+                print(f"[STORAGE] ⚠️  Detailed results write failed")
+        else:
+            print(f"[STORAGE] ⚠️  SharePoint lists not available, skipping detailed results write")
+            print(f"[STEP 7 DEBUG] Why? write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
 
         logger.info(
             f"[STORAGE TIMER] run_id={run_id} "
@@ -5191,27 +5304,65 @@ class StorageService:
             logger.info(f"[STORAGE] 📍 Location: {self.base_dir}/{run_id}")
     
     def load_run(self, run_id: str) -> Dict[str, Any]:
-        """Load complete audit run from in-memory cache."""
-        logger.info(f"[STORAGE] Loading run {run_id} from in-memory cache")
+        """Load complete audit run from memory, SharePoint lists (AuditRuns2), or CSVs."""
+        logger.info(f"[STORAGE] Loading run {run_id}")
         
-        # Check in-memory cache
+        # Try in-memory cache first (fastest for recently executed runs)
+        expected_detail = pd.DataFrame()
+        actual_detail = pd.DataFrame()
+        bucket_results = pd.DataFrame()
+        findings = pd.DataFrame()
+        variance_detail = pd.DataFrame()
+        loaded_from_memory = False
+        
         with self._IN_MEMORY_CACHE_LOCK:
-            if run_id not in self._IN_MEMORY_RESULTS_CACHE:
-                raise ValueError(f"Run {run_id} not found in memory cache. Please run a new audit.")
-            
-            cache_data = self._IN_MEMORY_RESULTS_CACHE[run_id]
-            expected_detail = cache_data.get('expected_detail', pd.DataFrame()).copy()
-            actual_detail = cache_data.get('actual_detail', pd.DataFrame()).copy()
-            bucket_results = cache_data.get('bucket_results', pd.DataFrame()).copy()
-            findings = cache_data.get('findings', pd.DataFrame()).copy()
-            variance_detail = cache_data.get('variance_detail', pd.DataFrame()).copy()
+            if run_id in self._IN_MEMORY_RESULTS_CACHE:
+                cache_data = self._IN_MEMORY_RESULTS_CACHE[run_id]
+                expected_detail = cache_data.get('expected_detail', pd.DataFrame()).copy()
+                actual_detail = cache_data.get('actual_detail', pd.DataFrame()).copy()
+                bucket_results = cache_data.get('bucket_results', pd.DataFrame()).copy()
+                findings = cache_data.get('findings', pd.DataFrame()).copy()
+                variance_detail = cache_data.get('variance_detail', pd.DataFrame()).copy()
+                loaded_from_memory = True
+                logger.info(f"[STORAGE] ✅ Loaded run {run_id} from memory cache: {len(bucket_results)} buckets, {len(findings)} findings")
         
-        logger.info(f"[STORAGE] ✅ Loaded run {run_id} from memory: {len(bucket_results)} buckets, {len(findings)} findings")
+        # If not in memory, load from SharePoint lists (AuditRuns2) or CSVs
+        if not loaded_from_memory or bucket_results.empty or findings.empty:
+            logger.info(f"[STORAGE] Loading run {run_id} from SharePoint lists (AuditRuns2) or CSVs")
+            
+            # Load bucket_results (tries AuditRuns2 list first, then snapshots, then CSV)
+            bucket_results = self.load_bucket_results(run_id)
+            if bucket_results.empty:
+                logger.warning(f"[STORAGE] No bucket_results found for run {run_id}")
+            
+            # Load findings (tries AuditRuns2 list first, then snapshots, then CSV)
+            findings = self.load_findings(run_id)
+            if findings.empty:
+                logger.warning(f"[STORAGE] No findings found for run {run_id}")
+            
+            # Load variance_detail from CSV
+            variance_detail = self.load_variance_detail(run_id)
+            
+            # Load expected_detail and actual_detail from CSV
+            expected_detail = self._load_dataframe(run_id, "inputs_normalized/expected_detail.csv")
+            if expected_detail is None:
+                expected_detail = pd.DataFrame()
+            
+            actual_detail = self._load_dataframe(run_id, "inputs_normalized/actual_detail.csv")
+            if actual_detail is None:
+                actual_detail = pd.DataFrame()
+            
+            logger.info(
+                f"[STORAGE] ✅ Loaded run {run_id} from persistent storage: "
+                f"{len(bucket_results)} buckets, {len(findings)} findings, "
+                f"{len(expected_detail)} expected rows, {len(actual_detail)} actual rows"
+            )
         
         # Bucket results and findings are mandatory
-        if bucket_results is None or bucket_results.empty or findings is None or findings.empty:
-            raise ValueError(f"Run {run_id} incomplete in memory cache (missing bucket_results or findings)")
+        if bucket_results.empty or findings.empty:
+            raise ValueError(f"Run {run_id} incomplete or not found (missing bucket_results or findings)")
 
+        # Normalize dataframes
         for df in [expected_detail, actual_detail, bucket_results, findings]:
             if not df.empty:
                 self._normalize_loaded_dataframe(df)

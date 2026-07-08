@@ -90,8 +90,16 @@ def calculate_kpis(
     
     # Finding counts
     total_findings = len(findings)
-    high_severity_count = len(findings[findings["severity"] == "high"])
-    medium_severity_count = len(findings[findings["severity"] == "medium"])
+    high_severity_count = (
+        len(findings[findings["severity"] == "high"])
+        if len(findings) > 0 and "severity" in findings.columns
+        else 0
+    )
+    medium_severity_count = (
+        len(findings[findings["severity"] == "medium"])
+        if len(findings) > 0 and "severity" in findings.columns
+        else 0
+    )
     
     # Impact calculation
     total_impact = (
@@ -129,6 +137,10 @@ def calculate_property_summary(bucket_results: pd.DataFrame, findings: pd.DataFr
     Returns:
         DataFrame with one row per property
     """
+    # Handle empty bucket_results
+    if bucket_results.empty or CanonicalField.PROPERTY_ID.value not in bucket_results.columns:
+        return pd.DataFrame()
+    
     properties = bucket_results[CanonicalField.PROPERTY_ID.value].unique()
     
     summaries = []

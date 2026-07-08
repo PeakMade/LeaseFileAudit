@@ -39,7 +39,6 @@ if (-not $Background) {
     & python $AppFile
     exit $LASTEXITCODE
 }
-
 $env:OPEN_BROWSER = "false"
 $env:PORT = "$Port"
 $appProc = Start-Process -FilePath "python" -ArgumentList $AppFile -WorkingDirectory $projectRoot -PassThru

@@ -134,15 +134,15 @@ def _log_and_clear_pending_upload_timing(run_id: str, destination: str, destinat
         "[AUDIT TIMER][E2E] "
         f"run_id={run_id} "
         f"destination={destination} "
-        f"upload_request_seconds={float(pending.get('upload_request_seconds') or 0):.2f} "
-        f"file_save_seconds={float(pending.get('file_save_seconds') or 0):.2f} "
-        f"api_fetch_seconds={float(pending.get('api_fetch_seconds') or 0):.2f} "
-        f"execute_seconds={float(pending.get('execute_seconds') or 0):.2f} "
-        f"overlay_seconds={float(pending.get('overlay_seconds') or 0):.2f} "
-        f"save_run_seconds={float(pending.get('save_run_seconds') or 0):.2f} "
-        f"cache_clear_seconds={float(pending.get('cache_clear_seconds') or 0):.2f} "
-        f"cleanup_seconds={float(pending.get('cleanup_seconds') or 0):.2f} "
-        f"activity_log_seconds={float(pending.get('activity_log_seconds') or 0):.2f} "
+        f"upload_request_seconds={_safe_float(pending.get('upload_request_seconds'), 0):.2f} "
+        f"file_save_seconds={_safe_float(pending.get('file_save_seconds'), 0):.2f} "
+        f"api_fetch_seconds={_safe_float(pending.get('api_fetch_seconds'), 0):.2f} "
+        f"execute_seconds={_safe_float(pending.get('execute_seconds'), 0):.2f} "
+        f"overlay_seconds={_safe_float(pending.get('overlay_seconds'), 0):.2f} "
+        f"save_run_seconds={_safe_float(pending.get('save_run_seconds'), 0):.2f} "
+        f"cache_clear_seconds={_safe_float(pending.get('cache_clear_seconds'), 0):.2f} "
+        f"cleanup_seconds={_safe_float(pending.get('cleanup_seconds'), 0):.2f} "
+        f"activity_log_seconds={_safe_float(pending.get('activity_log_seconds'), 0):.2f} "
         f"post_upload_route_seconds={destination_route_seconds:.2f} "
         f"end_to_end_seconds={end_to_end_seconds:.2f}"
     )
@@ -630,7 +630,7 @@ def _start_lease_terms_prewarm(
                         f"lease_interval={lease_interval_id}: {exc}"
                     )
 
-            with _LTPoolExecutor(max_workers=3) as pool:
+            with _LTPoolExecutor(max_workers=10) as pool:
                 list(pool.map(_prewarm_one, _lease_interval_ids))
 
     t = threading.Thread(target=_run, daemon=True)
@@ -2195,7 +2195,7 @@ def execute_audit_run(
         api_code_set = {int(code) for code in API_POSTED_AR_CODES}
         api_code_text_set = {str(code) for code in api_code_set}
         ar_code_numeric = pd.to_numeric(ar_code_col, errors='coerce')
-        api_code_mask = ar_code_numeric.isin(api_code_set) | ar_code_col.astype(str).str.strip().isin(api_code_text_set)
+        api_code_mask = ar_code_numeric.isin(api_code_set).fillna(False) | ar_code_col.astype(str).str.strip().isin(api_code_text_set).fillna(False)
 
         api_codes_present = actual_detail[api_code_mask]
         
@@ -3029,7 +3029,7 @@ def upload_api_property():
         metadata['api_ingest'] = {
             'property_id': property_id,
             'property_name': property_name,  # Use property name from picklist or API fallback
-            'lease_count': int(api_sources.get('lease_count') or 0),
+            'lease_count': int(_safe_float(api_sources.get('lease_count'), 0)),
         }
         if audit_year or audit_month:
             metadata['audit_period'] = {
@@ -3301,7 +3301,7 @@ def _run_bulk_audit_job(app, job_id: str, properties: list, from_date: str, to_d
                     'api_ingest': {
                         'property_id': property_id,
                         'property_name': resolved_name,
-                        'lease_count': int(api_sources.get('lease_count') or 0),
+                        'lease_count': int(_safe_float(api_sources.get('lease_count'), 0)),
                     },
                 }
 
@@ -3853,17 +3853,17 @@ def portfolio(run_id: str = None):
             if property_id is None:
                 continue
 
-            undercharge = float(snapshot_row.get('undercharge', 0) or 0)
-            overcharge = float(snapshot_row.get('overcharge', 0) or 0)
-            exception_count = int(snapshot_row.get('exception_count', 0) or 0)
+            undercharge = _safe_float(snapshot_row.get('undercharge'), 0)
+            overcharge = _safe_float(snapshot_row.get('overcharge'), 0)
+            exception_count = int(_safe_float(snapshot_row.get('exception_count'), 0))
 
             property_id_int = _normalize_property_id_token(property_id)
 
             # Subtract resolved amounts so portfolio reflects current open state
             if property_id_int is not None and property_id_int in audit_status_summary:
                 _prop_status = audit_status_summary[property_id_int]
-                undercharge = max(0.0, undercharge - float(_prop_status.get('resolved_undercharge', 0) or 0))
-                overcharge = max(0.0, overcharge - float(_prop_status.get('resolved_overcharge', 0) or 0))
+                undercharge = max(0.0, undercharge - _safe_float(_prop_status.get('resolved_undercharge'), 0))
+                overcharge = max(0.0, overcharge - _safe_float(_prop_status.get('resolved_overcharge'), 0))
                 # Subtract resolved buckets (distinct lease/AR code pairs with any resolved record)
                 _resolved_buckets = int(_prop_status.get('resolved_buckets', 0))
                 exception_count = max(0, exception_count - _resolved_buckets)
@@ -3928,7 +3928,7 @@ def portfolio(run_id: str = None):
                 'property_name': resolved_name,
                 'property_id': property_id,
                 'run_id': property_run_id,  # Store which run this property data is from
-                'total_lease_intervals': int(snapshot_row.get('total_lease_intervals', 0) or 0),
+                'total_lease_intervals': int(_safe_float(snapshot_row.get('total_lease_intervals'), 0)),
                 'exception_buckets': exception_count,
                 'total_undercharge': undercharge,
                 'total_overcharge': overcharge,
@@ -4398,8 +4398,8 @@ def property_view(property_id: str, run_id: str = None):
             _pb_ar_col = property_buckets[CanonicalField.AR_CODE_ID.value]
             _pb_numeric = pd.to_numeric(_pb_ar_col, errors='coerce')
             _pb_whitelist_mask = (
-                _pb_numeric.isin(ALLOWED_AR_CODES_SET) |
-                _pb_ar_col.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET)
+                _pb_numeric.isin(ALLOWED_AR_CODES_SET).fillna(False) |
+                _pb_ar_col.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET).fillna(False)
             )
             property_buckets = property_buckets[_pb_whitelist_mask].copy()
         
@@ -4525,14 +4525,19 @@ def property_view(property_id: str, run_id: str = None):
                 status_color = 'danger'
             
             _lease_start = lease_start_date_map.get(lease_key)
-            _is_future = bool(_lease_start is not None and pd.notna(_lease_start) and _lease_start > _today)
+            _is_future = False
+            if _lease_start is not None and pd.notna(_lease_start):
+                try:
+                    _is_future = bool(_lease_start > _today)
+                except (TypeError, ValueError):
+                    _is_future = False
 
             if lease_id in lease_groups:
                 # Lease has exceptions
                 exceptions = lease_groups[lease_id]
-                total_variance = sum(float(e.get('variance') or 0) for e in exceptions)
-                total_undercharge = sum(abs(float(e.get('variance') or 0)) for e in exceptions if float(e.get('variance') or 0) < 0)
-                total_overcharge = sum(float(e.get('variance') or 0) for e in exceptions if float(e.get('variance') or 0) > 0)
+                total_variance = sum(_safe_float(e.get('variance'), 0) for e in exceptions)
+                total_undercharge = sum(abs(_safe_float(e.get('variance'), 0)) for e in exceptions if _safe_float(e.get('variance'), 0) < 0)
+                total_overcharge = sum(_safe_float(e.get('variance'), 0) for e in exceptions if _safe_float(e.get('variance'), 0) > 0)
                 # NOTE: Do NOT overwrite with lease_snapshot — it is static (audit time) and
                 # does not reflect resolutions. exceptions is already filtered to unresolved only.
                 lease_summary.append({
@@ -4549,7 +4554,7 @@ def property_view(property_id: str, run_id: str = None):
                     'total_variance': total_variance,
                     'status_label': status_label,
                     'status_color': status_color,
-                    'exceptions': sorted(exceptions, key=lambda x: abs(float(x.get('variance') or 0)), reverse=True),
+                    'exceptions': sorted(exceptions, key=lambda x: abs(_safe_float(x.get('variance'), 0)), reverse=True),
                     'lease_start_date': _lease_start,
                     'is_future_lease': _is_future,
                 })
@@ -4579,9 +4584,9 @@ def property_view(property_id: str, run_id: str = None):
         lease_summary = sorted(
             lease_summary,
             key=lambda x: (
-                -int(x.get('exception_count') or 0),
-                -int(x.get('unresolved_exception_count') or 0),
-                -abs(float(x.get('total_variance') or 0)),
+                -int(_safe_float(x.get('exception_count'), 0)),
+                -int(_safe_float(x.get('unresolved_exception_count'), 0)),
+                -abs(_safe_float(x.get('total_variance'), 0)),
             )
         )
         logger.info(
@@ -4621,15 +4626,15 @@ def property_view(property_id: str, run_id: str = None):
         # Derive undercharge and overcharge from lease_summary so the KPI cards always
         # match the per-row values shown in the lease table (both calculated from unresolved exceptions only).
         property_kpis['total_undercharge'] = sum(
-            float(lease.get('total_undercharge', 0) or 0) for lease in lease_summary
+            _safe_float(lease.get('total_undercharge'), 0) for lease in lease_summary
         )
         property_kpis['total_overcharge'] = sum(
-            float(lease.get('total_overcharge', 0) or 0) for lease in lease_summary
+            _safe_float(lease.get('total_overcharge'), 0) for lease in lease_summary
         )
 
         # Keep the KPI card aligned with the lease table's discrepancy column.
         property_exception_count = int(
-            sum(int(lease.get('exception_count', 0) or 0) for lease in lease_summary)
+            sum(int(_safe_float(lease.get('exception_count'), 0)) for lease in lease_summary)
         )
         
         response = render_template(
@@ -4683,6 +4688,28 @@ def _get_status_label(status: str) -> str:
         "SCHEDULED_ONLY": "Future Lease (Scheduled Only)",
     }
     return labels.get(status, status)
+
+
+def _safe_float(value, default=0.0) -> float:
+    """
+    Safely convert a value to float, handling pandas NA, None, and invalid values.
+    
+    Args:
+        value: The value to convert (can be pandas.NA, None, numeric, or string)
+        default: The default value to return if conversion fails
+    
+    Returns:
+        float: The converted value or default
+    """
+    if value is None:
+        return default
+    # Check for pandas NA specifically
+    if pd.isna(value):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _calculate_analysis_period(actual_detail: pd.DataFrame, expected_detail: pd.DataFrame) -> str:
@@ -4819,10 +4846,24 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             fallback_bucket_results = _ensure_bucket_results_dataframe(fallback_bucket_results)
             if isinstance(fallback_bucket_results, pd.DataFrame) and not fallback_bucket_results.empty:
                 if required_bucket_cols.issubset(set(fallback_bucket_results.columns)):
+                    # DEBUG: Check data types and values before filtering
+                    lid_col = CanonicalField.LEASE_INTERVAL_ID.value
+                    pid_col = CanonicalField.PROPERTY_ID.value
+                    unique_leases = fallback_bucket_results[lid_col].unique()[:10]  # First 10
+                    print(f"[LEASE FILTER DEBUG] Filter values: property_id={normalized_property_id} (type={type(normalized_property_id)}), lease_id={normalized_lease_interval_id} (type={type(normalized_lease_interval_id)})")
+                    print(f"[LEASE FILTER DEBUG] Column {lid_col} dtype={fallback_bucket_results[lid_col].dtype}, sample values={unique_leases}")
+                    print(f"[LEASE FILTER DEBUG] Column {pid_col} dtype={fallback_bucket_results[pid_col].dtype}")
+                    print(f"[LEASE FILTER DEBUG] Total rows before filter: {len(fallback_bucket_results)}")
+                    
+                    # Convert to numeric for comparison (handles string/int mismatches)
+                    lid_col = CanonicalField.LEASE_INTERVAL_ID.value
+                    pid_col = CanonicalField.PROPERTY_ID.value
                     bucket_results = fallback_bucket_results[
-                        (fallback_bucket_results[CanonicalField.PROPERTY_ID.value] == normalized_property_id)
-                        & (fallback_bucket_results[CanonicalField.LEASE_INTERVAL_ID.value] == normalized_lease_interval_id)
+                        (pd.to_numeric(fallback_bucket_results[pid_col], errors='coerce') == normalized_property_id)
+                        & (pd.to_numeric(fallback_bucket_results[lid_col], errors='coerce') == normalized_lease_interval_id)
                     ].copy()
+                    
+                    print(f"[LEASE FILTER DEBUG] Rows after filter: {len(bucket_results)}")
                 else:
                     bucket_results = fallback_bucket_results.copy()
                 bucket_read_source = f"{fallback_bucket_read_source}_run_scope_filter"
@@ -4835,6 +4876,11 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
 
         expected_detail = cached_load_expected_detail(run_id, cache_token)
         actual_detail = cached_load_actual_detail(run_id, cache_token)
+        
+        # DEBUG: Log loaded detail sizes and columns
+        logger.info(f"[TRANSACTION DEBUG] Loaded expected_detail: {len(expected_detail)} rows, columns: {list(expected_detail.columns)[:10] if not expected_detail.empty else 'EMPTY'}")
+        logger.info(f"[TRANSACTION DEBUG] Loaded actual_detail: {len(actual_detail)} rows, columns: {list(actual_detail.columns)[:10] if not actual_detail.empty else 'EMPTY'}")
+        
         variance_detail = cached_load_variance_detail(
             run_id,
             property_id=normalized_property_id,
@@ -4866,24 +4912,27 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         # Exclude AR codes per business policy (excluded_ar_codes.json) at display time.
         # This catches stale run data that was generated before a code was added to the exclusion list.
         from audit_engine.mappings import API_POSTED_AR_CODES_SET, API_POSTED_AR_CODES_TEXT_SET, ALLOWED_AR_CODES_SET, ALLOWED_AR_CODES_TEXT_SET
-        print(f"[DISPLAY FILTER DEBUG] bucket_results rows={len(bucket_results)} columns={list(bucket_results.columns)}")
+        print(f"[DISPLAY FILTER DEBUG] INITIAL bucket_results rows={len(bucket_results)} columns={list(bucket_results.columns)}")
         print(f"[DISPLAY FILTER DEBUG] ALLOWED_AR_CODES_SET={ALLOWED_AR_CODES_SET}")
         if CanonicalField.AR_CODE_ID.value in bucket_results.columns:
-            print(f"[DISPLAY FILTER DEBUG] AR_CODE_ID values={bucket_results[CanonicalField.AR_CODE_ID.value].unique().tolist()}")
+            print(f"[DISPLAY FILTER DEBUG] AR_CODE_ID values BEFORE filter={bucket_results[CanonicalField.AR_CODE_ID.value].unique().tolist()}")
             _ar_col = bucket_results[CanonicalField.AR_CODE_ID.value]
             _numeric = pd.to_numeric(_ar_col, errors='coerce')
-            _excluded_mask = _numeric.isin(API_POSTED_AR_CODES_SET) | _ar_col.astype(str).str.strip().isin(API_POSTED_AR_CODES_TEXT_SET)
+            _excluded_mask = _numeric.isin(API_POSTED_AR_CODES_SET).fillna(False) | _ar_col.astype(str).str.strip().isin(API_POSTED_AR_CODES_TEXT_SET).fillna(False)
             bucket_results = bucket_results[~_excluded_mask].copy()
-            # Re-apply the allowed_ar_codes whitelist at display time so the lease detail
-            # only shows findings for whitelisted AR codes (e.g. Rent only when whitelist=[154771]).
+            print(f"[DISPLAY FILTER DEBUG] AFTER exclusion filter: bucket_results rows={len(bucket_results)}")
+            # Apply AR code whitelist - only show base rent (154771) at lease detail level
             if ALLOWED_AR_CODES_SET:
                 _ar_col2 = bucket_results[CanonicalField.AR_CODE_ID.value]
                 _numeric2 = pd.to_numeric(_ar_col2, errors='coerce')
                 _whitelist_mask = (
-                    _numeric2.isin(ALLOWED_AR_CODES_SET) |
-                    _ar_col2.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET)
+                    _numeric2.isin(ALLOWED_AR_CODES_SET).fillna(False) |
+                    _ar_col2.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET).fillna(False)
                 )
                 bucket_results = bucket_results[_whitelist_mask].copy()
+                print(f"[DISPLAY FILTER DEBUG] AFTER whitelist filter (154771 only): bucket_results rows={len(bucket_results)}")
+                if len(bucket_results) > 0:
+                    print(f"[DISPLAY FILTER DEBUG] AR_CODE_ID values AFTER filter={bucket_results[CanonicalField.AR_CODE_ID.value].unique().tolist()}")
         else:
             print(f"[DISPLAY FILTER DEBUG] AR_CODE_ID column NOT found in bucket_results")
 
@@ -4893,11 +4942,14 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         lease_buckets = bucket_results[
             ~bucket_results[CanonicalField.STATUS.value].isin(non_exception_statuses)
         ].copy()
+        print(f"[DISPLAY FILTER DEBUG] lease_buckets (exceptions only) rows={len(lease_buckets)}")
         
         # Future lease buckets (SCHEDULED_ONLY)
         future_buckets = bucket_results[
             bucket_results[CanonicalField.STATUS.value] == 'SCHEDULED_ONLY'
         ].copy()
+        print(f"[DISPLAY FILTER DEBUG] future_buckets rows={len(future_buckets)}")
+
         
         # Get matched buckets for this lease
         matched_buckets = bucket_results[
@@ -4922,6 +4974,19 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             ]
         else:
             lease_actual = pd.DataFrame()
+        
+        # DEBUG: Log lease filtering results
+        logger.info(f"[TRANSACTION DEBUG] After filtering to lease {lease_interval_id}:")
+        logger.info(f"[TRANSACTION DEBUG]   lease_expected: {len(lease_expected)} rows")
+        logger.info(f"[TRANSACTION DEBUG]   lease_actual: {len(lease_actual)} rows")
+        if not lease_expected.empty:
+            logger.info(f"[TRANSACTION DEBUG]   lease_expected columns: {list(lease_expected.columns)[:10]}")
+            logger.info(f"[TRANSACTION DEBUG]   lease_expected has PERIOD_START: {'PERIOD_START' in lease_expected.columns}")
+            logger.info(f"[TRANSACTION DEBUG]   lease_expected has expected_amount: {'expected_amount' in lease_expected.columns}")
+        if not lease_actual.empty:
+            logger.info(f"[TRANSACTION DEBUG]   lease_actual columns: {list(lease_actual.columns)[:10]}")
+            logger.info(f"[TRANSACTION DEBUG]   lease_actual has POST_DATE: {'POST_DATE' in lease_actual.columns}")
+            logger.info(f"[TRANSACTION DEBUG]   lease_actual has actual_amount: {'actual_amount' in lease_actual.columns}")
 
         # Pre-group by (ar_code, audit_month) for O(1) lookups inside loops below.
         # Avoids repeated full-DataFrame scans on every bucket iteration.
@@ -4932,6 +4997,13 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         _act_groups: dict = _dd(list)
         for _, _r in lease_actual.iterrows():
             _act_groups[(_r[CanonicalField.AR_CODE_ID.value], _r[CanonicalField.AUDIT_MONTH.value])].append(_r)
+
+        # DEBUG: Log data sizes
+        logger.info(f"[TRANSACTION DEBUG] lease_expected rows: {len(lease_expected)}, columns: {list(lease_expected.columns) if not lease_expected.empty else 'EMPTY'}")
+        logger.info(f"[TRANSACTION DEBUG] lease_actual rows: {len(lease_actual)}, columns: {list(lease_actual.columns) if not lease_actual.empty else 'EMPTY'}")
+        logger.info(f"[TRANSACTION DEBUG] _exp_groups keys (first 5): {list(_exp_groups.keys())[:5]}")
+        logger.info(f"[TRANSACTION DEBUG] _act_groups keys (first 5): {list(_act_groups.keys())[:5]}")
+        logger.info(f"[TRANSACTION DEBUG] lease_buckets rows: {len(lease_buckets)}")
 
         def _rows_to_df(rows):
             if not rows:
@@ -4948,7 +5020,10 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             expected_records = _rows_to_df(_exp_groups.get((ar_code, audit_month), []))
             actual_records = _rows_to_df(_act_groups.get((ar_code, audit_month), []))
             
-            # Extract dates
+            # DEBUG: Log record counts for this bucket
+            logger.info(f"[TRANSACTION DEBUG] Bucket ar_code={ar_code}, audit_month={audit_month}: expected_records={len(expected_records)}, actual_records={len(actual_records)}")
+            
+            # Extract dates and AR code name
             charge_start = None
             charge_end = None
             post_dates = []
@@ -4970,11 +5045,11 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     elif isinstance(charge_end, pd.Timestamp):
                         charge_end = charge_end.strftime('%Y-%m-%d')
             
+            # Extract post dates and try to get AR code name from actual records first
             if not actual_records.empty:
                 if 'POST_DATE' in actual_records.columns:
                     # Convert Timestamps to date strings
                     post_dates = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in actual_records['POST_DATE'].dropna()]
-                # Try to get AR code name from actual records first
                 if 'AR_CODE_NAME' in actual_records.columns:
                     name_value = actual_records['AR_CODE_NAME'].iloc[0]
                     if pd.notna(name_value):
@@ -4986,6 +5061,15 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     name_value = expected_records['AR_CODE_NAME'].iloc[0]
                     if pd.notna(name_value):
                         ar_code_name = name_value
+            
+            # If not in detail records, get from bucket (loaded from snapshots)
+            if not ar_code_name:
+                if 'AR_CODE_NAME' in bucket.index:
+                    name_value = bucket.get('AR_CODE_NAME')
+                    if pd.notna(name_value):
+                        ar_code_name = str(name_value).strip()
+                        if ar_code_name and ar_code_name.lower() != 'nan':
+                            logger.info(f"[AR_CODE_NAME] Using from bucket for ar_code={ar_code}: '{ar_code_name}'")
             
             # Build individual transaction details
             expected_transactions = []
@@ -5037,8 +5121,15 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                         'is_deleted': bool(pd.to_numeric(act_rec.get('IS_DELETED', 0), errors='coerce') == 1),
                     })
             
+            # DEBUG: Log transaction array sizes
+            logger.info(f"[TRANSACTION DEBUG] Built transactions for ar_code={ar_code}, audit_month={audit_month}: expected={len(expected_transactions)}, actual={len(actual_transactions)}")
+            
             # Convert audit_month Timestamp to date string
             audit_month_str = audit_month.strftime('%Y-%m-%d') if isinstance(audit_month, pd.Timestamp) else audit_month
+            
+            # Safely extract status value (handle pandas.NA)
+            raw_status = bucket[CanonicalField.STATUS.value]
+            status_value = None if pd.isna(raw_status) else str(raw_status).upper()
             
             exception = {
                 'ar_code_id': ar_code,
@@ -5047,9 +5138,9 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                 'charge_start': charge_start,
                 'charge_end': charge_end,
                 'post_dates': post_dates,
-                'status': bucket[CanonicalField.STATUS.value],
-                'status_label': _get_status_label(bucket[CanonicalField.STATUS.value]),
-                'status_color': _get_status_color(bucket[CanonicalField.STATUS.value]),
+                'status': status_value,
+                'status_label': _get_status_label(status_value),
+                'status_color': _get_status_color(status_value),
                 'expected_total': _safe_float(bucket[CanonicalField.EXPECTED_TOTAL.value]),
                 'actual_total': _safe_float(bucket[CanonicalField.ACTUAL_TOTAL.value]),
                 'variance': _safe_float(bucket[CanonicalField.VARIANCE.value]),
@@ -5104,24 +5195,24 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             group['total_actual'] += _safe_float(exc.get('actual_total'))
             group['month_count'] += 1
             
-            # Store monthly detail
+            # Store monthly detail (use .get() for fields that may not exist in snapshot data)
             group['monthly_details'].append({
                 'audit_month': exc['audit_month'],
-                'charge_start': exc['charge_start'],
-                'charge_end': exc['charge_end'],
-                'post_dates': exc['post_dates'],
+                'charge_start': exc.get('charge_start', ''),
+                'charge_end': exc.get('charge_end', ''),
+                'post_dates': exc.get('post_dates', ''),
                 'expected_total': exc['expected_total'],
                 'actual_total': exc['actual_total'],
                 'variance': exc['variance'],
-                'expected_transactions': exc['expected_transactions'],
-                'actual_transactions': exc['actual_transactions'],
-                'description': exc['description'],
-                'recommendation': exc['recommendation']
+                'expected_transactions': exc.get('expected_transactions', []),
+                'actual_transactions': exc.get('actual_transactions', []),
+                'description': exc.get('description', ''),
+                'recommendation': exc.get('recommendation', '')
             })
             
-            # Aggregate all transactions
-            group['all_expected_transactions'].extend(exc['expected_transactions'])
-            group['all_actual_transactions'].extend(exc['actual_transactions'])
+            # Aggregate all transactions (only if they exist)
+            group['all_expected_transactions'].extend(exc.get('expected_transactions', []))
+            group['all_actual_transactions'].extend(exc.get('actual_transactions', []))
         
         # Convert to list and sort by total variance
         grouped_list = list(grouped_exceptions.values())
@@ -5233,6 +5324,9 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
             expected_records = _rows_to_df(_exp_groups.get((ar_code, audit_month), []))
             actual_records = _rows_to_df(_act_groups.get((ar_code, audit_month), []))
             
+            # DEBUG: Log record counts for matched bucket
+            logger.info(f"[TRANSACTION DEBUG] MATCHED bucket ar_code={ar_code}, audit_month={audit_month}: expected_records={len(expected_records)}, actual_records={len(actual_records)}")
+            
             # Get AR code name
             ar_code_name = None
             if not actual_records.empty and 'AR_CODE_NAME' in actual_records.columns:
@@ -5297,6 +5391,13 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                         'is_deleted': bool(pd.to_numeric(act_rec.get('IS_DELETED', 0), errors='coerce') == 1),
                     })
             
+            # DEBUG: Log transaction array sizes for matched
+            logger.info(f"[TRANSACTION DEBUG] MATCHED transactions for ar_code={ar_code}, audit_month={audit_month}: expected={len(expected_transactions)}, actual={len(actual_transactions)}")
+            if expected_transactions:
+                logger.info(f"[TRANSACTION DEBUG] Sample expected transaction: {expected_transactions[0]}")
+            if actual_transactions:
+                logger.info(f"[TRANSACTION DEBUG] Sample actual transaction: {actual_transactions[0]}")
+            
             # Convert audit_month to date string
             audit_month_str = audit_month.strftime('%Y-%m-%d') if isinstance(audit_month, pd.Timestamp) else audit_month
             
@@ -5358,7 +5459,7 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                     'has_exceptions': False
                 }
             
-            ar_code_unified[ar_code_id]['exception_count'] += int(pd.to_numeric(exc.get('month_count', 0), errors='coerce') or 0)
+            ar_code_unified[ar_code_id]['exception_count'] += int(_safe_float(exc.get('month_count'), 0))
             ar_code_unified[ar_code_id]['has_exceptions'] = True
             
             # Add exception monthly details with status flag
@@ -5470,8 +5571,8 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         # Status remains Open until ALL scoped exceptions for this AR code are resolved.
         ar_status_map = {}
         for ar_code_id, ar_data in ar_code_unified.items():
-            total_months = int(ar_data.get('total_exception_count', 0) or 0)
-            unresolved_months = int(ar_data.get('unresolved_exception_count', 0) or 0)
+            total_months = int(_safe_float(ar_data.get('total_exception_count'), 0))
+            unresolved_months = int(_safe_float(ar_data.get('unresolved_exception_count'), 0))
             resolved_months = max(0, total_months - unresolved_months)
 
             if total_months == 0:
@@ -5721,16 +5822,16 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
                 unresolved_exception_months.append(monthly)
 
         total_undercharge = sum(
-            max(0, float(monthly.get('expected_total', 0) or 0) - float(monthly.get('actual_total', 0) or 0))
+            max(0, _safe_float(monthly.get('expected_total'), 0) - _safe_float(monthly.get('actual_total'), 0))
             for monthly in unresolved_exception_months
         )
         total_overcharge = sum(
-            max(0, float(monthly.get('actual_total', 0) or 0) - float(monthly.get('expected_total', 0) or 0))
+            max(0, _safe_float(monthly.get('actual_total'), 0) - _safe_float(monthly.get('expected_total'), 0))
             for monthly in unresolved_exception_months
         )
 
-        total_expected = sum(float(monthly.get('expected_total', 0) or 0) for monthly in unresolved_exception_months)
-        total_actual = sum(float(monthly.get('actual_total', 0) or 0) for monthly in unresolved_exception_months)
+        total_expected = sum(_safe_float(monthly.get('expected_total'), 0) for monthly in unresolved_exception_months)
+        total_actual = sum(_safe_float(monthly.get('actual_total'), 0) for monthly in unresolved_exception_months)
         total_variance = total_actual - total_expected
 
         # NOTE: Do NOT overwrite with lease_snapshot here — the snapshot is static (written at
@@ -5761,6 +5862,21 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         all_ar_codes = sanitize_for_json(all_ar_codes)
         grouped_list = sanitize_for_json(grouped_list)
         matched_list = sanitize_for_json(matched_list)
+        
+        # DEBUG: Log final all_ar_codes structure
+        logger.info(f"[TRANSACTION DEBUG] Final all_ar_codes count: {len(all_ar_codes)}")
+        if all_ar_codes:
+            first_ar = all_ar_codes[0]
+            logger.info(f"[TRANSACTION DEBUG] First AR code structure keys: {first_ar.keys()}")
+            if 'monthly_details' in first_ar and first_ar['monthly_details']:
+                first_month = first_ar['monthly_details'][0]
+                logger.info(f"[TRANSACTION DEBUG] First monthly_detail keys: {first_month.keys()}")
+                logger.info(f"[TRANSACTION DEBUG] First monthly_detail expected_transactions count: {len(first_month.get('expected_transactions', []))}")
+                logger.info(f"[TRANSACTION DEBUG] First monthly_detail actual_transactions count: {len(first_month.get('actual_transactions', []))}")
+                if first_month.get('expected_transactions'):
+                    logger.info(f"[TRANSACTION DEBUG] Sample expected_transaction: {first_month['expected_transactions'][0]}")
+                if first_month.get('actual_transactions'):
+                    logger.info(f"[TRANSACTION DEBUG] Sample actual_transaction: {first_month['actual_transactions'][0]}")
         
         # Build future_months list for future lease display (informational, not exceptions)
         future_months_list = []

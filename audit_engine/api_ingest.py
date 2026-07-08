@@ -947,7 +947,7 @@ def fetch_property_api_sources(
     if not api_key:
         raise ValueError("Missing LEASE_API_KEY (or LEASE_API_SANDBOX_KEY) env var")
 
-    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "120") or "120")
+    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "300") or "300")
 
     # Step 1: Fetch all lease detail pages.
     lease_details_payload = _fetch_all_lease_details_pages(
@@ -1053,7 +1053,7 @@ def fetch_single_lease_api_sources(
     if not api_key:
         raise ValueError("Missing LEASE_API_KEY (or LEASE_API_SANDBOX_KEY) env var")
 
-    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "120") or "120")
+    timeout_seconds = int(_to_str(os.getenv("LEASE_API_TIMEOUT_SECONDS") or "300") or "300")
 
     print(f"\n{'='*80}")
     print(f"[SINGLE LEASE API] ===== STARTING API FETCH FOR LEASE {lease_id} (env={env}) =====")

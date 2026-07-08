@@ -67,7 +67,7 @@ class StorageConfig:
     meta_file: str = "run_meta.json"
     
     # SharePoint Document Library settings (for production)
-    use_sharepoint_storage: bool = field(default_factory=lambda: os.getenv('USE_SHAREPOINT_STORAGE', 'false').lower() == 'true')
+    use_sharepoint_storage: bool = field(default_factory=lambda: os.getenv('USE_SHAREPOINT_STORAGE', 'true').lower() == 'true')
     sharepoint_library_name: str = field(default_factory=lambda: os.getenv('SHAREPOINT_LIBRARY_NAME', 'LeaseFileAudit Runs'))
     
     def get_run_dir(self, run_id: str) -> Path:
@@ -94,9 +94,10 @@ class SharePointPerformanceConfig:
     # Async write toggles (write in background thread)
     async_audit_results_write: bool = field(default_factory=lambda: os.getenv('ASYNC_AUDIT_RESULTS_WRITE', 'true').lower() == 'true')
     async_metrics_write: bool = field(default_factory=lambda: os.getenv('ASYNC_METRICS_WRITE', 'true').lower() == 'true')
-    async_snapshots_write: bool = field(default_factory=lambda: os.getenv('ASYNC_SNAPSHOTS_WRITE', 'true').lower() == 'true')
+    async_snapshots_write: bool = field(default_factory=lambda: os.getenv('ASYNC_SNAPSHOTS_WRITE', 'false').lower() == 'true')  # Changed to false: snapshots must complete before audit redirect
     
-    # Future: Row reduction (set to True to write only exceptions to AuditRuns2)
+    # Row reduction: Only write exceptions to AuditRuns2 (skip matched rows)
+    # SharePoint lists for exception tracking/querying, CSV has complete data
     write_exceptions_only: bool = field(default_factory=lambda: os.getenv('SHAREPOINT_WRITE_EXCEPTIONS_ONLY', 'false').lower() == 'true')
 
 

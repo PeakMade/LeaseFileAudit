@@ -38,7 +38,7 @@ def _banner(text: str):
 
 # ── List names to wipe ──────────────────────────────────────────────────────
 LISTS_TO_CLEAN = [
-    "AuditRuns2",
+    # "AuditRuns2",  # Excluded - user wants to keep this
     "RunDisplaySnapshots",
     "LeaseTermSet",
     "LeaseTerms",
