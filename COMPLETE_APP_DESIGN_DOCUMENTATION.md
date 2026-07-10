@@ -13,6 +13,34 @@ This document provides comprehensive documentation of all screens, functionality
 5. [Data Model & IDs](#data-model--ids)
 6. [Resolution System](#resolution-system)
 7. [UI Components Library](#ui-components-library)
+8. [Entrata API Error Handling](#entrata-api-error-handling)
+9. [Data Storage Architecture](#data-storage-architecture)
+
+---
+
+## Quick Reference: Common Issues
+
+### ❌ "403 Forbidden - App doesn't have permission to the property"
+**Problem**: Property audit returns Entrata API error code 311  
+**Cause**: Property ID belongs to different environment (Production vs Sandbox)  
+**Fix**: Go to Settings → Switch Entrata environment, OR use a property ID from current environment  
+**Details**: [Entrata API Error Handling](#entrata-api-error-handling)
+
+### ❌ Property not showing in picklist
+**Cause**: Property excluded in `excluded_properties.json`, OR wrong environment  
+**Fix**: Check Settings → Exclusion Configuration, OR toggle environment  
+
+### ❌ Audit taking too long
+**Cause**: Large property with many leases, SharePoint throttling  
+**Fix**: Enable `SHAREPOINT_WRITE_EXCEPTIONS_ONLY=true` to skip MATCHED rows  
+
+### ❌ Resident names showing as "—"
+**Cause**: CUSTOMER_NAME field missing in source data  
+**Fix**: Ensure Excel upload includes resident name column, OR API returns CustomerName  
+
+### ❌ SharePoint connection failing
+**Cause**: Azure AD token expired, credentials invalid  
+**Fix**: Refresh credentials, check SHAREPOINT_CLIENT_ID/TENANT_ID in `.env`
 
 ---
 
@@ -879,6 +907,23 @@ Form (inline):
 
 **POST to**: `/settings` with `entrata_environment=prod|sandbox`
 
+**Critical Use Case - Permission Errors**:
+```
+Problem: Property audit returns 403 Forbidden "App doesn't have permission"
+Root Cause: Property ID belongs to different environment than current setting
+Solution: Toggle to correct environment in Settings
+
+Example:
+- Property 9601 (sandbox) + Production environment = ❌ 403 Error
+- Property 9601 (sandbox) + Sandbox environment = ✅ Success
+```
+
+**Implementation Details**: See [Entrata API Error Handling](#entrata-api-error-handling) section for complete code examples of:
+- Environment toggle backend logic
+- Property access validation
+- User-friendly error messages
+- Auto-detection of property environment
+
 #### B) Exclusion Configuration Card
 
 **Card Header**: "Exclusion Configuration" with sliders icon
@@ -1687,6 +1732,461 @@ flash('Info message', 'info')  # Blue alert
 - 400: Bad request (validation error)
 - 404: Resource not found
 - 500: Server error
+
+---
+
+### Entrata API Error Handling
+
+#### 🚀 Quick Implementation Guide
+
+**Problem**: Property 9601 returns `403 Forbidden` with error code 311  
+**Solution**: Implement environment toggle to switch between Production and Sandbox Entrata APIs
+
+**3-Step Implementation**:
+
+1. **Add environment configuration** (`.env` file):
+   ```env
+   # Production Entrata credentials
+   ENTRATA_USERNAME_PROD=your_prod_username
+   ENTRATA_PASSWORD_PROD=your_prod_password
+   ENTRATA_ORG_PROD=peakmade
+   
+   # Sandbox Entrata credentials
+   ENTRATA_USERNAME_SANDBOX=your_sandbox_username
+   ENTRATA_PASSWORD_SANDBOX=your_sandbox_password
+   ENTRATA_ORG_SANDBOX=peakmade-test-17291
+   
+   # Default environment
+   ENTRATA_DEFAULT_ENVIRONMENT=sandbox
+   ```
+
+2. **Store environment in session** (Flask session):
+   ```python
+   from flask import session
+   
+   def get_current_entrata_environment():
+       return session.get('entrata_environment', 'sandbox')
+   
+   def set_entrata_environment(env_name):
+       session['entrata_environment'] = env_name
+   ```
+
+3. **Add toggle button in Settings UI**:
+   ```html
+   <button type="submit" name="entrata_environment" value="production">
+       Switch to Production
+   </button>
+   ```
+
+**When to use each environment**:
+- **Sandbox**: Test properties (e.g., 9601), development, QA testing
+- **Production**: Real properties (e.g., 771903), live audits, actual data
+
+**Error detection**: Catch Entrata error code 311 → show user-friendly message suggesting environment switch
+
+---
+
+#### Common Entrata API Errors
+
+**403 Forbidden - Permission Denied**:
+```json
+{
+    "response": {
+        "code": 311,
+        "result": "error",
+        "message": "App doesn't have permission to the property."
+    }
+}
+```
+
+**Cause**: Property ID belongs to different environment (production property with sandbox credentials, or vice versa)
+
+**401 Unauthorized**:
+```json
+{
+    "response": {
+        "code": 401,
+        "result": "error",
+        "message": "Invalid credentials"
+    }
+}
+```
+
+**Cause**: Username/password incorrect or API key expired
+
+**Other Error Codes**:
+- **400**: Invalid request format or missing required fields
+- **404**: Property/lease not found
+- **429**: Rate limit exceeded (too many requests)
+- **500**: Entrata internal server error
+
+---
+
+#### Error Handling Flow
+
+```
+User submits Property Audit with Property ID 9601
+                    ↓
+         Call Entrata API
+                    ↓
+         ┌──────────────────┐
+         │ Response Status? │
+         └──────────────────┘
+                 ↓
+         ┌───────┴───────┐
+         ↓               ↓
+      200 OK          403 Forbidden
+         ↓               ↓
+   Run audit       Check error code
+         ↓               ↓
+   Show results    Code 311?
+                        ↓
+                    ┌───┴───┐
+                    ↓       ↓
+                  Yes      No
+                    ↓       ↓
+              Permission  Other
+               Denied     Error
+                    ↓
+         ┌───────────────────────────┐
+         │ Show User-Friendly Error: │
+         │                           │
+         │ Property 9601 not         │
+         │ accessible in Production  │
+         │                           │
+         │ Fix options:              │
+         │ 1. Switch to Sandbox      │
+         │ 2. Use prod property ID   │
+         └───────────────────────────┘
+                    ↓
+         User clicks "Switch to Sandbox"
+                    ↓
+         Settings page opens
+                    ↓
+         User clicks toggle button
+                    ↓
+         session['entrata_environment'] = 'sandbox'
+                    ↓
+         Redirect to home page
+                    ↓
+         User retries same property
+                    ↓
+         API call succeeds with sandbox credentials
+                    ↓
+         ✅ Audit runs successfully
+```
+
+---
+
+#### Implementing Environment Toggle (Production ↔ Sandbox)
+
+**Backend Configuration**:
+```python
+# config.py
+ENTRATA_ENVIRONMENTS = {
+    'production': {
+        'base_url': 'https://peakmade.entrata.com/api/v1',
+        'org_name': 'peakmade',
+        'username': os.getenv('ENTRATA_USERNAME_PROD'),
+        'password': os.getenv('ENTRATA_PASSWORD_PROD'),
+        'display_name': 'Production'
+    },
+    'sandbox': {
+        'base_url': 'https://peakmade-test-17291.entrata.com/api/v1',
+        'org_name': 'peakmade-test-17291',
+        'username': os.getenv('ENTRATA_USERNAME_SANDBOX'),
+        'password': os.getenv('ENTRATA_PASSWORD_SANDBOX'),
+        'display_name': 'Sandbox (Test)'
+    }
+}
+
+# Default environment (stored in session or database)
+ENTRATA_DEFAULT_ENVIRONMENT = 'sandbox'
+```
+
+**Session Storage**:
+```python
+# Store user's environment preference in Flask session
+from flask import session
+
+def get_current_entrata_environment():
+    """Get current Entrata environment from session."""
+    return session.get('entrata_environment', ENTRATA_DEFAULT_ENVIRONMENT)
+
+def set_entrata_environment(env_name):
+    """Switch Entrata environment."""
+    if env_name not in ENTRATA_ENVIRONMENTS:
+        raise ValueError(f"Invalid environment: {env_name}")
+    session['entrata_environment'] = env_name
+    return ENTRATA_ENVIRONMENTS[env_name]
+```
+
+**Settings Route (Toggle Environment)**:
+```python
+# web/views.py
+@app.route('/settings', methods=['GET', 'POST'])
+def settings():
+    if request.method == 'POST':
+        new_env = request.form.get('entrata_environment')
+        
+        if new_env in ['production', 'sandbox']:
+            set_entrata_environment(new_env)
+            flash(f'Switched to {new_env.title()} environment', 'success')
+            
+            # Clear cached property picklist (different properties per environment)
+            cache.delete_memoized(load_entrata_property_picklist)
+        else:
+            flash('Invalid environment selection', 'danger')
+        
+        return redirect(url_for('settings'))
+    
+    current_env = get_current_entrata_environment()
+    env_config = ENTRATA_ENVIRONMENTS[current_env]
+    
+    return render_template('settings.html',
+                           current_env=current_env,
+                           env_config=env_config,
+                           available_environments=ENTRATA_ENVIRONMENTS)
+```
+
+**Settings Template (HTML)**:
+```html
+<!-- templates/settings.html -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <div>
+            <i class="fas fa-exchange-alt me-2"></i>Entrata API Environment
+        </div>
+        <span class="badge {{ 'bg-success' if current_env == 'production' else 'bg-warning text-dark' }}">
+            {{ env_config.display_name }}
+        </span>
+    </div>
+    <div class="card-body">
+        <p class="text-muted">
+            Switch between Production and Sandbox Entrata environments. 
+            All API calls will use the selected environment's credentials and property access.
+        </p>
+        
+        <form method="POST" class="d-inline-flex align-items-center gap-3">
+            {% if current_env == 'sandbox' %}
+                <button type="submit" name="entrata_environment" value="production" 
+                        class="btn btn-success">
+                    <i class="fas fa-rocket me-2"></i>Switch to Production
+                </button>
+                <span class="text-muted">Currently using: {{ env_config.org_name }}</span>
+            {% else %}
+                <button type="submit" name="entrata_environment" value="sandbox" 
+                        class="btn btn-warning">
+                    <i class="fas fa-flask me-2"></i>Switch to Sandbox
+                </button>
+                <span class="text-muted">Currently using: {{ env_config.org_name }}</span>
+            {% endif %}
+        </form>
+    </div>
+</div>
+```
+
+---
+
+#### Property Access Validation
+
+**Pre-Flight Property Check** (Optional):
+```python
+def validate_property_access(property_id):
+    """
+    Verify app has permission to access property before running audit.
+    Returns (is_accessible, error_message).
+    """
+    current_env = get_current_entrata_environment()
+    env_config = ENTRATA_ENVIRONMENTS[current_env]
+    
+    try:
+        # Call Entrata API to fetch property details
+        response = call_entrata_api(
+            endpoint='/properties',
+            method='getProperty',
+            params={'PropertyID': property_id}
+        )
+        
+        if response.get('response', {}).get('code') == 311:
+            return False, (
+                f"Property {property_id} is not accessible in {env_config['display_name']} environment. "
+                f"Try switching to {'Sandbox' if current_env == 'production' else 'Production'} in Settings."
+            )
+        
+        return True, None
+    
+    except Exception as e:
+        return False, f"Unable to validate property access: {str(e)}"
+```
+
+**Property Audit Route with Validation**:
+```python
+@app.route('/upload-api-property', methods=['POST'])
+def upload_api_property():
+    property_id = request.form.get('api_property_id')
+    
+    # Validate property access before starting audit
+    is_accessible, error_msg = validate_property_access(property_id)
+    
+    if not is_accessible:
+        flash(error_msg, 'danger')
+        return redirect(url_for('index'))
+    
+    # Proceed with audit
+    run_id = run_property_audit(property_id, from_date, to_date)
+    return redirect(url_for('property_view', property_id=property_id, run_id=run_id))
+```
+
+---
+
+#### User-Friendly Error Messages
+
+**403 Permission Error**:
+```python
+if response.get('response', {}).get('code') == 311:
+    current_env = get_current_entrata_environment()
+    env_display = ENTRATA_ENVIRONMENTS[current_env]['display_name']
+    other_env = 'Sandbox' if current_env == 'production' else 'Production'
+    
+    error_html = f"""
+    <div class="alert alert-danger">
+        <h5><i class="fas fa-lock me-2"></i>Property Access Denied</h5>
+        <p>
+            Property <strong>{property_id}</strong> is not accessible in 
+            <strong>{env_display}</strong> environment.
+        </p>
+        <p class="mb-0">
+            <strong>To fix this:</strong>
+        </p>
+        <ol>
+            <li>
+                <strong>Use a property ID that exists in {env_display}</strong>, OR
+            </li>
+            <li>
+                <strong><a href="{{ url_for('settings') }}">Switch to {other_env} environment</a></strong> 
+                if this property belongs to {other_env}.
+            </li>
+        </ol>
+    </div>
+    """
+    flash(Markup(error_html), 'danger')
+```
+
+**Property Picklist Filtering** (Only show accessible properties):
+```python
+def load_entrata_property_picklist():
+    """Load property list from Entrata API."""
+    current_env = get_current_entrata_environment()
+    env_config = ENTRATA_ENVIRONMENTS[current_env]
+    
+    response = call_entrata_api(endpoint='/properties', method='getProperties')
+    
+    properties = response.get('response', {}).get('result', {}).get('PhysicalProperty', {}).get('Property', [])
+    
+    # Filter out properties without permission (optional)
+    accessible_properties = []
+    for prop in properties:
+        property_id = prop.get('PropertyID')
+        # Optionally validate each property (can be slow)
+        # is_accessible, _ = validate_property_access(property_id)
+        # if is_accessible:
+        accessible_properties.append({
+            'id': property_id,
+            'name': prop.get('Name'),
+            'code': prop.get('Code')
+        })
+    
+    return accessible_properties
+```
+
+---
+
+#### Environment Indicator (Visible on All Pages)
+
+**Add to Base Template Header**:
+```html
+<!-- templates/base.html -->
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center py-2">
+        <div>
+            <!-- App title/logo -->
+        </div>
+        <div class="d-flex align-items-center gap-3">
+            <!-- Entrata Environment Badge -->
+            <div class="badge {{ 'bg-success' if current_env == 'production' else 'bg-warning text-dark' }} fs-6">
+                <i class="fas fa-server me-1"></i>
+                Entrata: {{ env_config.display_name }}
+            </div>
+            
+            <!-- User info -->
+            <div class="text-end small">
+                <strong>{{ user.name }}</strong><br>
+                <span class="text-muted">{{ user.email }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+```
+
+**Pass Environment to All Templates**:
+```python
+# app.py or extensions.py
+@app.context_processor
+def inject_entrata_environment():
+    """Make Entrata environment available to all templates."""
+    current_env = get_current_entrata_environment()
+    return {
+        'current_env': current_env,
+        'env_config': ENTRATA_ENVIRONMENTS[current_env]
+    }
+```
+
+---
+
+#### Testing Environment Switching
+
+**Test Cases**:
+1. **Production Property in Production Environment**: ✅ Works
+2. **Production Property in Sandbox Environment**: ❌ 403 Error (expected)
+3. **Sandbox Property in Sandbox Environment**: ✅ Works
+4. **Sandbox Property in Production Environment**: ❌ 403 Error (expected)
+
+**Example Property IDs**:
+```python
+# Document which properties belong to which environment
+KNOWN_PROPERTY_IDS = {
+    'production': [771903, 1150907, 1150908],  # Real production properties
+    'sandbox': [9601, 9602, 12345]             # Sandbox test properties
+}
+```
+
+**Environment Auto-Detection** (Advanced):
+```python
+def detect_property_environment(property_id):
+    """
+    Attempt to determine which environment a property belongs to.
+    Returns 'production', 'sandbox', or None if unknown.
+    """
+    # Try production first
+    session['entrata_environment'] = 'production'
+    is_prod_accessible, _ = validate_property_access(property_id)
+    
+    if is_prod_accessible:
+        return 'production'
+    
+    # Try sandbox
+    session['entrata_environment'] = 'sandbox'
+    is_sandbox_accessible, _ = validate_property_access(property_id)
+    
+    if is_sandbox_accessible:
+        return 'sandbox'
+    
+    # Property not accessible in either environment
+    return None
+```
+
+---
 
 ### Performance Optimizations
 

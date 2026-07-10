@@ -20,7 +20,13 @@ try:
 except Exception:
     pass
 
-# Configure logging
+# Configure logging with UTF-8 encoding for Windows compatibility
+import sys
+if sys.platform == 'win32':
+    # Force UTF-8 encoding for stdout/stderr to handle emoji in logs
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
