@@ -805,21 +805,31 @@ storage.upsert_exception_month_to_sharepoint_list({
 - `finding` rows map to: `finding_id`, `run_id`, `property_id`, `lease_interval_id`, `ar_code_id`, `audit_month`, `category`, `severity`, `title`, `description`, `expected_value`, `actual_value`, `variance`, `impact_amount`.
 
 #### 5. RunDisplaySnapshots
-**Purpose**: Persist static, precomputed display totals/counts for portfolio/property/lease scopes so UI can load without recalculating from detail rows.
+**Purpose**: Persist static, precomputed display totals/counts for portfolio/property/lease scopes so UI can load without recalculating from detail rows. Also stores exception-level (month-granular) snapshots used as the primary data source for bucket results and findings.
 
 **Required Columns (with SharePoint type)**:
 - `Title` — **Single line of text**
 - `SnapshotKey` — **Single line of text**
 - `RunId` — **Single line of text**
-- `ScopeType` — **Choice** (values: `portfolio`, `property`, `lease`)
-- `PropertyId` — **Number** *(required for property/lease rows)*
-- `LeaseIntervalId` — **Number** *(required for lease rows)*
+- `ScopeType` — **Choice** (values: `portfolio`, `property`, `lease`, `month`, `exception`)
+- `PropertyId` — **Number** *(required for property/lease/exception rows)*
+- `LeaseIntervalId` — **Number** *(required for lease/exception rows)*
+- `LeaseId` — **Number** *(optional, for exception rows)*
+- `ArCodeId` — **Single line of text** *(required for exception rows)*
+- `ArCodeName` — **Single line of text** *(optional, for exception rows)*
+- `AuditMonth` — **Single line of text** *(required for exception rows)*
+- `Status` — **Single line of text** *(required for exception rows)*
+- `ResidentName` — **Single line of text** *(optional, for exception rows)*
+- `PropertyNameStatic` — **Single line of text** *(optional)*
 - `ExceptionCountStatic` — **Number**
 - `UnderchargeStatic` — **Number**
 - `OverchargeStatic` — **Number**
 - `MatchRateStatic` — **Number**
 - `TotalBucketsStatic` — **Number**
 - `MatchedBucketsStatic` — **Number**
+- `ExpectedTotal` — **Number** *(required for exception rows)*
+- `ActualTotal` — **Number** *(required for exception rows)*
+- `Variance` — **Number** *(required for exception rows)*
 - `CreatedAt` — **Date and Time**
 
 **Indexing required**:
@@ -838,6 +848,12 @@ storage.upsert_exception_month_to_sharepoint_list({
 - Resolution status visibility remains driven by `ExceptionMonths`.
 - Portfolio/Property/Lease headers prefer `RunDisplaySnapshots`; if a row is missing, routes fall back to in-memory recalculation.
 - Debug logs use tags: `[SNAPSHOT][PORTFOLIO]`, `[SNAPSHOT][PROPERTY]`, `[SNAPSHOT][LEASE]` to show snapshot usage vs fallback.
+- **Exception-level snapshots** (`ScopeType='exception'`) are now the **primary data source** for bucket results and findings:
+  - `load_bucket_results()` in `storage/service.py` calls `load_exception_snapshots_as_bucket_results()` which reads exception-level rows from RunDisplaySnapshots
+  - This bypasses AuditRuns2 completely, loading individual month/AR code/lease exceptions directly
+  - Falls back to CSV only if exception snapshots are unavailable
+  - Exception-level data provides granular lease-level detail with LEASE_ID and CUSTOMER_NAME fields
+  - Read source logs show `source=exception_snapshots reason=primary_source` for successful loads
 
 **AuditRuns read-path cutover**:
 - Portfolio and Property routes now load bucket/finding result sets from `AuditRuns` (with CSV fallback), instead of relying on full `load_run()` for core result queries.
@@ -1863,6 +1879,7 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **Support**: BaseCamp Apps site in SharePoint
 
 ### Change Log
+- **2026-07-14**: Changed primary data source from AuditRuns2 to RunDisplaySnapshots exception-level snapshots in `storage/service.py`: `load_bucket_results()` and `load_findings()` now call `load_exception_snapshots_as_bucket_results()` which directly queries exception-scope (`ScopeType='exception'`) rows from RunDisplaySnapshots; completely bypasses AuditRuns2 list reads; provides more granular lease-level detail with LEASE_ID and CUSTOMER_NAME fields; CSV fallback remains if exception snapshots unavailable; added missing `CanonicalField` import to support exception snapshot field mapping; findings are derived by filtering exception snapshots for variance != 0; read source logs now show `source=exception_snapshots reason=primary_source`
 - **2026-03-24**: Added explicit SharePoint batch-configuration diagnostics in `storage/service.py`: startup log prints configured `SHAREPOINT_BATCH_SIZE_AUDITRUNS`/`SHAREPOINT_BATCH_SIZE_SNAPSHOTS`/`SHAREPOINT_BATCH_SIZE`, and each batched list write now logs `[STORAGE][BATCH CONFIG]` with context, row count, effective batch size, and source (`env` vs default)
 - **2026-03-23**: Added portfolio route read-source summary logging in `web/views.py` so each portfolio request emits `[READ SUMMARY][PORTFOLIO_VIEW] ... snapshot_source=latest_property_snapshots_across_runs|run_scoped_snapshots ...` for quick source-path visibility alongside property/lease summaries
 - **2026-03-23**: Added route-level read-source summary logging in `web/views.py` so each property/lease page request emits one compact line indicating data source usage for display loads: `[READ SUMMARY][PROPERTY_VIEW] ... bucket_source=... findings_source=...` and `[READ SUMMARY][LEASE_VIEW] ... bucket_source=...`; also preserved DataFrame source metadata through bucket normalization helper for reliable summaries
