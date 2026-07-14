@@ -20,6 +20,7 @@ from requests.adapters import HTTPAdapter
 from time import perf_counter, sleep
 from urllib.parse import unquote
 from activity_logging.sharepoint import _get_app_only_token
+from audit_engine.canonical_fields import CanonicalField
 
 logger = logging.getLogger(__name__)
 
@@ -551,9 +552,24 @@ class StorageService:
             actual_values = pd.to_numeric(exception_rows[actual_column], errors='coerce').fillna(0)
             undercharge = float((expected_values - actual_values).clip(lower=0).sum())
             overcharge = float((actual_values - expected_values).clip(lower=0).sum())
+            
+            # Diagnostic logging for variance calculations
+            print(f"\n[SNAPSHOT_METRICS_DEBUG] Calculating static metrics:")
+            print(f"[SNAPSHOT_METRICS_DEBUG]   Total rows: {total_buckets}, Exception rows: {len(exception_rows)}")
+            print(f"[SNAPSHOT_METRICS_DEBUG]   Expected sum: ${expected_values.sum():,.2f}, Actual sum: ${actual_values.sum():,.2f}")
+            print(f"[SNAPSHOT_METRICS_DEBUG]   Undercharge: ${undercharge:,.2f} (expected - actual, positive only)")
+            print(f"[SNAPSHOT_METRICS_DEBUG]   Overcharge: ${overcharge:,.2f} (actual - expected, positive only)")
+            if len(exception_rows) > 0 and len(exception_rows) <= 5:
+                print(f"[SNAPSHOT_METRICS_DEBUG]   Sample exception rows:")
+                for idx, row in exception_rows.head(5).iterrows():
+                    exp = row.get(expected_column, 0)
+                    act = row.get(actual_column, 0)
+                    stat = row.get(status_column, 'UNKNOWN')
+                    print(f"[SNAPSHOT_METRICS_DEBUG]     Status={stat}, Expected=${exp:,.2f}, Actual=${act:,.2f}, Diff=${act-exp:,.2f}")
         else:
             undercharge = 0.0
             overcharge = 0.0
+            print(f"[SNAPSHOT_METRICS_DEBUG] No exception rows or missing columns: exception_rows={len(exception_rows) if 'exception_rows' in locals() else 0}")
 
         match_rate = float((matched_buckets / total_buckets) * 100) if total_buckets > 0 else 0.0
 
@@ -818,6 +834,11 @@ class StorageService:
             resident_name = None
             lease_id_value = None
             if scope_type == 'lease' and lease_interval_id_int is not None:
+                # DEBUG: Log what columns we have available
+                if full_bucket_results is not None and not full_bucket_results.empty:
+                    print(f"[SNAPSHOT_DEBUG] full_bucket_results columns: {list(full_bucket_results.columns)[:20]}")
+                    print(f"[SNAPSHOT_DEBUG] Looking for lease_interval_id={lease_interval_id_int}")
+                
                 # Try to get resident name from expected_detail or actual_detail
                 for source_df in [expected_detail, actual_detail]:
                     if source_df is not None and not source_df.empty:
@@ -843,6 +864,34 @@ class StorageService:
                                     lease_id_value = int(lease_ids.iloc[0])
                                     if resident_name:
                                         break
+                
+                # Fallback: try full_bucket_results for resident_name and lease_id
+                # This is critical when exceptions-only mode is enabled - matched buckets
+                # won't be in expected/actual detail, but are still in full_bucket_results
+                if (not resident_name or not lease_id_value) and full_bucket_results is not None and not full_bucket_results.empty:
+                    lid_col = 'LEASE_INTERVAL_ID' if 'LEASE_INTERVAL_ID' in full_bucket_results.columns else 'lease_interval_id'
+                    cust_col = 'CUSTOMER_NAME' if 'CUSTOMER_NAME' in full_bucket_results.columns else 'customer_name'
+                    lease_id_col = 'LEASE_ID' if 'LEASE_ID' in full_bucket_results.columns else 'lease_id'
+                    
+                    if lid_col in full_bucket_results.columns:
+                        lease_rows = full_bucket_results[pd.to_numeric(full_bucket_results[lid_col], errors='coerce') == lease_interval_id_int]
+                        if not lease_rows.empty:
+                            # Get resident name
+                            if not resident_name and cust_col in full_bucket_results.columns:
+                                names = lease_rows[cust_col].dropna().astype(str).str.strip()
+                                names = names[names != '']
+                                if not names.empty:
+                                    resident_name = names.iloc[0]
+                            
+                            # Get lease ID (parent)
+                            if not lease_id_value and lease_id_col in full_bucket_results.columns:
+                                lease_ids = pd.to_numeric(lease_rows[lease_id_col], errors='coerce').dropna()
+                                if not lease_ids.empty:
+                                    lease_id_value = int(lease_ids.iloc[0])
+
+            # DEBUG: Log what we extracted for this lease snapshot
+            if scope_type == 'lease' and lease_interval_id_int is not None:
+                print(f"[SNAPSHOT_DEBUG] Lease {lease_interval_id_int}: resident_name='{resident_name}', lease_id={lease_id_value}")
 
             snapshot_key = f"{run_id}:{scope_type}"
             title = f"{scope_type}:{run_id}"
@@ -907,12 +956,19 @@ class StorageService:
             if audit_month_str is not None:
                 row_payload['AuditMonth'] = audit_month_str
             
-            # Include ResidentName and LeaseId for lease-level snapshots
+            # Include ResidentName and LeaseId for lease-level snapshots (only if fields exist)
             if scope_type == 'lease':
-                if resident_name:
-                    row_payload['ResidentName'] = resident_name
-                if lease_id_value:
-                    row_payload['LeaseId'] = lease_id_value
+                resident_name_field = optional_field_names.get('resident_name')
+                lease_id_field = optional_field_names.get('lease_id')
+                # DEBUG: Log field resolution and values
+                print(f"[SNAPSHOT_DEBUG] Lease {lease_interval_id_int}: optional_field_names={optional_field_names}")
+                print(f"[SNAPSHOT_DEBUG] resident_name_field='{resident_name_field}', lease_id_field='{lease_id_field}'")
+                if resident_name_field and resident_name:
+                    row_payload[resident_name_field] = resident_name
+                    print(f"[SNAPSHOT_DEBUG] Added {resident_name_field}='{resident_name}' to snapshot")
+                if lease_id_field and lease_id_value:
+                    row_payload[lease_id_field] = lease_id_value
+                    print(f"[SNAPSHOT_DEBUG] Added {lease_id_field}={lease_id_value} to snapshot")
             
             if run_scope_type_field:
                 row_payload[run_scope_type_field] = run_scope_type or ''
@@ -931,12 +987,12 @@ class StorageService:
                 else:
                     row_payload[total_lease_intervals_field] = 0
 
-            # For ar_code and month scopes, add bucket detail fields if available
-            if scope_type in ('ar_code', 'month') and len(subset) > 0:
-                # For month scope, we should have exactly 1 row (the bucket)
-                # For ar_code scope, we aggregate but can still include representative values
+            # For exception scope, add bucket detail fields (AR code, month, expected, actual, variance, status)
+            if scope_type == 'exception' and len(subset) > 0:
+                # Exception scope should have exactly 1 row (one lease × AR code × month)
                 first_row = subset.iloc[0]
                 
+                # Add status
                 status_field = optional_field_names.get('status')
                 if status_field:
                     if 'STATUS' in subset.columns:
@@ -944,6 +1000,7 @@ class StorageService:
                     elif 'status' in subset.columns:
                         row_payload[status_field] = str(first_row.get('status', ''))
                     
+                # Add AR code name
                 ar_code_name_field = optional_field_names.get('ar_code_name')
                 if ar_code_name_field:
                     if 'AR_CODE_NAME' in subset.columns:
@@ -951,6 +1008,7 @@ class StorageService:
                     elif 'ar_code_name' in subset.columns:
                         row_payload[ar_code_name_field] = str(first_row.get('ar_code_name', ''))
                     
+                # Add expected total
                 expected_total_field = optional_field_names.get('expected_total')
                 if expected_total_field:
                     if 'EXPECTED_TOTAL' in subset.columns:
@@ -960,6 +1018,7 @@ class StorageService:
                         expected_sum = float(subset['expected_total'].sum())
                         row_payload[expected_total_field] = expected_sum
                     
+                # Add actual total
                 actual_total_field = optional_field_names.get('actual_total')
                 if actual_total_field:
                     if 'ACTUAL_TOTAL' in subset.columns:
@@ -969,6 +1028,7 @@ class StorageService:
                         actual_sum = float(subset['actual_total'].sum())
                         row_payload[actual_total_field] = actual_sum
                     
+                # Add variance
                 variance_field = optional_field_names.get('variance')
                 if variance_field:
                     if 'VARIANCE' in subset.columns:
@@ -977,6 +1037,30 @@ class StorageService:
                     elif 'variance' in subset.columns:
                         variance_sum = float(subset['variance'].sum())
                         row_payload[variance_field] = variance_sum
+                
+                # Add resident name and lease ID for exception rows (from first_row or fallback)
+                resident_name = None
+                lease_id_value = None
+                
+                # Extract from bucket row if available
+                if 'CUSTOMER_NAME' in subset.columns:
+                    names = subset['CUSTOMER_NAME'].dropna().astype(str).str.strip()
+                    names = names[names != '']
+                    if not names.empty:
+                        resident_name = names.iloc[0]
+                
+                if 'LEASE_ID' in subset.columns:
+                    lease_ids = pd.to_numeric(subset['LEASE_ID'], errors='coerce').dropna()
+                    if not lease_ids.empty:
+                        lease_id_value = int(lease_ids.iloc[0])
+                
+                # Add to payload if available
+                resident_name_field = optional_field_names.get('resident_name')
+                lease_id_field = optional_field_names.get('lease_id')
+                if resident_name_field and resident_name:
+                    row_payload[resident_name_field] = resident_name
+                if lease_id_field and lease_id_value:
+                    row_payload[lease_id_field] = lease_id_value
 
             return row_payload
 
@@ -988,39 +1072,21 @@ class StorageService:
             for property_id, property_df in bucket_results.groupby(property_column, dropna=False):
                 rows.append(_make_row('property', property_df, property_id=property_id))
 
-                # Lease-level snapshots nested by property
+                # Exception-level snapshots (one row per lease × AR code × month)
+                # This replaces the old lease-level summary approach
                 if lease_column in property_df.columns:
                     for lease_interval_id, lease_df in property_df.groupby(lease_column, dropna=False):
-                        rows.append(
-                            _make_row(
-                                'lease',
-                                lease_df,
-                                property_id=property_id,
-                                lease_interval_id=lease_interval_id,
-                            )
-                        )
-
-                        # AR Code-level snapshots nested by lease
+                        # Write exception-level rows directly (skip lease summary)
                         ar_code_column = 'AR_CODE_ID' if 'AR_CODE_ID' in lease_df.columns else 'ar_code_id'
                         if ar_code_column in lease_df.columns:
                             for ar_code_id, ar_code_df in lease_df.groupby(ar_code_column, dropna=False):
-                                rows.append(
-                                    _make_row(
-                                        'ar_code',
-                                        ar_code_df,
-                                        property_id=property_id,
-                                        lease_interval_id=lease_interval_id,
-                                        ar_code_id=ar_code_id,
-                                    )
-                                )
-
-                                # Month-level snapshots nested by AR code
+                                # Exception-level rows (one per month)
                                 month_column = 'AUDIT_MONTH' if 'AUDIT_MONTH' in ar_code_df.columns else 'audit_month'
                                 if month_column in ar_code_df.columns:
                                     for audit_month, month_df in ar_code_df.groupby(month_column, dropna=False):
                                         rows.append(
                                             _make_row(
-                                                'month',
+                                                'exception',  # Changed from 'month' to 'exception'
                                                 month_df,
                                                 property_id=property_id,
                                                 lease_interval_id=lease_interval_id,
@@ -1992,6 +2058,92 @@ class StorageService:
             )
             return {}
 
+    def load_exception_snapshots_as_bucket_results(
+        self,
+        run_id: str,
+        property_id: int = None,
+        lease_interval_id: int = None,
+    ) -> pd.DataFrame:
+        """Load exception-level snapshots from RunDisplaySnapshots and convert to bucket_results DataFrame format."""
+        if not self._can_use_sharepoint_lists():
+            return pd.DataFrame()  # Force sync
+
+        try:
+            site_id = self._get_site_id()
+            if not site_id:
+                return pd.DataFrame()
+
+            list_id = self._get_run_display_snapshots_list_id()
+            if not list_id:
+                return pd.DataFrame()
+
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly'
+            }
+            items_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
+            
+            # Build filter for exception-level snapshots
+            filter_parts = [f"fields/RunId eq '{run_id}'", "fields/ScopeType eq 'exception'"]
+            if property_id is not None:
+                filter_parts.append(f"fields/PropertyId eq {int(property_id)}")
+            if lease_interval_id is not None:
+                filter_parts.append(f"fields/LeaseIntervalId eq {int(lease_interval_id)}")
+            
+            params = {
+                '$expand': 'fields',
+                '$filter': ' and '.join(filter_parts),
+                '$top': 5000
+            }
+
+            response = requests.get(items_url, headers=headers, params=params, timeout=60)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[STORAGE] Failed loading exception snapshots: {response.status_code} - {response.text}"
+                )
+                return pd.DataFrame()
+
+            # Convert exception rows to DataFrame matching bucket_results format
+            rows = []
+            for item in response.json().get('value', []):
+                fields = item.get('fields', {})
+                
+                row = {
+                    CanonicalField.PROPERTY_ID.value: self._safe_int(fields.get('PropertyId')),
+                    CanonicalField.PROPERTY_NAME.value: self._safe_field_value(fields.get('PropertyNameStatic')),
+                    CanonicalField.LEASE_INTERVAL_ID.value: self._safe_int(fields.get('LeaseIntervalId')),
+                    CanonicalField.AR_CODE_ID.value: self._safe_field_value(fields.get('ArCodeId')),
+                    'AR_CODE_NAME': self._safe_field_value(fields.get('ArCodeName')),
+                    CanonicalField.AUDIT_MONTH.value: self._safe_field_value(fields.get('AuditMonth')),
+                    CanonicalField.STATUS.value: self._safe_field_value(fields.get('Status')),
+                    CanonicalField.EXPECTED_TOTAL.value: float(self._safe_field_value(fields.get('ExpectedTotal')) or 0),
+                    CanonicalField.ACTUAL_TOTAL.value: float(self._safe_field_value(fields.get('ActualTotal')) or 0),
+                    CanonicalField.VARIANCE.value: float(self._safe_field_value(fields.get('Variance')) or 0),
+                    'CUSTOMER_NAME': self._safe_field_value(fields.get('ResidentName')),
+                    'LEASE_ID': self._safe_int(fields.get('LeaseId')),
+                }
+                rows.append(row)
+
+            df = pd.DataFrame(rows)
+            logger.info(
+                f"[STORAGE] ✅ Loaded {len(df)} exception snapshots as bucket_results for run={run_id}, "
+                f"property_id={property_id}, lease_interval_id={lease_interval_id}"
+            )
+            
+            # Mark as snapshot-sourced for debugging
+            if not df.empty:
+                df.attrs['_read_source'] = 'RunDisplaySnapshots_exception_scope'
+                df.attrs['_read_reason'] = 'exception_level_snapshots'
+            
+            return df
+        except Exception as e:
+            logger.error(
+                f"[STORAGE] Error loading exception snapshots as bucket_results: {e}",
+                exc_info=True
+            )
+            return pd.DataFrame()
+
     def load_run_display_snapshots_for_run(
         self,
         run_id: str,
@@ -2808,12 +2960,11 @@ class StorageService:
                     
                     return df
         
-        # Not in memory cache - log and return None to trigger CSV fallback
+        # Not in memory cache - try SharePoint AuditRuns2 list
         logger.info(
             f"[STORAGE] Results not in memory cache for run={run_id}, type={result_type}. "
-            "Will use CSV fallback."
+            "Attempting to load from SharePoint AuditRuns2 list..."
         )
-        return None
         
         logger.info(f"[AUDITRUNS2_DEBUG] Starting _load_results_from_sharepoint_list for run={run_id}, type={result_type}")
         
@@ -3039,34 +3190,18 @@ class StorageService:
         property_id: Optional[int] = None,
         lease_interval_id: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Load bucket results from SharePoint list (primary) with snapshot then CSV fallback."""
+        """Load bucket results from RunDisplaySnapshots exception-level with CSV fallback."""
         scope = f"run={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}"
         
-        # Try SharePoint AuditRuns2 list first (if available)
-        list_results = self._load_results_from_sharepoint_list(run_id, 'bucket_result',
-                                                                property_id=property_id,
-                                                                lease_interval_id=lease_interval_id)
-        if list_results is not None and len(list_results) > 0:
-            list_results = self._normalize_loaded_dataframe(list_results)
-            list_results.attrs['read_source'] = 'sharepoint_list'
-            list_results.attrs['read_reason'] = 'preferred'
-            list_results.attrs['read_scope'] = scope
-            list_results.attrs['list_rows'] = len(list_results)
-            logger.info(
-                f"[READ SOURCE][bucket_results] source=sharepoint_list reason=preferred scope=({scope}) "
-                f"rows={len(list_results)}"
-            )
-            return list_results
-        
-        # Fallback to RunDisplaySnapshots (reconstruct from month-level snapshots)
-        snapshot_results = self._load_bucket_results_from_snapshots(run_id, property_id, lease_interval_id)
+        # Load from RunDisplaySnapshots exception-level snapshots (primary source)
+        snapshot_results = self.load_exception_snapshots_as_bucket_results(run_id, property_id, lease_interval_id)
         if snapshot_results is not None and len(snapshot_results) > 0:
             snapshot_results = self._normalize_loaded_dataframe(snapshot_results)
-            snapshot_results.attrs['read_source'] = 'snapshots'
-            snapshot_results.attrs['read_reason'] = 'auditruns2_unavailable'
+            snapshot_results.attrs['read_source'] = 'exception_snapshots'
+            snapshot_results.attrs['read_reason'] = 'primary_source'
             snapshot_results.attrs['read_scope'] = scope
             logger.info(
-                f"[READ SOURCE][bucket_results] source=snapshots reason=auditruns2_unavailable scope=({scope}) rows={len(snapshot_results)}"
+                f"[READ SOURCE][bucket_results] source=exception_snapshots reason=primary_source scope=({scope}) rows={len(snapshot_results)}"
             )
             return snapshot_results
         
@@ -3262,35 +3397,29 @@ class StorageService:
         property_id: Optional[int] = None,
         lease_interval_id: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Load findings from SharePoint list (primary) with snapshot then CSV fallback."""
+        """Load findings from RunDisplaySnapshots exception-level with CSV fallback."""
         scope = f"run={run_id}, property_id={property_id}, lease_interval_id={lease_interval_id}"
         
-        # Try SharePoint AuditRuns2 list first (if available)
-        list_findings = self._load_results_from_sharepoint_list(run_id, 'finding',
-                                                                 property_id=property_id,
-                                                                 lease_interval_id=lease_interval_id)
-        if list_findings is not None and len(list_findings) > 0:
-            list_findings = self._normalize_loaded_dataframe(list_findings)
-            list_findings.attrs['read_source'] = 'sharepoint_list'
-            list_findings.attrs['read_reason'] = 'preferred'
-            list_findings.attrs['read_scope'] = scope
-            list_findings.attrs['list_rows'] = len(list_findings)
-            logger.info(
-                f"[READ SOURCE][findings] source=sharepoint_list reason=preferred scope=({scope}) rows={len(list_findings)}"
-            )
-            return list_findings
-        
-        # Fallback to RunDisplaySnapshots (reconstruct from month-level snapshots)
-        snapshot_findings = self._load_findings_from_snapshots(run_id, property_id, lease_interval_id)
-        if snapshot_findings is not None and len(snapshot_findings) > 0:
-            snapshot_findings = self._normalize_loaded_dataframe(snapshot_findings)
-            snapshot_findings.attrs['read_source'] = 'snapshots'
-            snapshot_findings.attrs['read_reason'] = 'auditruns2_unavailable'
-            snapshot_findings.attrs['read_scope'] = scope
-            logger.info(
-                f"[READ SOURCE][findings] source=snapshots reason=auditruns2_unavailable scope=({scope}) rows={len(snapshot_findings)}"
-            )
-            return snapshot_findings
+        # Load from RunDisplaySnapshots exception-level snapshots (findings = rows with variance)
+        snapshot_results = self.load_exception_snapshots_as_bucket_results(run_id, property_id, lease_interval_id)
+        if snapshot_results is not None and len(snapshot_results) > 0:
+            # Filter for findings (variance != 0)
+            from audit_engine.canonical_fields import CanonicalField
+            variance_col = CanonicalField.VARIANCE.value
+            if variance_col in snapshot_results.columns:
+                snapshot_findings = snapshot_results[snapshot_results[variance_col] != 0].copy()
+            else:
+                snapshot_findings = snapshot_results.copy()
+            
+            if len(snapshot_findings) > 0:
+                snapshot_findings = self._normalize_loaded_dataframe(snapshot_findings)
+                snapshot_findings.attrs['read_source'] = 'exception_snapshots'
+                snapshot_findings.attrs['read_reason'] = 'primary_source'
+                snapshot_findings.attrs['read_scope'] = scope
+                logger.info(
+                    f"[READ SOURCE][findings] source=exception_snapshots reason=primary_source scope=({scope}) rows={len(snapshot_findings)}"
+                )
+                return snapshot_findings
         
         # Fallback to CSV
         csv_findings = self._load_dataframe(run_id, "outputs/findings.csv")
@@ -4709,18 +4838,23 @@ class StorageService:
     
     def _load_dataframe(self, run_id: str, file_path: str) -> Optional[pd.DataFrame]:
         """Load DataFrame from either SharePoint or local filesystem."""
-        if self.use_sharepoint:
-            # Load from SharePoint
-            sp_path = f"{run_id}/{file_path}"
-            content = self._download_file_from_sharepoint(sp_path)
-            if content:
-                return pd.read_csv(io.StringIO(content))
-            return None
-        else:
-            # Load from local filesystem
-            local_path = self.base_dir / run_id / file_path
-            if local_path.exists():
-                return pd.read_csv(local_path)
+        try:
+            if self.use_sharepoint:
+                # Load from SharePoint
+                sp_path = f"{run_id}/{file_path}"
+                content = self._download_file_from_sharepoint(sp_path)
+                if content:
+                    return pd.read_csv(io.StringIO(content))
+                return None
+            else:
+                # Load from local filesystem
+                local_path = self.base_dir / run_id / file_path
+                if local_path.exists():
+                    return pd.read_csv(local_path)
+                return None
+        except pd.errors.EmptyDataError:
+            # CSV file exists but has no data (0 lease intervals audited)
+            logger.info(f"[STORAGE] CSV file {file_path} for run {run_id} is empty (no lease intervals to audit)")
             return None
     
     def _save_json(self, data: Dict[str, Any], run_id: str, file_path: str):
@@ -5143,31 +5277,34 @@ class StorageService:
         print(f"[STORAGE] ✓ Saved: run_meta.json")
         files_saved.append("run_meta.json")
         
-        # Write metrics to SharePoint list (don't fail save if this fails)
+        # COMMENTED OUT: Write metrics to SharePoint list (don't fail save if this fails)
+        # Testing what breaks when AuditRunMetrics writes are disabled
         print(f"\n[STORAGE] Step 5/7: Writing metrics to SharePoint List (Audit Run Metrics)...")
-        try:
-            can_write_sharepoint_lists = self._can_use_sharepoint_lists()
-            if write_metrics_async and can_write_sharepoint_lists:
-                metrics_started = perf_counter()
-                print(f"[STORAGE] 🚀 Dispatching async metrics write...")
-                metrics_thread = threading.Thread(
-                    target=self._write_metrics_to_sharepoint_list_async,
-                    args=(run_id, bucket_results, findings, dict(metadata)),
-                    daemon=True,
-                    name=f"metrics-write-{run_id}",
-                )
-                metrics_thread.start()
-                stage_timers['metrics_write_seconds'] = float(perf_counter() - metrics_started)
-                print(f"[STORAGE] ✓ Metrics write dispatched (async mode)")
-            else:
-                metrics_started = perf_counter()
-                print(f"[STORAGE] Writing metrics synchronously...")
-                self._write_metrics_to_sharepoint_list(run_id, bucket_results, findings, metadata)
-                stage_timers['metrics_write_seconds'] = float(perf_counter() - metrics_started)
-                print(f"[STORAGE] ✓ Metrics written in {stage_timers['metrics_write_seconds']:.2f}s")
-        except Exception as e:
-            print(f"[STORAGE] ⚠️  Metrics write failed: {e}")
-            logger.warning(f"[STORAGE] Failed to write metrics to SharePoint list: {e}")
+        print(f"[STORAGE] ⚠️  SKIPPED - Metrics write is commented out for testing")
+        stage_timers['metrics_write_seconds'] = 0.0
+        # try:
+        #     can_write_sharepoint_lists = self._can_use_sharepoint_lists()
+        #     if write_metrics_async and can_write_sharepoint_lists:
+        #         metrics_started = perf_counter()
+        #         print(f"[STORAGE] 🚀 Dispatching async metrics write...")
+        #         metrics_thread = threading.Thread(
+        #             target=self._write_metrics_to_sharepoint_list_async,
+        #             args=(run_id, bucket_results, findings, dict(metadata)),
+        #             daemon=True,
+        #             name=f"metrics-write-{run_id}",
+        #         )
+        #         metrics_thread.start()
+        #         stage_timers['metrics_write_seconds'] = float(perf_counter() - metrics_started)
+        #         print(f"[STORAGE] ✓ Metrics write dispatched (async mode)")
+        #     else:
+        #         metrics_started = perf_counter()
+        #         print(f"[STORAGE] Writing metrics synchronously...")
+        #         self._write_metrics_to_sharepoint_list(run_id, bucket_results, findings, metadata)
+        #         stage_timers['metrics_write_seconds'] = float(perf_counter() - metrics_started)
+        #         print(f"[STORAGE] ✓ Metrics written in {stage_timers['metrics_write_seconds']:.2f}s")
+        # except Exception as e:
+        #     print(f"[STORAGE] ⚠️  Metrics write failed: {e}")
+        #     logger.warning(f"[STORAGE] Failed to write metrics to SharePoint list: {e}")
 
         # Write static display snapshots (portfolio/property/lease) for fast UI loads.
         print(f"\n[STORAGE] Step 6/7: Writing display snapshots (portfolio/property/lease views)...")
@@ -5244,38 +5381,40 @@ class StorageService:
             print(f"[STORAGE] ⚠️  Display snapshots write failed: {e}")
             logger.warning(f"[STORAGE] Failed to write run display snapshots to SharePoint list: {e}")
 
-        # Write detailed results to SharePoint list (list-backed results DB).
+        # COMMENTED OUT: Write detailed results to SharePoint list (AuditRuns2)
+        # Testing whether app works without AuditRuns2 writes (using RunDisplaySnapshots only)
         print(f"\n[STORAGE] Step 7/7: Writing detailed results to SharePoint List (AuditRuns2)...")
-        print(f"[STEP 7 DEBUG] write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
-        print(f"[STEP 7 DEBUG] access_token={'SET' if self.access_token else 'MISSING'}, sharepoint_site_url={self.sharepoint_site_url}")
-        
-        if write_details_async and can_write_sharepoint_lists:
-            print(f"[STORAGE] 🚀 Dispatching async detailed results write...")
-            details_thread = threading.Thread(
-                target=self._write_results_to_sharepoint_list_async,
-                args=(run_id, bucket_results, findings),
-                kwargs={'actual_detail': actual_detail, 'expected_detail': expected_detail},
-                daemon=True,
-                name=f"details-write-{run_id}",
-            )
-            details_thread.start()
-            print(f"[STORAGE] ✓ Detailed results write dispatched (async mode)")
-        elif can_write_sharepoint_lists:
-            print(f"[STORAGE] Writing detailed results synchronously...")
-            write_ok = self._write_results_to_sharepoint_list(
-                run_id,
-                bucket_results,
-                findings,
-                actual_detail=actual_detail,
-                expected_detail=expected_detail,
-            )
-            if write_ok:
-                print(f"[STORAGE] ✓ Detailed results written successfully")
-            else:
-                print(f"[STORAGE] ⚠️  Detailed results write failed")
-        else:
-            print(f"[STORAGE] ⚠️  SharePoint lists not available, skipping detailed results write")
-            print(f"[STEP 7 DEBUG] Why? write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
+        print(f"[STORAGE] ⚠️  SKIPPED - AuditRuns2 write is commented out for testing")
+        # print(f"[STEP 7 DEBUG] write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
+        # print(f"[STEP 7 DEBUG] access_token={'SET' if self.access_token else 'MISSING'}, sharepoint_site_url={self.sharepoint_site_url}")
+        # 
+        # if write_details_async and can_write_sharepoint_lists:
+        #     print(f"[STORAGE] 🚀 Dispatching async detailed results write...")
+        #     details_thread = threading.Thread(
+        #         target=self._write_results_to_sharepoint_list_async,
+        #         args=(run_id, bucket_results, findings),
+        #         kwargs={'actual_detail': actual_detail, 'expected_detail': expected_detail},
+        #         daemon=True,
+        #         name=f"details-write-{run_id}",
+        #     )
+        #     details_thread.start()
+        #     print(f"[STORAGE] ✓ Detailed results write dispatched (async mode)")
+        # elif can_write_sharepoint_lists:
+        #     print(f"[STORAGE] Writing detailed results synchronously...")
+        #     write_ok = self._write_results_to_sharepoint_list(
+        #         run_id,
+        #         bucket_results,
+        #         findings,
+        #         actual_detail=actual_detail,
+        #         expected_detail=expected_detail,
+        #     )
+        #     if write_ok:
+        #         print(f"[STORAGE] ✓ Detailed results written successfully")
+        #     else:
+        #         print(f"[STORAGE] ⚠️  Detailed results write failed")
+        # else:
+        #     print(f"[STORAGE] ⚠️  SharePoint lists not available, skipping detailed results write")
+        #     print(f"[STEP 7 DEBUG] Why? write_details_async={write_details_async}, can_write_sharepoint_lists={can_write_sharepoint_lists}")
 
         logger.info(
             f"[STORAGE TIMER] run_id={run_id} "
