@@ -453,9 +453,9 @@ StorageService:
 - `GET /property/<property_id>/<run_id>` - Property exceptions grouped by lease
 - `GET /lease/<run_id>/<property_id>/<lease_id>` - Detailed lease exceptions
 
-**Portfolio View Behavior** (updated 2026-03-10):
+**Portfolio View Behavior** (updated 2026-07-15):
 - **Architecture**: Each property upload stores ONLY that property's data (independent audit trail)
-- **Aggregation**: Portfolio shows the most recent audit data for each property across ALL runs
+- **Aggregation**: Portfolio shows the most recent audit data for each property across ALL runs (cross-run aggregation is the default view)
 - **How it works**:
   1. Queries all property-scoped snapshots from RunDisplaySnapshots list
   2. Groups by `PropertyId` and selects the latest `RunId` for each property

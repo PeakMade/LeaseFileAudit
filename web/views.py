@@ -3694,38 +3694,16 @@ def portfolio(run_id: str = None):
                 session_cache_key=cache_token
             )
         else:
-            # Default portfolio landing: find the most recent run that has property-level
-            # snapshots so all numbers on the page are from the same audit.
-            snapshot_source = 'run_scoped_snapshots'
-            snapshot_reason = 'latest_run_default'
-            available_runs_for_default = get_available_runs(cache_token) or []
-            property_snapshots = []
-            # Check up to the 5 most recent runs to find one with property snapshots,
-            # skipping lease-only runs (e.g. single-lease API audits).
-            for _candidate in available_runs_for_default[:5]:
-                _candidate_id = _candidate.get('run_id')
-                if not _candidate_id:
-                    continue
-                _snaps = cached_load_run_display_snapshots_for_run(
-                    run_id=_candidate_id,
-                    scope_type='property',
-                    session_cache_key=cache_token
-                )
-                if _snaps:
-                    run_id = _candidate_id
-                    property_snapshots = _snaps
-                    break
-
-            # Fallback: cross-run aggregation (latest snapshot per property across all runs)
-            if not property_snapshots:
-                snapshot_source = 'latest_property_snapshots_across_runs'
-                snapshot_reason = 'run_scoped_fallback'
-                property_snapshots = cached_load_latest_property_snapshots(cache_token)
-                # Filter out lease-scoped snapshots
-                property_snapshots = [
-                    s for s in property_snapshots
-                    if str(s.get('run_scope_type') or '').strip().lower() != 'lease'
-                ]
+            # Default portfolio landing: show ALL properties (latest snapshot per property across all runs)
+            # Users can select a specific run from the dropdown to see that run's exact data
+            snapshot_source = 'latest_property_snapshots_across_runs'
+            snapshot_reason = 'default_cross_run_aggregation'
+            property_snapshots = cached_load_latest_property_snapshots(cache_token)
+            # Filter out lease-scoped snapshots
+            property_snapshots = [
+                s for s in property_snapshots
+                if str(s.get('run_scope_type') or '').strip().lower() != 'lease'
+            ]
 
             if not property_snapshots:
                 flash('No audit runs available', 'warning')
