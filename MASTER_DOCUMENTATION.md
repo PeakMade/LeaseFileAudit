@@ -468,6 +468,13 @@ StorageService:
   - Portfolio always shows current state of all properties
 - **Use case**: Upload property A (creates run_1 with only A's data), upload property B (creates run_2 with only B's data) → Portfolio shows both A (from run_1) + B (from run_2)
 
+**Future Lease Audit Fix** (updated 2026-07-15):
+- **Issue**: Production NameError when executing future lease audit - `storage` variable was undefined at line 2484
+- **Root Cause**: `execute_future_lease_audit()` requires `storage_service` parameter, but no storage instance was created in scope
+- **Fix**: Added `storage = get_storage_service()` before calling `execute_future_lease_audit()` in `web/views.py:2479`
+- **Impact**: Future lease audit now executes without errors when enabled in `future_lease_audit_config.json`
+- **Azure Timeout**: Added `WEBSITES_CONTAINER_TIMEOUT_SECONDS=10000` environment variable to handle audits exceeding default 230s timeout
+
 **API Endpoints** (for AJAX):
 - `POST /api/exception-months` - Update month status
 - `GET /api/exception-months/<...>` - Get month statuses

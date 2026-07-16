@@ -2477,6 +2477,7 @@ def execute_audit_run(
             print(f"{'='*80}")
             print(f"[FUTURE LEASE AUDIT] Configuration loaded, executing future lease audit...")
             
+            storage = get_storage_service()
             future_audit_output = execute_future_lease_audit(
                 scheduled_normalized,
                 run_id=run_id,
