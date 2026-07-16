@@ -2908,6 +2908,12 @@ def upload_api_property():
     """Run audit from API sources for a single property (parallel flow to Excel upload)."""
     audit_started_at = perf_counter()
     request_started_at_utc = datetime.utcnow()
+    audit_correlation_id = str(uuid.uuid4())[:8]  # Short correlation ID for log tracing
+    
+    logger.info(
+        f"[AUDIT_LIFECYCLE] 🟢 REQUEST_RECEIVED correlation_id={audit_correlation_id} "
+        f"timestamp_utc={request_started_at_utc.isoformat()} endpoint=/upload-api-property"
+    )
 
     try:
         property_id_raw = request.form.get('api_property_id', '').strip()
@@ -2987,6 +2993,12 @@ def upload_api_property():
             scheduled_raw['PROPERTY_NAME'] = property_name
 
         execute_started = perf_counter()
+        execute_started_utc = datetime.utcnow()
+        logger.info(
+            f"[AUDIT_LIFECYCLE] 🔵 AUDIT_STARTED correlation_id={audit_correlation_id} "
+            f"timestamp_utc={execute_started_utc.isoformat()} property_id={property_id} run_id={run_id}"
+        )
+        
         results = execute_audit_run(
             file_path=None,
             run_id=run_id,
@@ -3005,6 +3017,12 @@ def upload_api_property():
         # property_name is already resolved: picklist > API fallback > "Property {id}"
         results['property_name_map'] = {property_id: property_name}
         execute_seconds = perf_counter() - execute_started
+        execute_completed_utc = datetime.utcnow()
+        logger.info(
+            f"[AUDIT_LIFECYCLE] 🟢 AUDIT_COMPLETED correlation_id={audit_correlation_id} "
+            f"timestamp_utc={execute_completed_utc.isoformat()} execute_seconds={execute_seconds:.2f} "
+            f"property_id={property_id} run_id={run_id}"
+        )
 
         base_run_id = None
         overlay_seconds = 0.0
@@ -3167,6 +3185,13 @@ def upload_api_property():
         logger.info(
             f"[API UPLOAD DEBUG] pending upload timing stored for run_id={run_id}; "
             f"redirecting to property_id={property_id}"
+        )
+        
+        response_attempted_utc = datetime.utcnow()
+        logger.info(
+            f"[AUDIT_LIFECYCLE] 🟡 RESPONSE_ATTEMPTED correlation_id={audit_correlation_id} "
+            f"timestamp_utc={response_attempted_utc.isoformat()} elapsed_seconds={elapsed_seconds:.2f} "
+            f"property_id={property_id} run_id={run_id} status=success"
         )
 
         return redirect(url_for('main.property_view', property_id=str(property_id), run_id=run_id))

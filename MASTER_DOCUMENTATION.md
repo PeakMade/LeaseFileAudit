@@ -1775,7 +1775,43 @@ def calculate_cumulative_metrics(run_id):
   - Ensure Properties_0 SharePoint list has PROPERTY_NAME or PropertyName column populated
   - API uploads automatically fetch property names from picklist before creating runs
 
-### Scenario 5: Audit Period Filtering Not Working
+### Scenario 5: Azure 504 Gateway Timeout Diagnosis
+
+**Problem**: Audits time out in Azure with 504 errors but complete successfully locally
+
+**Audit Lifecycle Tracking** (added 2026-07-15):
+- Purpose: Diagnose when Azure returns 504 relative to audit completion
+- Four lifecycle events logged with correlation ID and UTC timestamps:
+  1. `🟢 REQUEST_RECEIVED` - Request arrives at Flask endpoint
+  2. `🔵 AUDIT_STARTED` - Audit execution begins (after property lookup)
+  3. `🟢 AUDIT_COMPLETED` - Audit finishes (includes execute_seconds)
+  4. `🟡 RESPONSE_ATTEMPTED` - Flask attempts to send response
+
+**Search Azure logs**:
+```
+[AUDIT_LIFECYCLE]
+```
+
+**Example timeline showing 504 before completion**:
+```
+21:00:00.123 [AUDIT_LIFECYCLE] 🟢 REQUEST_RECEIVED correlation_id=abc12345 timestamp_utc=2026-07-15T21:00:00.123Z
+21:00:01.456 [AUDIT_LIFECYCLE] 🔵 AUDIT_STARTED correlation_id=abc12345 timestamp_utc=2026-07-15T21:00:01.456Z property_id=100102568
+21:03:50.000 <Azure returns 504 to client>
+21:04:12.789 [AUDIT_LIFECYCLE] 🟢 AUDIT_COMPLETED correlation_id=abc12345 timestamp_utc=2026-07-15T21:04:12.789Z execute_seconds=251.33
+21:04:13.012 [AUDIT_LIFECYCLE] 🟡 RESPONSE_ATTEMPTED correlation_id=abc12345 timestamp_utc=2026-07-15T21:04:13.012Z elapsed_seconds=252.89
+```
+
+**Key insights**:
+- If 504 occurs at ~230 seconds, this is Azure App Service front-end timeout (not configurable via app settings)
+- If AUDIT_COMPLETED and RESPONSE_ATTEMPTED appear after 504, the audit finished but client never received success response
+- `WEBSITES_CONTAINER_TIMEOUT_SECONDS` controls Gunicorn worker timeout, NOT Azure load balancer timeout
+- Long-running audits (>230s) require async job pattern - see Architecture section
+
+**Workarounds**:
+- Short-term: API caching to reduce API fetch time from 164s to ~2s
+- Long-term: Implement async job queue (Azure Service Bus + WebJob/Container App)
+
+### Scenario 6: Audit Period Filtering Not Working
 
 **Problem**: User selects "January 2025" but sees all months
 
