@@ -1276,8 +1276,8 @@ class StorageService:
             f"effective_batch_size={batch_size} source={batch_size_source}"
         )
 
-        batch_concurrency = 1
-        batch_concurrency_source = 'default:1'
+        batch_concurrency = 4  # Increased from 1 to 4 for faster writes
+        batch_concurrency_source = 'default:4'
         try:
             concurrency_env_key = None
             if 'auditruns' in context_lower:

@@ -39,7 +39,7 @@ def generate_month_range(start_date: pd.Timestamp, end_date: pd.Timestamp) -> Li
     return months.tolist()
 
 
-def expand_scheduled_to_months(df: pd.DataFrame, include_future: bool = False) -> pd.DataFrame:
+def expand_scheduled_to_months(df: pd.DataFrame, include_future: bool = False, audit_window_start: pd.Timestamp = None, audit_window_end: pd.Timestamp = None) -> pd.DataFrame:
     """
     Expand scheduled charges into one row per month.
     
@@ -58,6 +58,8 @@ def expand_scheduled_to_months(df: pd.DataFrame, include_future: bool = False) -
         include_future: When True, include months beyond the current month
             (tagged as LEASE_MODE='future'). When False (default), future
             months are excluded to avoid false SCHEDULED_NOT_BILLED flags.
+        audit_window_start: Optional start date to limit expansion (OPTIMIZATION)
+        audit_window_end: Optional end date to limit expansion (OPTIMIZATION)
 
     **Important:** Only includes scheduled charges where PERIOD_START is 
     today or in the past (unless include_future=True). Future scheduled
@@ -66,6 +68,10 @@ def expand_scheduled_to_months(df: pd.DataFrame, include_future: bool = False) -
     """
     # Get current date (start of current month for comparison)
     current_month = pd.Timestamp.now().to_period('M').to_timestamp()
+    
+    # Optimization: Convert audit window to month boundaries if provided
+    window_start_month = audit_window_start.to_period('M').to_timestamp() if audit_window_start is not None else None
+    window_end_month = audit_window_end.to_period('M').to_timestamp() if audit_window_end is not None else None
     
     expanded_rows = []
     
@@ -85,6 +91,13 @@ def expand_scheduled_to_months(df: pd.DataFrame, include_future: bool = False) -
         for month in months:
             if not include_future and month > current_month:
                 continue
+            
+            # Optimization: Skip months outside audit window
+            if window_start_month is not None and month < window_start_month:
+                continue
+            if window_end_month is not None and month > window_end_month:
+                continue
+            
             expanded_row = row.copy()
             expanded_row[CanonicalField.AUDIT_MONTH.value] = month
             # Tag each row with its lease phase relative to today

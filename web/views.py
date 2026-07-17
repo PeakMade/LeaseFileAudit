@@ -2105,7 +2105,19 @@ def execute_audit_run(
     print(f"{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] Expanding scheduled charges to monthly buckets...")
     print(f"[EXECUTE_AUDIT_RUN] Input: {scheduled_normalized.shape}")
-    expected_detail = expand_scheduled_to_months(scheduled_normalized, include_future=True)
+    
+    # Optimization: Pass audit window to expansion to reduce rows
+    if audit_date_from or audit_date_to:
+        _default_start, _default_end = _resolve_audit_window_bounds(audit_year=audit_year, audit_month=audit_month)
+        window_start_for_expand = pd.to_datetime(audit_date_from, errors='coerce') if audit_date_from else _default_start
+        window_end_for_expand = pd.to_datetime(audit_date_to, errors='coerce') if audit_date_to else _default_end
+        print(f"[EXECUTE_AUDIT_RUN] [OPTIMIZATION] Expanding only within audit window: {window_start_for_expand.date()} to {window_end_for_expand.date()}")
+        expected_detail = expand_scheduled_to_months(scheduled_normalized, include_future=True, 
+                                                     audit_window_start=window_start_for_expand, 
+                                                     audit_window_end=window_end_for_expand)
+    else:
+        expected_detail = expand_scheduled_to_months(scheduled_normalized, include_future=True)
+    
     print(f"[EXECUTE_AUDIT_RUN] ✓ Expanded to monthly detail: {expected_detail.shape}")
     if not expected_detail.empty and not scheduled_normalized.empty:
         expansion_ratio = len(expected_detail) / len(scheduled_normalized) if len(scheduled_normalized) > 0 else 0

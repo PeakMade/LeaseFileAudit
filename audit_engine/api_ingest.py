@@ -841,10 +841,10 @@ def _fetch_all_lease_details_pages(
     parsed = urlparse(endpoint_url)
     qs = parse_qs(parsed.query, keep_blank_values=True)
     
-    # Fetch 100 leases per page, max 5 pages = 500 total leases
-    qs["per_page"] = ["100"]
-    per_page = 100
-    max_pages = 5  # Stop after 5 pages to avoid timeout
+    # Optimize: Fetch 500 leases per page (fewer API calls = faster)
+    qs["per_page"] = ["500"]
+    per_page = 500
+    max_pages = None  # No limit - fetch ALL leases
 
     all_lease_nodes: list[dict[str, Any]] = []
     first_payload: dict[str, Any] | None = None
@@ -883,9 +883,9 @@ def _fetch_all_lease_details_pages(
             f"leases_on_page={len(page_nodes)}, total_so_far={len(all_lease_nodes)}"
         )
 
-        # TESTING: Stop after max_pages
-        if page_no >= max_pages:
-            print(f"[LEASE API PAGINATION] Stopping after {max_pages} page(s) for testing")
+        # Stop if max_pages limit reached (if set)
+        if max_pages is not None and page_no >= max_pages:
+            print(f"[LEASE API PAGINATION] Stopping after {max_pages} page(s)")
             break
 
         if len(page_nodes) < per_page:
