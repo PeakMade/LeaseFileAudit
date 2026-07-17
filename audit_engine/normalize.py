@@ -16,11 +16,6 @@ def normalize_ar_transactions(df: pd.DataFrame) -> pd.DataFrame:
     Input: DataFrame with canonical field names (lowercase)
     Output: Clean DataFrame with only required canonical fields
     """
-    # DEBUG: Print columns received from mapping layer
-    print("\n=== AR TRANSACTIONS NORMALIZE DEBUG ===")
-    print(f"Columns received: {df.columns.tolist()}")
-    print(f"Shape before cleaning: {df.shape}")
-    
     # Drop rows with NaT in AUDIT_MONTH (these had invalid POST_MONTH_DATE)
     before_count = len(df)
     df = df[df[CanonicalField.AUDIT_MONTH.value].notna()].copy()
@@ -28,11 +23,6 @@ def normalize_ar_transactions(df: pd.DataFrame) -> pd.DataFrame:
     
     if before_count > after_count:
         print(f"[WARNING] Dropped {before_count - after_count} rows with invalid AUDIT_MONTH (NaT)")
-    
-    print(f"Shape after cleaning: {df.shape}")
-    if len(df) > 0:
-        print(f"First row sample: {df.head(1).to_dict('records')}")
-    print("=" * 50 + "\n")
     
     # Validate required canonical columns exist
     required_cols = [
@@ -82,11 +72,6 @@ def normalize_scheduled_charges(df: pd.DataFrame) -> pd.DataFrame:
     Input: DataFrame with canonical field names (lowercase)
     Output: Clean DataFrame with only required canonical fields
     """
-    # DEBUG: Print columns received from mapping layer
-    print("\n=== SCHEDULED CHARGES NORMALIZE DEBUG ===")
-    print(f"Columns received: {df.columns.tolist()}")
-    print(f"Shape before cleaning: {df.shape}")
-    
     # Drop rows with NaT in PERIOD_START only (PERIOD_END can be NaT for one-time charges)
     before_count = len(df)
     df = df[df[CanonicalField.PERIOD_START.value].notna()].copy()
@@ -94,11 +79,6 @@ def normalize_scheduled_charges(df: pd.DataFrame) -> pd.DataFrame:
     
     if before_count > after_count:
         print(f"[WARNING] Dropped {before_count - after_count} rows with invalid PERIOD_START (NaT)")
-    
-    print(f"Shape after cleaning: {df.shape}")
-    if len(df) > 0:
-        print(f"First row sample: {df.head(1).to_dict('records')}")
-    print("=" * 50 + "\n")
     
     # Validate required canonical columns exist
     required_cols = [

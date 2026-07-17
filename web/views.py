@@ -2262,34 +2262,54 @@ def execute_audit_run(
                 f"{dataset_name} missing required property column '{property_column}' for property-scoped reconciliation"
             )
 
-    def _group_by_property(df: pd.DataFrame) -> dict:
-        if df.empty:
-            return {}
-
-        property_keys = df[property_column].apply(_normalize_property_id_token)
-        valid_mask = property_keys.notna()
-        if valid_mask.sum() == 0:
-            return {}
-
-        groups = {}
-        for key, subset in df[valid_mask].groupby(property_keys[valid_mask], sort=True):
-            groups[key] = subset.copy()
-        return groups
-
-    expected_by_property = _group_by_property(expected_detail)
-    actual_by_property = _group_by_property(actual_detail)
-    scheduled_by_property = _group_by_property(scheduled_normalized)
-
-    property_keys = sorted(
-        set(expected_by_property.keys()) |
-        set(actual_by_property.keys()) |
-        set(scheduled_by_property.keys())
-    )
-
+    # OPTIMIZATION: Skip property grouping for single-property audits
+    # Detect unique properties across all dataframes
+    all_property_ids = set()
+    for df in [expected_detail, actual_detail, scheduled_normalized]:
+        if not df.empty and property_column in df.columns:
+            all_property_ids.update(df[property_column].dropna().unique())
+    
+    is_single_property = len(all_property_ids) == 1
+    
     print(f"\n{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 5: RECONCILIATION (EXPECTED vs ACTUAL) =====")
     print(f"{'='*80}")
-    print(f"[PROPERTY EXECUTION] Running reconciliation per property ({len(property_keys)} properties)")
+    
+    if is_single_property:
+        # OPTIMIZATION: Single property mode - skip grouping overhead
+        print(f"[OPTIMIZATION] Single property mode detected - skipping grouping overhead")
+        property_key = list(all_property_ids)[0]
+        property_keys = [property_key]
+        expected_by_property = {property_key: expected_detail}
+        actual_by_property = {property_key: actual_detail}
+        scheduled_by_property = {property_key: scheduled_normalized}
+        print(f"[PROPERTY EXECUTION] Running reconciliation for single property: {property_key}")
+    else:
+        # Multi-property mode - use standard grouping
+        def _group_by_property(df: pd.DataFrame) -> dict:
+            if df.empty:
+                return {}
+
+            property_keys = df[property_column].apply(_normalize_property_id_token)
+            valid_mask = property_keys.notna()
+            if valid_mask.sum() == 0:
+                return {}
+
+            groups = {}
+            for key, subset in df[valid_mask].groupby(property_keys[valid_mask], sort=True):
+                groups[key] = subset.copy()
+            return groups
+
+        expected_by_property = _group_by_property(expected_detail)
+        actual_by_property = _group_by_property(actual_detail)
+        scheduled_by_property = _group_by_property(scheduled_normalized)
+
+        property_keys = sorted(
+            set(expected_by_property.keys()) |
+            set(actual_by_property.keys()) |
+            set(scheduled_by_property.keys())
+        )
+        print(f"[PROPERTY EXECUTION] Running reconciliation per property ({len(property_keys)} properties)")
 
     expected_parts = []
     actual_parts = []

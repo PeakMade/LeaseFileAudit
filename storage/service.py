@@ -1470,14 +1470,12 @@ class StorageService:
 
                     if batch_response.status_code == 200:
                         batch_success = True
-                        print(f"[BATCH_DEBUG] Batch {batch_index}/{total_batches_local} POST succeeded (200)")
                         break
 
                     logger.warning(
                         f"[STORAGE] Batch {batch_index}/{total_batches_local} failed for {context_label} "
                         f"(HTTP {batch_response.status_code}); falling back to single posts"
                     )
-                    print(f"[BATCH_DEBUG] Batch POST failed with status {batch_response.status_code}")
                     break
                 except Exception as e:
                     if attempt < 2:
@@ -1499,7 +1497,6 @@ class StorageService:
             if batch_success and batch_response is not None:
                 response_parse_started = perf_counter()
                 response_items = batch_response.json().get('responses', [])
-                print(f"[BATCH_DEBUG] Batch response has {len(response_items)} response items for {len(chunk)} requests")
                 batch_response_parse_seconds += float(perf_counter() - response_parse_started)
                 response_map = {item.get('id'): item for item in response_items}
 
@@ -1520,27 +1517,11 @@ class StorageService:
                     status_code = response_item.get('status')
                     response_body = response_item.get('body')
                     
-                    # Debug: log the full response for first item
-                    if offset == 0:
-                        print(f"[BATCH_DEBUG] First item response:")
-                        print(f"  Status: {status_code}")
-                        print(f"  Body keys: {list(response_body.keys()) if response_body else 'None'}")
-                        if response_body:
-                            print(f"  Item ID: {response_body.get('id', 'N/A')}")
-                            print(f"  Created: {response_body.get('createdDateTime', 'N/A')}")
-                            if 'fields' in response_body:
-                                fields = response_body['fields']
-                                print(f"  RunId (field_1): {fields.get('field_1', 'N/A')}")
-                        if response_body and 'error' in response_body:
-                            print(f"  ERROR: {response_body['error']}")
-                    
                     if status_code in [200, 201]:
                         created_local += 1
-                        print(f"[BATCH_DEBUG] Row {row_idx} created successfully (status {status_code})")
                         continue
 
                     if status_code == 429:
-                        print(f"[BATCH_DEBUG] Row {row_idx} throttled (429)")
                         retry_after = 5
                         item_headers_resp = response_item.get('headers') or {}
                         ra_str = item_headers_resp.get('Retry-After') or item_headers_resp.get('retry-after')

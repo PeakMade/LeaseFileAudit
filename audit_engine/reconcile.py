@@ -210,61 +210,18 @@ def reconcile_buckets(
     Returns:
         DataFrame with bucket-level reconciliation results
     """
-    # Diagnostic logging to debug $0.00 variance issue
-    expected_amount_col = CanonicalField.EXPECTED_AMOUNT.value
-    logger.info(f"[RECONCILE_BUCKETS_DEBUG] Input diagnostics:")
-    logger.info(f"[RECONCILE_BUCKETS_DEBUG]   expected_detail shape: {expected_detail.shape}")
-    logger.info(f"[RECONCILE_BUCKETS_DEBUG]   actual_detail shape: {actual_detail.shape}")
-    logger.info(f"[RECONCILE_BUCKETS_DEBUG]   expected_detail columns: {list(expected_detail.columns)}")
-    
-    if expected_amount_col in expected_detail.columns:
-        expected_sum = expected_detail[expected_amount_col].sum()
-        expected_null_count = expected_detail[expected_amount_col].isna().sum()
-        expected_zero_count = (expected_detail[expected_amount_col] == 0).sum()
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   {expected_amount_col} exists:")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]     - Total sum: ${expected_sum:,.2f}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]     - Null values: {expected_null_count}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]     - Zero values: {expected_zero_count}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]     - Sample values (first 5): {expected_detail[expected_amount_col].head().tolist()}")
-    else:
-        logger.error(f"[RECONCILE_BUCKETS_DEBUG]   ❌ {expected_amount_col} column MISSING from expected_detail!")
-    
     # Aggregate expected totals
+    expected_amount_col = CanonicalField.EXPECTED_AMOUNT.value
     expected_agg = expected_detail.groupby(BUCKET_KEY_COLUMNS)[
         CanonicalField.EXPECTED_AMOUNT.value
     ].sum().reset_index()
     expected_agg.rename(columns={CanonicalField.EXPECTED_AMOUNT.value: CanonicalField.EXPECTED_TOTAL.value}, inplace=True)
-    
-    # Log aggregation results
-    if not expected_agg.empty:
-        expected_total_col = CanonicalField.EXPECTED_TOTAL.value
-        total_sum = expected_agg[expected_total_col].sum()
-        zero_count = (expected_agg[expected_total_col] == 0).sum()
-        non_zero_count = (expected_agg[expected_total_col] != 0).sum()
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG] After aggregation:")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   expected_agg shape: {expected_agg.shape}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   expected_total sum: ${total_sum:,.2f}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Buckets with $0: {zero_count}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Buckets with non-zero: {non_zero_count}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Sample totals (first 5): {expected_agg[expected_total_col].head().tolist()}")
     
     # Aggregate actual totals
     actual_agg = actual_detail.groupby(BUCKET_KEY_COLUMNS)[
         CanonicalField.ACTUAL_AMOUNT.value
     ].sum().reset_index()
     actual_agg.rename(columns={CanonicalField.ACTUAL_AMOUNT.value: CanonicalField.ACTUAL_TOTAL.value}, inplace=True)
-    
-    # Log actual aggregation results
-    if not actual_agg.empty:
-        actual_total_col = CanonicalField.ACTUAL_TOTAL.value
-        total_sum = actual_agg[actual_total_col].sum()
-        zero_count = (actual_agg[actual_total_col] == 0).sum()
-        non_zero_count = (actual_agg[actual_total_col] != 0).sum()
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG] Actual aggregation:")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   actual_agg shape: {actual_agg.shape}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   actual_total sum: ${total_sum:,.2f}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Buckets with $0: {zero_count}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Buckets with non-zero: {non_zero_count}")
 
     # Track reversal/deleted activity so bucket classification can suppress
     # false "scheduled not billed" exceptions when charges were reversed.
@@ -313,11 +270,6 @@ def reconcile_buckets(
         reconciled[CanonicalField.ACTUAL_TOTAL.value] - 
         reconciled[CanonicalField.EXPECTED_TOTAL.value]
     )
-    
-    # Log final variance results
-    if not reconciled.empty:
-        variance_col = CanonicalField.VARIANCE.value
-        expected_total_col = CanonicalField.EXPECTED_TOTAL.value
         actual_total_col = CanonicalField.ACTUAL_TOTAL.value
         
         variance_sum = reconciled[variance_col].sum()

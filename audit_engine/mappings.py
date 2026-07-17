@@ -635,31 +635,18 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     FLAG_ACTIVE_LEASE_INTERVAL = 1 indicates an active lease interval.
     Only active lease intervals should be audited.
     """
-    # DEBUG: Check data types and values
-    print(f"\n[AR FILTER DEBUG] Total AR transactions: {len(df)}")
-    print(f"[AR FILTER DEBUG] IS_POSTED type: {df[ARSourceColumns.IS_POSTED].dtype}, unique: {df[ARSourceColumns.IS_POSTED].unique()}")
-    print(f"[AR FILTER DEBUG] IS_DELETED type: {df[ARSourceColumns.IS_DELETED].dtype}, unique: {df[ARSourceColumns.IS_DELETED].unique()}")
-    print(f"[AR FILTER DEBUG] IS_REVERSAL type: {df[ARSourceColumns.IS_REVERSAL].dtype}, unique: {df[ARSourceColumns.IS_REVERSAL].unique()}")
-    
-    # Count how many have each flag
-    posted_count = (df[ARSourceColumns.IS_POSTED].astype(float) == 1).sum()
-    deleted_count = (df[ARSourceColumns.IS_DELETED].astype(float) == 1).sum()
-    reversal_count = (df[ARSourceColumns.IS_REVERSAL].astype(float) == 1).sum()
-    
-    print(f"[AR FILTER DEBUG] IS_POSTED == 1: {posted_count}/{len(df)}")
-    print(f"[AR FILTER DEBUG] IS_DELETED == 1: {deleted_count}/{len(df)} (KEEPING for reconciliation)")
-    print(f"[AR FILTER DEBUG] IS_REVERSAL == 1: {reversal_count}/{len(df)} (KEEPING for reconciliation)")
-    
     # Handle potential data type mismatches (sometimes Excel reads as float or string)
     # ONLY filter by IS_POSTED - KEEP deleted/reversed for matching
     mask = (df[ARSourceColumns.IS_POSTED].astype(float) == 1)
     
     # Exclude AR codes per business policy (excluded_ar_codes.json)
+    # NOTE: For API sources, this is now done in early filtering (api_ingest.py)
+    # This code remains for CSV/Excel upload sources
     if ARSourceColumns.AR_CODE_ID in df.columns:
         api_posted_mask = _build_api_posted_code_mask(df[ARSourceColumns.AR_CODE_ID])
         filtered_api_codes = int(api_posted_mask.sum())
         if filtered_api_codes > 0:
-            print(f"[FILTER] Excluding {filtered_api_codes} AR transactions with excluded AR codes: {API_POSTED_AR_CODES}")
+            print(f"[FILTER] Excluding {filtered_api_codes} AR transactions with excluded AR codes")
         mask = mask & ~api_posted_mask
 
         # Whitelist filter intentionally NOT applied in the pipeline.
@@ -695,12 +682,9 @@ def _ar_row_filter(df: pd.DataFrame) -> pd.DataFrame:
     if ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL in df.columns:
         inactive_count = (pd.to_numeric(df[ARSourceColumns.FLAG_ACTIVE_LEASE_INTERVAL], errors='coerce') != 1).sum()
         if inactive_count > 0:
-            print(f"[FILTER] Inactive lease interval filter disabled in AR source; retaining {inactive_count} inactive rows")
+            print(f"[FILTER] Retaining {inactive_count} inactive lease interval rows for reconciliation")
     
     result = df[mask].copy()
-    print(f"[AR FILTER DEBUG] After filtering: {len(result)}/{len(df)} rows ({len(df) - len(result)} filtered out)")
-    print(f"[AR FILTER DEBUG] Deleted/reversed transactions KEPT for reconciliation: {deleted_count + reversal_count}")
-    
     return result
 
 
