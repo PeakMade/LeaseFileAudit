@@ -270,29 +270,6 @@ def reconcile_buckets(
         reconciled[CanonicalField.ACTUAL_TOTAL.value] - 
         reconciled[CanonicalField.EXPECTED_TOTAL.value]
     )
-        actual_total_col = CanonicalField.ACTUAL_TOTAL.value
-        
-        variance_sum = reconciled[variance_col].sum()
-        variance_zero_count = (reconciled[variance_col] == 0).sum()
-        variance_non_zero_count = (reconciled[variance_col] != 0).sum()
-        
-        # Count buckets by variance type
-        overcharge_count = (reconciled[variance_col] > 0).sum()
-        undercharge_count = (reconciled[variance_col] < 0).sum()
-        
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG] Final variance calculations:")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   reconciled shape: {reconciled.shape}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Total variance: ${variance_sum:,.2f}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Buckets with $0 variance: {variance_zero_count}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Buckets with non-zero variance: {variance_non_zero_count}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Overcharges (variance > 0): {overcharge_count}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Undercharges (variance < 0): {undercharge_count}")
-        logger.info(f"[RECONCILE_BUCKETS_DEBUG]   Sample row (first):")
-        if len(reconciled) > 0:
-            first_row = reconciled.iloc[0]
-            logger.info(f"[RECONCILE_BUCKETS_DEBUG]     expected_total: ${first_row[expected_total_col]:.2f}")
-            logger.info(f"[RECONCILE_BUCKETS_DEBUG]     actual_total: ${first_row[actual_total_col]:.2f}")
-            logger.info(f"[RECONCILE_BUCKETS_DEBUG]     variance: ${first_row[variance_col]:.2f}")
     
     # Carry LEASE_MODE from expected_detail to bucket results.
     # Use the mode of the first row per bucket (all rows in the same bucket share the same month).
