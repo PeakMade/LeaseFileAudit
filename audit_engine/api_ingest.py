@@ -840,7 +840,11 @@ def _fetch_all_lease_details_pages(
 
     parsed = urlparse(endpoint_url)
     qs = parse_qs(parsed.query, keep_blank_values=True)
-    per_page = int((qs.get("per_page") or ["100"])[0])
+    
+    # Fetch 100 leases per page, max 5 pages = 500 total leases
+    qs["per_page"] = ["100"]
+    per_page = 100
+    max_pages = 5  # Stop after 5 pages to avoid timeout
 
     all_lease_nodes: list[dict[str, Any]] = []
     first_payload: dict[str, Any] | None = None
@@ -878,6 +882,11 @@ def _fetch_all_lease_details_pages(
             f"[LEASE API PAGINATION] page={page_no}, "
             f"leases_on_page={len(page_nodes)}, total_so_far={len(all_lease_nodes)}"
         )
+
+        # TESTING: Stop after max_pages
+        if page_no >= max_pages:
+            print(f"[LEASE API PAGINATION] Stopping after {max_pages} page(s) for testing")
+            break
 
         if len(page_nodes) < per_page:
             break
@@ -975,8 +984,11 @@ def fetch_property_api_sources(
     if not property_name:
         property_name = f"Property {int(property_id)}"
 
-    # Step 3: Build scheduled charges only from the already-filtered lease nodes.
+    # Step 3: Build scheduled charges from all lease nodes
     scheduled_df, lease_ids = _build_scheduled_df(int(property_id), property_name, lease_details_payload)
+    
+    print(f"[LEASE API FETCH] Fetched {len(lease_ids)} lease(s), {len(scheduled_df)} scheduled charge rows")
+    # Process ALL leases - let audit window filter determine which have data
 
     # Step 4: Fetch AR transactions scoped to the surviving lease IDs.
     lease_ids_csv = ",".join(_to_str(item) for item in lease_ids if _to_str(item))
