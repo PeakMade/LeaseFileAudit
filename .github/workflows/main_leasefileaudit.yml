@@ -10,6 +10,10 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: azure-deploy-production
+  cancel-in-progress: false  # Let current deployment finish, queue the next one
+
 jobs:
   build:
     runs-on: ubuntu-latest
