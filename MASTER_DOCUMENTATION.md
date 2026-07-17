@@ -1849,6 +1849,59 @@ When using `api_from_date`/`api_to_date` on the upload form, the filter priority
 
 If date range fields are populated, `audit_year`/`audit_month` are ignored. Always use matching windows on both fields to avoid comparing misaligned periods.
 
+### Scenario 7: Azure Deployment Fails with IndentationError
+
+**Problem**: Azure App Service in continuous crash loop with `IndentationError: unexpected indent`
+
+**Symptoms (2026-07-17)**:
+```
+[ERROR] Worker (pid:1912) exited with code 3
+IndentationError: unexpected indent
+  File "/tmp/8dee42f846cfb8f/audit_engine/reconcile.py", line 273
+    actual_total_col = CanonicalField.ACTUAL_TOTAL.value
+```
+
+**Root Cause**:
+- Debug logging block with incorrect indentation deployed to Azure
+- Line 273 had 8 spaces (extra indent) instead of being aligned with previous code
+- Python import system failed → gunicorn workers crashed → continuous restart
+
+**Diagnosis**:
+1. **Check Azure logs for IndentationError**:
+   ```
+   IndentationError: unexpected indent
+   File ".../audit_engine/reconcile.py", line XXX
+   ```
+
+2. **Verify local code is clean**:
+   ```bash
+   python -m py_compile audit_engine/reconcile.py
+   # Should produce no output if valid
+   ```
+
+3. **Compare local vs deployed code**:
+   ```bash
+   git diff HEAD origin/main
+   # Check for uncommitted indentation fixes
+   ```
+
+**Resolution (commit 9f93483)**:
+1. Removed 23 lines of debug logging (including incorrectly indented line 273)
+2. Committed fix: `fix: remove debug logging with indentation error blocking Azure deployment`
+3. Pushed to `origin/main` to trigger automatic redeployment
+4. Azure CI/CD detected new commit and redeployed clean code
+
+**Prevention**:
+- Use consistent editor settings (4 spaces per indent level)
+- Run `python -m py_compile` before committing reconcile.py changes
+- Enable pre-commit hooks for Python syntax validation
+- Test locally before deploying debug logging changes
+
+**Key Files**:
+- `audit_engine/reconcile.py` - Core reconciliation logic (syntax-sensitive)
+- Azure build artifact path: `/tmp/8dee42f846cfb8f/` (ephemeral)
+- Deployment tracking: GitHub commit → Azure build ID in logs
+
 ---
 
 ## Quick Reference
