@@ -1261,8 +1261,8 @@ class StorageService:
             f"effective_batch_size={batch_size} source={batch_size_source}"
         )
 
-        batch_concurrency = 4  # Increased from 1 to 4 for faster writes
-        batch_concurrency_source = 'default:4'
+        batch_concurrency = 8  # Increased from 4 to 8 for faster writes (2x throughput)
+        batch_concurrency_source = 'default:8'
         try:
             concurrency_env_key = None
             if 'auditruns' in context_lower:
@@ -1285,7 +1285,7 @@ class StorageService:
                 "falling back to default concurrency=2"
             )
 
-        batch_concurrency = max(1, min(4, int(batch_concurrency)))
+        batch_concurrency = max(1, min(10, int(batch_concurrency)))  # Raised cap from 4 to 10
         logger.info(
             f"[STORAGE][BATCH CONFIG] context={context_label} "
             f"effective_batch_concurrency={batch_concurrency} source={batch_concurrency_source}"

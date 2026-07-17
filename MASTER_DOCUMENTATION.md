@@ -2000,10 +2000,47 @@ if (document.getElementById('async_mode').checked) {
 - Compatible with current caching strategy
 - Safe to deploy alongside existing sync endpoints (both work)
 
+**Performance Tuning (SharePoint Write Bottleneck)**:
+
+Async mode prevents timeouts but doesn't speed up SharePoint writes. For large properties (5000+ rows = 250+ batches), writes still take 200+ seconds.
+
+**Current defaults (as of 2026-07-17)**:
+- `batch_size`: 20 (Graph API limit, cannot increase)
+- `batch_concurrency`: **8** (writes 8 batches simultaneously) - **increased from 4**
+- Example: 7766 rows = 389 batches ÷ 8 = 49 waves × 2.5s = ~122s
+
+**Real-world impact (Cobalt Row property, 7766 rows)**:
+- **Before (concurrency=4)**: 389 batches ÷ 4 = 244s SharePoint writes → 290s total audit
+- **After (concurrency=8)**: 389 batches ÷ 8 = 122s SharePoint writes → 168s total audit
+- **Savings: 122 seconds (50% faster writes, 42% faster total)**
+
+**Further optimization via environment variables** (Azure App Settings):
+```bash
+SHAREPOINT_BATCH_CONCURRENCY=10          # Global default (all lists)
+SHAREPOINT_BATCH_CONCURRENCY_SNAPSHOTS=10  # RunDisplaySnapshots only
+SHAREPOINT_BATCH_CONCURRENCY_AUDITRUNS=10  # AuditRuns2 only
+```
+
+**Impact of concurrency=10**:
+- 7766 rows = 389 batches ÷ 10 = 39 waves × 2.5s = ~98s (another 24s savings)
+- **Risk**: Higher concurrency increases 503 throttling from SharePoint
+- **Recommendation**: Default 8 works well for most properties; use 10 for mega-properties if needed
+- Monitor logs for: `[STORAGE] Batch X/Y throttled` warnings
+
+**To apply env var override**:
+1. Azure Portal → App Service → Configuration → Application settings
+2. Add `SHAREPOINT_BATCH_CONCURRENCY=10`
+3. Restart app service
+4. Test with large property (Cobalt Row, Volare)
+5. Check logs for throttling - reduce to 8 if seeing errors
+
+**Code location**: `storage/service.py` lines ~1264-1290
+
 **Key Files**:
 - `web/views.py` lines ~3240-3440 - Async endpoints and worker function
 - `templates/audit_status.html` - Status page with polling UI
 - `templates/upload.html` lines ~190-220 - Async mode checkbox and JS handler
+- `storage/service.py` lines ~1264-1290 - Batch concurrency configuration
 
 ---
 
