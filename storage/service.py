@@ -552,24 +552,9 @@ class StorageService:
             actual_values = pd.to_numeric(exception_rows[actual_column], errors='coerce').fillna(0)
             undercharge = float((expected_values - actual_values).clip(lower=0).sum())
             overcharge = float((actual_values - expected_values).clip(lower=0).sum())
-            
-            # Diagnostic logging for variance calculations
-            print(f"\n[SNAPSHOT_METRICS_DEBUG] Calculating static metrics:")
-            print(f"[SNAPSHOT_METRICS_DEBUG]   Total rows: {total_buckets}, Exception rows: {len(exception_rows)}")
-            print(f"[SNAPSHOT_METRICS_DEBUG]   Expected sum: ${expected_values.sum():,.2f}, Actual sum: ${actual_values.sum():,.2f}")
-            print(f"[SNAPSHOT_METRICS_DEBUG]   Undercharge: ${undercharge:,.2f} (expected - actual, positive only)")
-            print(f"[SNAPSHOT_METRICS_DEBUG]   Overcharge: ${overcharge:,.2f} (actual - expected, positive only)")
-            if len(exception_rows) > 0 and len(exception_rows) <= 5:
-                print(f"[SNAPSHOT_METRICS_DEBUG]   Sample exception rows:")
-                for idx, row in exception_rows.head(5).iterrows():
-                    exp = row.get(expected_column, 0)
-                    act = row.get(actual_column, 0)
-                    stat = row.get(status_column, 'UNKNOWN')
-                    print(f"[SNAPSHOT_METRICS_DEBUG]     Status={stat}, Expected=${exp:,.2f}, Actual=${act:,.2f}, Diff=${act-exp:,.2f}")
         else:
             undercharge = 0.0
             overcharge = 0.0
-            print(f"[SNAPSHOT_METRICS_DEBUG] No exception rows or missing columns: exception_rows={len(exception_rows) if 'exception_rows' in locals() else 0}")
 
         match_rate = float((matched_buckets / total_buckets) * 100) if total_buckets > 0 else 0.0
 
