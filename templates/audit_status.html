@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+
+{% block title %}Audit Status{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0">
+                        <i class="fas fa-spinner fa-spin" id="spinner" style="{% if job.status == 'completed' or job.status == 'failed' %}display:none;{% endif %}"></i>
+                        <i class="fas fa-check-circle text-success" id="success-icon" style="{% if job.status != 'completed' %}display:none;{% endif %}"></i>
+                        <i class="fas fa-times-circle text-danger" id="error-icon" style="{% if job.status != 'failed' %}display:none;{% endif %}"></i>
+                        Audit Status
+                    </h4>
+                </div>
+                <div class="card-body">
+                    <h5>Property: <span id="property-name">{{ job.property_name }}</span></h5>
+                    <p class="text-muted">Job ID: <code>{{ job.job_id }}</code></p>
+                    
+                    <!-- Progress Bar -->
+                    <div class="progress mb-3" style="height: 30px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                             id="progress-bar"
+                             role="progressbar" 
+                             style="width: {{ job.progress }}%"
+                             aria-valuenow="{{ job.progress }}" 
+                             aria-valuemin="0" 
+                             aria-valuemax="100">
+                            <span id="progress-text">{{ job.progress }}%</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Status Message -->
+                    <div class="alert alert-info" id="status-message">
+                        <strong>Status:</strong> <span id="stage-text">{{ job.stage }}</span>
+                    </div>
+                    
+                    <!-- Success Message (hidden until complete) -->
+                    <div class="alert alert-success" id="success-message" style="{% if job.status != 'completed' %}display:none;{% endif %}">
+                        <h5><i class="fas fa-check-circle"></i> Audit Completed Successfully!</h5>
+                        <p class="mb-0">Run ID: <code id="run-id">{{ job.run_id }}</code></p>
+                        <p class="mb-0">Duration: <span id="duration">{{ "%.2f"|format(job.elapsed_seconds) }}</span> seconds</p>
+                        <hr>
+                        <p class="mb-0">Redirecting to property view...</p>
+                    </div>
+                    
+                    <!-- Error Message (hidden until failed) -->
+                    <div class="alert alert-danger" id="error-message" style="{% if job.status != 'failed' %}display:none;{% endif %}">
+                        <h5><i class="fas fa-times-circle"></i> Audit Failed</h5>
+                        <p><strong>Error:</strong> <span id="error-text">{{ job.error }}</span></p>
+                        <a href="{{ url_for('main.index') }}" class="btn btn-primary">Return to Home</a>
+                    </div>
+                    
+                    <!-- Timing Breakdown (shown on completion) -->
+                    <div id="timing-details" style="{% if job.status != 'completed' %}display:none;{% endif %}">
+                        <h6>Timing Breakdown:</h6>
+                        <ul class="list-unstyled" id="timing-list">
+                            <!-- Populated by JavaScript -->
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="text-center mt-3">
+                <a href="{{ url_for('main.index') }}" class="btn btn-secondary">
+                    <i class="fas fa-home"></i> Return to Home
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const jobId = '{{ job.job_id }}';
+const propertyId = '{{ job.property_id }}';
+let pollInterval = null;
+
+function updateUI(job) {
+    // Update progress bar
+    document.getElementById('progress-bar').style.width = job.progress + '%';
+    document.getElementById('progress-text').textContent = job.progress + '%';
+    
+    // Update stage text
+    document.getElementById('stage-text').textContent = job.stage;
+    
+    // Update property name
+    document.getElementById('property-name').textContent = job.property_name;
+    
+    if (job.status === 'completed') {
+        // Show success
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('success-icon').style.display = 'inline';
+        document.getElementById('status-message').style.display = 'none';
+        document.getElementById('success-message').style.display = 'block';
+        document.getElementById('run-id').textContent = job.run_id;
+        document.getElementById('duration').textContent = job.elapsed_seconds.toFixed(2);
+        
+        // Show timing breakdown
+        if (job.timing) {
+            const timingList = document.getElementById('timing-list');
+            timingList.innerHTML = `
+                <li><strong>API Fetch:</strong> ${job.timing.api_fetch_seconds.toFixed(2)}s</li>
+                <li><strong>Audit Engine:</strong> ${job.timing.execute_seconds.toFixed(2)}s</li>
+                <li><strong>Save Results:</strong> ${job.timing.save_seconds.toFixed(2)}s</li>
+                <li><strong>Total:</strong> ${job.timing.total_seconds.toFixed(2)}s</li>
+            `;
+            document.getElementById('timing-details').style.display = 'block';
+        }
+        
+        // Stop polling
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+        
+        // Redirect to property view after 3 seconds
+        setTimeout(() => {
+            window.location.href = `/property/${propertyId}?run_id=${job.run_id}`;
+        }, 3000);
+        
+    } else if (job.status === 'failed') {
+        // Show error
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('error-icon').style.display = 'inline';
+        document.getElementById('status-message').style.display = 'none';
+        document.getElementById('error-message').style.display = 'block';
+        document.getElementById('error-text').textContent = job.error;
+        
+        // Stop polling
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+    }
+}
+
+function pollJobStatus() {
+    fetch(`/api/audit-property-async/${jobId}`)
+        .then(response => response.json())
+        .then(job => {
+            updateUI(job);
+        })
+        .catch(error => {
+            console.error('Failed to poll job status:', error);
+        });
+}
+
+// Start polling every 2 seconds
+{% if job.status == 'running' %}
+pollInterval = setInterval(pollJobStatus, 2000);
+{% endif %}
+
+// Initial update
+updateUI({{ job | tojson }});
+</script>
+{% endblock %}

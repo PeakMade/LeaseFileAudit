@@ -1902,6 +1902,109 @@ IndentationError: unexpected indent
 - Azure build artifact path: `/tmp/8dee42f846cfb8f/` (ephemeral)
 - Deployment tracking: GitHub commit → Azure build ID in logs
 
+### Scenario 8: Azure 504 Gateway Timeout on Property Audits
+
+**Problem**: Property audits with large datasets (5000+ rows) exceed Azure App Service front-end timeout (~230 seconds)
+
+**Symptoms (2026-07-17)**:
+```
+HTTP 504 Gateway Timeout
+Long-running audits fail after ~230 seconds despite:
+- WEBSITES_CONTAINER_TIMEOUT_SECONDS = 600
+- gunicorn --timeout 600
+- Flask-Caching with aggressive TTLs
+```
+
+**Root Cause**:
+- Azure App Service has non-configurable front-end load balancer timeout (~230s)
+- App settings only control back-end worker timeouts (irrelevant for front-end limit)
+- SharePoint batch writes bottleneck: 5024 rows = 252 batches × 2.2s avg = 139s total
+- Total audit time: fetching (30s) + reconciliation (20s) + SharePoint writes (140s) = 190-250s
+- Properties with exception months or complex lease terms push over 230s limit
+
+**Solution: Async Audit Job Queue Pattern**
+
+Implemented 4-component async system to bypass Azure front-end timeout:
+
+1. **In-Memory Job Registry** (`web/views.py`):
+   ```python
+   _ASYNC_PROPERTY_JOBS = {}  # job_id → {status, progress, result, timing, error}
+   ```
+
+2. **Async Audit Endpoints**:
+   - `POST /api/audit-property-async` - Creates job, starts background thread, returns `job_id` + `status_url`
+   - `GET /api/audit-property-async/<job_id>` - JSON polling endpoint (status/progress/timing)
+   - `GET /audit-status/<job_id>` - HTML status page with live progress bar
+
+3. **Background Worker Function** (`_run_async_property_audit_worker`):
+   - Runs in separate thread, updates job dict with progress stages:
+     - 5%: Job started
+     - 10%: Fetching property data
+     - 30%: Running reconciliation
+     - 70%: Saving to SharePoint
+     - 100%: Completed
+   - Timing breakdown: fetch_time, audit_time, save_time, total_time
+   - Error handling with full traceback capture
+
+4. **Status Page UI** (`templates/audit_status.html`):
+   - Animated progress bar with percentage
+   - Stage-specific messages and spinner icons
+   - 2-second polling interval via JavaScript fetch
+   - Auto-redirect to property view after 3 seconds on completion
+   - Success/error alerts with timing details
+
+**Upload Form Integration** (`templates/upload.html`):
+```html
+<label>
+  <input type="checkbox" id="async_mode" checked>
+  Async Mode (recommended for Azure - bypasses 230s timeout)
+</label>
+```
+
+JavaScript intercepts form submission when async mode enabled:
+```javascript
+if (document.getElementById('async_mode').checked) {
+  fetch('/api/audit-property-async', {
+    method: 'POST',
+    body: new FormData(form)
+  })
+  .then(r => r.json())
+  .then(data => window.location.href = `/audit-status/${data.job_id}`)
+}
+```
+
+**Key Benefits**:
+- ✅ Bypasses Azure front-end timeout (audit can run 10+ minutes)
+- ✅ User sees live progress instead of blank loading screen
+- ✅ Multiple audits can run simultaneously (separate threads)
+- ✅ Graceful error handling with detailed messages
+- ✅ No database/Redis required (in-memory dict sufficient)
+- ✅ Works locally and on Azure with no config changes
+
+**Limitations**:
+- Jobs lost on app restart (acceptable for audit operations)
+- No persistence across multiple app instances (single-instance deployment)
+- Memory grows linearly with concurrent jobs (cleared on completion)
+
+**Testing Locally**:
+1. Start app: `.\run_app.ps1`
+2. Navigate to "Run Property Audit"
+3. Select large property (48 West, Volare, etc.)
+4. Keep "Async Mode" checked ✓
+5. Submit form → see live status page with progress bar
+6. Wait for completion → auto-redirect to property view
+
+**Deployment Notes**:
+- No app settings changes required
+- Works with existing gunicorn configuration
+- Compatible with current caching strategy
+- Safe to deploy alongside existing sync endpoints (both work)
+
+**Key Files**:
+- `web/views.py` lines ~3240-3440 - Async endpoints and worker function
+- `templates/audit_status.html` - Status page with polling UI
+- `templates/upload.html` lines ~190-220 - Async mode checkbox and JS handler
+
 ---
 
 ## Quick Reference

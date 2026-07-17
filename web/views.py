@@ -3236,6 +3236,252 @@ def upload_api_property():
 
 
 # ---------------------------------------------------------------------------
+# Async Property Audit (504 Timeout Workaround)
+# ---------------------------------------------------------------------------
+
+_ASYNC_PROPERTY_JOBS: dict = {}  # Keyed by job_id
+
+
+@bp.route('/api/audit-property-async', methods=['POST'])
+@require_auth
+def start_async_property_audit():
+    """
+    Start a property audit as a background job (returns immediately).
+    Client polls /api/audit-property-async/<job_id> for status.
+    
+    Solves Azure 504 timeout for audits exceeding 230 seconds.
+    """
+    property_id_raw = request.form.get('api_property_id', '').strip()
+    if not property_id_raw:
+        return jsonify({'error': 'Property ID is required'}), 400
+    
+    try:
+        property_id = int(float(property_id_raw))
+    except (ValueError, TypeError):
+        return jsonify({'error': f'Invalid property ID: {property_id_raw}'}), 400
+    
+    # Collect parameters
+    params = {
+        'property_id': property_id,
+        'audit_year': int(request.form.get('audit_year')) if request.form.get('audit_year') else None,
+        'audit_month': int(request.form.get('audit_month')) if request.form.get('audit_month') else None,
+        'transaction_from_date': request.form.get('api_from_date') or None,
+        'transaction_to_date': request.form.get('api_to_date') or None,
+    }
+    
+    # Create job
+    job_id = str(uuid.uuid4())
+    _ASYNC_PROPERTY_JOBS[job_id] = {
+        'job_id': job_id,
+        'status': 'running',  # running -> completed | failed
+        'property_id': property_id,
+        'property_name': f'Property {property_id}',  # Updated by worker
+        'params': params,
+        'started_at': datetime.utcnow().isoformat(),
+        'completed_at': None,
+        'elapsed_seconds': 0.0,
+        'run_id': None,
+        'error': None,
+        'progress': 0,  # 0-100
+        'stage': 'Initializing...',
+    }
+    
+    # Start background worker
+    thread = threading.Thread(
+        target=_run_async_property_audit_worker,
+        args=(current_app._get_current_object(), job_id, params),
+        daemon=True,
+        name=f"async-audit-{job_id[:8]}"
+    )
+    thread.start()
+    
+    logger.info(f"[ASYNC AUDIT] Job {job_id} started for property {property_id}")
+    return jsonify({'job_id': job_id, 'status_url': url_for('main.async_property_audit_status', job_id=job_id)})
+
+
+@bp.route('/api/audit-property-async/<job_id>')
+@require_auth
+def async_property_audit_status(job_id: str):
+    """Poll endpoint for async property audit status."""
+    job = _ASYNC_PROPERTY_JOBS.get(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    return jsonify(job)
+
+
+@bp.route('/audit-status/<job_id>')
+@require_auth
+def async_audit_status_page(job_id: str):
+    """Status page for async property audits (shows progress + auto-redirects on completion)."""
+    job = _ASYNC_PROPERTY_JOBS.get(job_id)
+    if not job:
+        flash('Audit job not found or expired.', 'warning')
+        return redirect(url_for('main.index'))
+    
+    return render_template('audit_status.html', job=job)
+
+
+def _run_async_property_audit_worker(app, job_id: str, params: dict):
+    """Background worker for async property audits."""
+    started_at = perf_counter()
+    
+    with app.app_context():
+        try:
+            property_id = params['property_id']
+            audit_year = params.get('audit_year')
+            audit_month = params.get('audit_month')
+            transaction_from_date = params.get('transaction_from_date')
+            transaction_to_date = params.get('transaction_to_date')
+            
+            # Update progress: Fetching property name
+            _ASYNC_PROPERTY_JOBS[job_id]['progress'] = 5
+            _ASYNC_PROPERTY_JOBS[job_id]['stage'] = 'Loading property info...'
+            
+            # Load property name from picklist
+            property_name = f'Property {property_id}'
+            try:
+                from audit_engine.api_ingest import get_entrata_environment
+                picklist = cached_load_api_property_picklist(_session_cache_token(), entrata_env=get_entrata_environment())
+                for item in picklist:
+                    if str(item.get('property_id')) == str(property_id):
+                        property_name = item.get('property_name', property_name)
+                        break
+            except Exception as e:
+                logger.warning(f"[ASYNC AUDIT] Failed to load property name: {e}")
+            
+            _ASYNC_PROPERTY_JOBS[job_id]['property_name'] = property_name
+            
+            # Update progress: Fetching data from Entrata API
+            _ASYNC_PROPERTY_JOBS[job_id]['progress'] = 10
+            _ASYNC_PROPERTY_JOBS[job_id]['stage'] = 'Fetching data from Entrata API...'
+            
+            api_fetch_started = perf_counter()
+            api_sources = fetch_property_api_sources(
+                property_id=property_id,
+                transaction_from_date=transaction_from_date,
+                transaction_to_date=transaction_to_date,
+            )
+            api_fetch_seconds = perf_counter() - api_fetch_started
+            
+            ar_raw = api_sources.get('ar_raw', pd.DataFrame())
+            scheduled_raw = api_sources.get('scheduled_raw', pd.DataFrame())
+            
+            if ar_raw.empty and scheduled_raw.empty:
+                raise ValueError('API returned no data for this property')
+            
+            # Patch property name into DataFrames
+            if 'PROPERTY_NAME' in ar_raw.columns and not ar_raw.empty:
+                ar_raw = ar_raw.copy()
+                ar_raw['PROPERTY_NAME'] = property_name
+            if 'PROPERTY_NAME' in scheduled_raw.columns and not scheduled_raw.empty:
+                scheduled_raw = scheduled_raw.copy()
+                scheduled_raw['PROPERTY_NAME'] = property_name
+            
+            # Update progress: Running audit engine
+            _ASYNC_PROPERTY_JOBS[job_id]['progress'] = 30
+            _ASYNC_PROPERTY_JOBS[job_id]['stage'] = 'Running audit engine...'
+            
+            storage = get_storage_service()
+            run_id = storage.generate_run_id()
+            
+            execute_started = perf_counter()
+            results = execute_audit_run(
+                file_path=None,
+                run_id=run_id,
+                audit_year=audit_year,
+                audit_month=audit_month,
+                scoped_property_ids=[str(property_id)],
+                preloaded_sources={
+                    config.ar_source.name: ar_raw,
+                    config.scheduled_source.name: scheduled_raw,
+                },
+                audit_date_from=transaction_from_date,
+                audit_date_to=transaction_to_date,
+            )
+            execute_seconds = perf_counter() - execute_started
+            
+            results['property_name_map'] = {property_id: property_name}
+            
+            # Update progress: Saving results
+            _ASYNC_PROPERTY_JOBS[job_id]['progress'] = 70
+            _ASYNC_PROPERTY_JOBS[job_id]['stage'] = 'Saving results to SharePoint...'
+            
+            metadata = {
+                'run_id': run_id,
+                'timestamp': datetime.now().isoformat(),
+                'config_version': 'v1',
+                'file_name': f'api_property_{property_id}.json',
+                'file_hash': '',
+                'file_size': 0,
+                'run_scope': {
+                    'type': 'property',
+                    'source': 'api_property_async',
+                    'property_ids': [str(property_id)],
+                    'base_run_id': None,
+                },
+                'api_ingest': {
+                    'property_id': property_id,
+                    'property_name': property_name,
+                    'lease_count': int(_safe_float(api_sources.get('lease_count'), 0)),
+                },
+            }
+            if audit_year or audit_month:
+                metadata['audit_period'] = {'year': audit_year, 'month': audit_month}
+            
+            save_started = perf_counter()
+            storage.save_run(
+                run_id,
+                results["expected_detail"],
+                results["actual_detail"],
+                results["bucket_results"],
+                results["findings"],
+                metadata,
+                results.get("variance_detail"),
+                None,
+            )
+            save_seconds = perf_counter() - save_started
+            
+            # Update progress: Complete
+            elapsed_seconds = perf_counter() - started_at
+            _ASYNC_PROPERTY_JOBS[job_id].update({
+                'status': 'completed',
+                'progress': 100,
+                'stage': 'Audit completed successfully!',
+                'completed_at': datetime.utcnow().isoformat(),
+                'elapsed_seconds': elapsed_seconds,
+                'run_id': run_id,
+                'timing': {
+                    'api_fetch_seconds': api_fetch_seconds,
+                    'execute_seconds': execute_seconds,
+                    'save_seconds': save_seconds,
+                    'total_seconds': elapsed_seconds,
+                },
+            })
+            
+            logger.info(
+                f"[ASYNC AUDIT] Job {job_id} completed: property={property_id} run_id={run_id} "
+                f"elapsed={elapsed_seconds:.2f}s api_fetch={api_fetch_seconds:.2f}s "
+                f"execute={execute_seconds:.2f}s save={save_seconds:.2f}s"
+            )
+            
+        except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            elapsed_seconds = perf_counter() - started_at
+            
+            _ASYNC_PROPERTY_JOBS[job_id].update({
+                'status': 'failed',
+                'completed_at': datetime.utcnow().isoformat(),
+                'elapsed_seconds': elapsed_seconds,
+                'error': str(e),
+                'error_trace': error_trace,
+                'stage': f'Error: {str(e)}',
+            })
+            
+            logger.error(f"[ASYNC AUDIT] Job {job_id} failed after {elapsed_seconds:.2f}s: {e}\n{error_trace}")
+
+
+# ---------------------------------------------------------------------------
 # Bulk Audit — in-memory job registry
 # ---------------------------------------------------------------------------
 
