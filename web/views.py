@@ -1870,6 +1870,7 @@ def execute_audit_run(
     preloaded_sources: dict = None,
     audit_date_from: str = None,
     audit_date_to: str = None,
+    progress_callback=None,
 ) -> dict:
     """
     Execute complete audit run.
@@ -2059,6 +2060,8 @@ def execute_audit_run(
                     print(f"[PROPERTY FILTER] Filtered {filtered_sched} scheduled charge rows for excluded properties")
     
     # Apply source mappings to convert RAW -> CANONICAL
+    if progress_callback:
+        progress_callback(37, 'Mapping source columns to canonical fields...')
     print(f"\n{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 2: SOURCE MAPPING (RAW → CANONICAL) =====")
     print(f"{'='*80}")
@@ -2075,6 +2078,8 @@ def execute_audit_run(
     print(f"[EXECUTE_AUDIT_RUN] Scheduled canonical columns: {list(scheduled_canonical.columns) if not scheduled_canonical.empty else 'Empty'}")
     
     # Normalize (validate canonical data)
+    if progress_callback:
+        progress_callback(42, 'Normalizing and validating data...')
     print(f"\n{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 3: NORMALIZATION & VALIDATION =====")
     print(f"{'='*80}")
@@ -2101,26 +2106,9 @@ def execute_audit_run(
             unique_properties = scheduled_normalized['PROPERTY_ID'].nunique()
             print(f"[EXECUTE_AUDIT_RUN] Scheduled properties: {unique_properties}")
     
-    # OPTIMIZATION: Pre-filter scheduled charges to allowed AR codes before expansion.
-    # When allowed_ar_codes is configured those are the only codes that reach snapshots and
-    # display, so expanding the full schedule set just creates a large intermediate dataset
-    # that gets discarded — filtering here keeps expansion proportional to display output.
-    from audit_engine.mappings import ALLOWED_AR_CODES_SET, ALLOWED_AR_CODES_TEXT_SET
-    if ALLOWED_AR_CODES_SET and not scheduled_normalized.empty and CanonicalField.AR_CODE_ID.value in scheduled_normalized.columns:
-        _sched_ar_col = scheduled_normalized[CanonicalField.AR_CODE_ID.value]
-        _sched_ar_numeric = pd.to_numeric(_sched_ar_col, errors='coerce')
-        _allowed_mask = (
-            _sched_ar_numeric.isin(ALLOWED_AR_CODES_SET).fillna(False) |
-            _sched_ar_col.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET).fillna(False)
-        )
-        _before_sched = len(scheduled_normalized)
-        scheduled_normalized = scheduled_normalized[_allowed_mask].copy()
-        print(
-            f"[EXECUTE_AUDIT_RUN] [AR CODE PRE-FILTER] Scheduled: {_before_sched} → {len(scheduled_normalized)} rows "
-            f"(keeping allowed_ar_codes={sorted(ALLOWED_AR_CODES_SET)})"
-        )
-
     # Expand scheduled to months
+    if progress_callback:
+        progress_callback(47, f'Expanding {len(scheduled_normalized):,} scheduled charges to monthly buckets...')
     print(f"\n{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 4: EXPANSION (SCHEDULED → MONTHLY) =====")
     print(f"{'='*80}")
@@ -2292,6 +2280,8 @@ def execute_audit_run(
     
     is_single_property = len(all_property_ids) == 1
     
+    if progress_callback:
+        progress_callback(55, f'Reconciling {len(expected_detail):,} expected vs {len(actual_detail):,} actual transactions...')
     print(f"\n{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 5: RECONCILIATION (EXPECTED vs ACTUAL) =====")
     print(f"{'='*80}")
@@ -2452,6 +2442,8 @@ def execute_audit_run(
                 pass
         return fallback.iloc[0:0].copy()
 
+    if progress_callback:
+        progress_callback(77, 'Aggregating results across properties...')
     print(f"\n{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 6: AGGREGATION (COMBINING PROPERTY RESULTS) =====")
     print(f"{'='*80}")
@@ -2506,6 +2498,8 @@ def execute_audit_run(
     print(f"{'='*80}\n")
 
     # Aggregate property summaries into portfolio totals (computed from concatenated outputs).
+    if progress_callback:
+        progress_callback(83, 'Calculating KPIs and match rates...')
     print(f"\n{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 7: CALCULATING KPIs & SUMMARY =====")
     print(f"{'='*80}")
@@ -2525,6 +2519,8 @@ def execute_audit_run(
         future_lease_config = load_future_lease_config()
         
         if future_lease_config.get('enabled', False):
+            if progress_callback:
+                progress_callback(88, 'Running future lease audit...')
             print(f"\n{'='*80}")
             print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 8: FUTURE LEASE AUDIT =====")
             print(f"{'='*80}")
@@ -3305,6 +3301,7 @@ def start_async_property_audit():
         'error': None,
         'progress': 0,  # 0-100
         'stage': 'Initializing...',
+        'stages': [],  # Chronological list of {stage, progress, elapsed} for the activity log
     }
     
     # Start background worker
@@ -3345,7 +3342,17 @@ def async_audit_status_page(job_id: str):
 def _run_async_property_audit_worker(app, job_id: str, params: dict):
     """Background worker for async property audits."""
     started_at = perf_counter()
-    
+
+    def _update_progress(pct: int, stage: str):
+        elapsed = perf_counter() - started_at
+        _ASYNC_PROPERTY_JOBS[job_id]['progress'] = pct
+        _ASYNC_PROPERTY_JOBS[job_id]['stage'] = stage
+        _ASYNC_PROPERTY_JOBS[job_id]['stages'].append({
+            'stage': stage,
+            'progress': pct,
+            'elapsed': round(elapsed, 2),
+        })
+
     with app.app_context():
         try:
             property_id = params['property_id']
@@ -3353,10 +3360,9 @@ def _run_async_property_audit_worker(app, job_id: str, params: dict):
             audit_month = params.get('audit_month')
             transaction_from_date = params.get('transaction_from_date')
             transaction_to_date = params.get('transaction_to_date')
-            
+
             # Update progress: Fetching property name
-            _ASYNC_PROPERTY_JOBS[job_id]['progress'] = 5
-            _ASYNC_PROPERTY_JOBS[job_id]['stage'] = 'Loading property info...'
+            _update_progress(5, 'Loading property info...')
             
             # Load property name from picklist
             property_name = f'Property {property_id}'
@@ -3373,9 +3379,8 @@ def _run_async_property_audit_worker(app, job_id: str, params: dict):
             _ASYNC_PROPERTY_JOBS[job_id]['property_name'] = property_name
             
             # Update progress: Fetching data from Entrata API
-            _ASYNC_PROPERTY_JOBS[job_id]['progress'] = 10
-            _ASYNC_PROPERTY_JOBS[job_id]['stage'] = 'Fetching data from Entrata API...'
-            
+            _update_progress(10, 'Fetching lease details and AR transactions from Entrata...')
+
             api_fetch_started = perf_counter()
             api_sources = fetch_property_api_sources(
                 property_id=property_id,
@@ -3383,13 +3388,13 @@ def _run_async_property_audit_worker(app, job_id: str, params: dict):
                 transaction_to_date=transaction_to_date,
             )
             api_fetch_seconds = perf_counter() - api_fetch_started
-            
+
             ar_raw = api_sources.get('ar_raw', pd.DataFrame())
             scheduled_raw = api_sources.get('scheduled_raw', pd.DataFrame())
-            
+
             if ar_raw.empty and scheduled_raw.empty:
                 raise ValueError('API returned no data for this property')
-            
+
             # Patch property name into DataFrames
             if 'PROPERTY_NAME' in ar_raw.columns and not ar_raw.empty:
                 ar_raw = ar_raw.copy()
@@ -3397,10 +3402,10 @@ def _run_async_property_audit_worker(app, job_id: str, params: dict):
             if 'PROPERTY_NAME' in scheduled_raw.columns and not scheduled_raw.empty:
                 scheduled_raw = scheduled_raw.copy()
                 scheduled_raw['PROPERTY_NAME'] = property_name
-            
-            # Update progress: Running audit engine
-            _ASYNC_PROPERTY_JOBS[job_id]['progress'] = 30
-            _ASYNC_PROPERTY_JOBS[job_id]['stage'] = 'Running audit engine...'
+
+            _ar_count = len(ar_raw) if not ar_raw.empty else 0
+            _sched_count = len(scheduled_raw) if not scheduled_raw.empty else 0
+            _update_progress(35, f'API complete — {_ar_count:,} AR transactions, {_sched_count:,} scheduled charges')
             
             storage = get_storage_service()
             run_id = storage.generate_run_id()
@@ -3418,14 +3423,14 @@ def _run_async_property_audit_worker(app, job_id: str, params: dict):
                 },
                 audit_date_from=transaction_from_date,
                 audit_date_to=transaction_to_date,
+                progress_callback=_update_progress,
             )
             execute_seconds = perf_counter() - execute_started
             
             results['property_name_map'] = {property_id: property_name}
             
             # Update progress: Saving results
-            _ASYNC_PROPERTY_JOBS[job_id]['progress'] = 70
-            _ASYNC_PROPERTY_JOBS[job_id]['stage'] = 'Saving results to SharePoint...'
+            _update_progress(90, 'Saving results to SharePoint...')
             
             metadata = {
                 'run_id': run_id,
