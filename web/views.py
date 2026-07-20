@@ -2101,6 +2101,25 @@ def execute_audit_run(
             unique_properties = scheduled_normalized['PROPERTY_ID'].nunique()
             print(f"[EXECUTE_AUDIT_RUN] Scheduled properties: {unique_properties}")
     
+    # OPTIMIZATION: Pre-filter scheduled charges to allowed AR codes before expansion.
+    # When allowed_ar_codes is configured those are the only codes that reach snapshots and
+    # display, so expanding the full schedule set just creates a large intermediate dataset
+    # that gets discarded — filtering here keeps expansion proportional to display output.
+    from audit_engine.mappings import ALLOWED_AR_CODES_SET, ALLOWED_AR_CODES_TEXT_SET
+    if ALLOWED_AR_CODES_SET and not scheduled_normalized.empty and CanonicalField.AR_CODE_ID.value in scheduled_normalized.columns:
+        _sched_ar_col = scheduled_normalized[CanonicalField.AR_CODE_ID.value]
+        _sched_ar_numeric = pd.to_numeric(_sched_ar_col, errors='coerce')
+        _allowed_mask = (
+            _sched_ar_numeric.isin(ALLOWED_AR_CODES_SET).fillna(False) |
+            _sched_ar_col.astype(str).str.strip().isin(ALLOWED_AR_CODES_TEXT_SET).fillna(False)
+        )
+        _before_sched = len(scheduled_normalized)
+        scheduled_normalized = scheduled_normalized[_allowed_mask].copy()
+        print(
+            f"[EXECUTE_AUDIT_RUN] [AR CODE PRE-FILTER] Scheduled: {_before_sched} → {len(scheduled_normalized)} rows "
+            f"(keeping allowed_ar_codes={sorted(ALLOWED_AR_CODES_SET)})"
+        )
+
     # Expand scheduled to months
     print(f"\n{'='*80}")
     print(f"[EXECUTE_AUDIT_RUN] ===== PHASE 4: EXPANSION (SCHEDULED → MONTHLY) =====")

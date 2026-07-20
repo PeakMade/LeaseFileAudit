@@ -1261,8 +1261,8 @@ class StorageService:
             f"effective_batch_size={batch_size} source={batch_size_source}"
         )
 
-        batch_concurrency = 8  # Increased from 4 to 8 for faster writes (2x throughput)
-        batch_concurrency_source = 'default:8'
+        batch_concurrency = 16  # Default: 16 concurrent batches for fast SharePoint writes
+        batch_concurrency_source = 'default:16'
         try:
             concurrency_env_key = None
             if 'auditruns' in context_lower:
@@ -1285,7 +1285,7 @@ class StorageService:
                 "falling back to default concurrency=2"
             )
 
-        batch_concurrency = max(1, min(10, int(batch_concurrency)))  # Raised cap from 4 to 10
+        batch_concurrency = max(1, min(20, int(batch_concurrency)))  # Cap at 20 to stay within Graph API rate limits
         logger.info(
             f"[STORAGE][BATCH CONFIG] context={context_label} "
             f"effective_batch_concurrency={batch_concurrency} source={batch_concurrency_source}"
