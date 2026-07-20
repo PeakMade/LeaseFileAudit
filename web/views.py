@@ -1954,7 +1954,9 @@ def execute_audit_run(
             if start_col in raw_sched_df.columns:
                 sched_start = _normalize_raw_date_series(raw_sched_df[start_col])
                 sched_end = _normalize_raw_date_series(raw_sched_df[end_col]) if end_col in raw_sched_df.columns else pd.Series(pd.NaT, index=raw_sched_df.index, dtype='datetime64[ns]')
-                sched_end = sched_end.where(sched_end.notna(), sched_start)
+                # Null end date means open-ended/ongoing charge — treat as far future so it always
+                # overlaps the audit window regardless of when it started.
+                sched_end = sched_end.where(sched_end.notna(), pd.Timestamp('2099-12-31'))
 
                 invalid_sched_dates = int(sched_start.isna().sum())
                 overlap_mask = (

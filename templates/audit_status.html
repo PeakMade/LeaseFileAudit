@@ -117,7 +117,7 @@ function updateUI(job) {
         
         // Redirect to property view after 3 seconds
         setTimeout(() => {
-            window.location.href = `/property/${propertyId}?run_id=${job.run_id}`;
+            window.location.href = `/property/${propertyId}/${job.run_id}`;
         }, 3000);
         
     } else if (job.status === 'failed') {
