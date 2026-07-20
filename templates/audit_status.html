@@ -2,6 +2,20 @@
 
 {% block title %}Audit Status{% endblock %}
 
+{% block extra_head %}
+<style>
+.stage-log { border: 1px solid #dee2e6; border-radius: 6px; overflow: hidden; }
+.stage-row { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid #f0f0f0; font-size: 0.9rem; }
+.stage-row:last-child { border-bottom: none; }
+.stage-row.done { background: #f8fff8; color: #333; }
+.stage-row.active { background: #f0f7ff; font-weight: 500; }
+.stage-icon { width: 18px; text-align: center; flex-shrink: 0; }
+.stage-text { flex: 1; }
+.stage-time { color: #888; font-size: 0.8rem; white-space: nowrap; }
+.stage-duration { color: #28a745; font-size: 0.8rem; white-space: nowrap; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="container mt-4">
     <div class="row">
@@ -138,9 +152,21 @@ function updateUI(job) {
 
 function pollJobStatus() {
     fetch(`/api/audit-property-async/${jobId}`)
-        .then(response => response.json())
+        .then(response => {
+            if (response.status === 404) {
+                // Job lost (server restarted mid-audit)
+                if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+                document.getElementById('spinner').style.display = 'none';
+                document.getElementById('error-icon').style.display = 'inline';
+                document.getElementById('status-message').style.display = 'none';
+                document.getElementById('error-message').style.display = 'block';
+                document.getElementById('error-text').textContent = 'The audit job was lost because the server restarted during the audit. Please return to the property and start a new audit.';
+                return null;
+            }
+            return response.json();
+        })
         .then(job => {
-            updateUI(job);
+            if (job) updateUI(job);
         })
         .catch(error => {
             console.error('Failed to poll job status:', error);
