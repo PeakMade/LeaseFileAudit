@@ -457,6 +457,20 @@ def reconcile_detail(
     ar_df.update(tertiary_unmatched_ar)
     scheduled_df.update(tertiary_unmatched_sched)
     tertiary_matched_count = int((ar_df['MATCH_TYPE'] == 'TERTIARY_DATE_MISMATCH').sum())
+
+    # STEP 3D: CROSS-INTERVAL MATCHING - Match across intervals using LEASE_ID (unit transfers/renewals)
+    unmatched_ar_after_tertiary = ar_df[~ar_df['MATCHED']]
+    unmatched_sched_after_tertiary = scheduled_df[~scheduled_df['MATCHED']]
+    crossint_unmatched_ar, crossint_unmatched_sched = _match_cross_interval(
+        unmatched_ar_after_tertiary,
+        unmatched_sched_after_tertiary,
+        recon_config,
+        scheduled_to_ar_map
+    )
+
+    ar_df.update(crossint_unmatched_ar)
+    scheduled_df.update(crossint_unmatched_sched)
+    cross_interval_matched_count = int((ar_df['MATCH_TYPE'] == 'CROSS_INTERVAL').sum())
     
     # STEP 4: IDENTIFY VARIANCES - Classify unmatched and mismatched records
     variance_df = _identify_variances(scheduled_df, ar_df, recon_config, scheduled_to_ar_map)
@@ -468,6 +482,7 @@ def reconcile_detail(
         'primary_matched_ar': primary_matched_count,
         'secondary_matched_ar': secondary_matched_count,
         'tertiary_matched_ar': tertiary_matched_count,
+        'cross_interval_matched_ar': cross_interval_matched_count,
         'unmatched_ar': len(ar_df[~ar_df['MATCHED']]),
         'unmatched_scheduled': len(scheduled_df[~scheduled_df['MATCHED']]),
         'variances': len(variance_df)
@@ -883,6 +898,159 @@ def _get_rent_period_scope(period_start, period_end, audit_start, audit_end) -> 
 
     # Partial overlap: charge started before the audit window and bleeds in
     return 'partial'
+
+
+def _match_cross_interval(
+    ar_df: pd.DataFrame,
+    scheduled_df: pd.DataFrame,
+    recon_config: ReconciliationConfig,
+    scheduled_to_ar_map: dict
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    CROSS-INTERVAL MATCHING: Match transactions across different lease intervals using LEASE_ID.
+    
+    This handles cases where:
+    - Resident transfers units (new lease interval created)
+    - Lease renewals (new interval, but same resident)
+    - AR transactions remain on old interval while scheduled charges move to new interval
+    
+    Match criteria:
+    - Same LEASE_ID (not LEASE_INTERVAL_ID)
+    - Same AR_CODE_ID
+    - Same AUDIT_MONTH
+    - Amount matches within tolerance
+    
+    This is crucial for student housing properties with frequent unit transfers.
+    
+    Returns:
+        Tuple of updated AR and scheduled DataFrames with MATCHED flags set
+    """
+    ar_result = ar_df.copy()
+    scheduled_result = scheduled_df.copy()
+    
+    if len(ar_df) == 0 or len(scheduled_df) == 0:
+        logger.info("[CROSS-INTERVAL] No unmatched transactions to process")
+        return ar_result, scheduled_result
+    
+    # Check if LEASE_ID exists in both DataFrames
+    if CanonicalField.LEASE_ID.value not in ar_df.columns:
+        logger.warning("[CROSS-INTERVAL] LEASE_ID not found in AR data - skipping cross-interval matching")
+        return ar_result, scheduled_result
+    
+    if CanonicalField.LEASE_ID.value not in scheduled_df.columns:
+        logger.warning("[CROSS-INTERVAL] LEASE_ID not found in scheduled data - skipping cross-interval matching")
+        return ar_result, scheduled_result
+    
+    # Debug: show unique LEASE_IDs in both dataframes
+    ar_lease_ids = set(ar_df[CanonicalField.LEASE_ID.value].dropna().unique())
+    sched_lease_ids = set(scheduled_df[CanonicalField.LEASE_ID.value].dropna().unique())
+    overlap_ids = ar_lease_ids & sched_lease_ids
+    logger.info(f"[CROSS-INTERVAL] Unmatched AR LEASE_IDs: {len(ar_lease_ids)}, Scheduled LEASE_IDs: {len(sched_lease_ids)}, Overlap: {len(overlap_ids)}")
+    if len(overlap_ids) > 0:
+        logger.info(f"[CROSS-INTERVAL] Sample overlapping LEASE_IDs: {list(overlap_ids)[:5]}")
+    
+    # Debug AR_CODE_ID data types
+    ar_code_dtype = ar_df[CanonicalField.AR_CODE_ID.value].dtype
+    sched_code_dtype = scheduled_df[CanonicalField.AR_CODE_ID.value].dtype
+    ar_sample_codes = ar_df[CanonicalField.AR_CODE_ID.value].dropna().unique()[:5].tolist()
+    sched_sample_codes = scheduled_df[CanonicalField.AR_CODE_ID.value].dropna().unique()[:5].tolist()
+    logger.info(f"[CROSS-INTERVAL] AR_CODE_ID types: AR={ar_code_dtype}, Scheduled={sched_code_dtype}")
+    logger.info(f"[CROSS-INTERVAL] AR_CODE_ID samples: AR={ar_sample_codes}, Scheduled={sched_sample_codes}")
+    
+    # Normalize AR_CODE_ID to string for comparison
+    ar_df = ar_df.copy()
+    scheduled_df = scheduled_df.copy()
+    ar_df[CanonicalField.AR_CODE_ID.value] = ar_df[CanonicalField.AR_CODE_ID.value].astype(str)
+    scheduled_df[CanonicalField.AR_CODE_ID.value] = scheduled_df[CanonicalField.AR_CODE_ID.value].astype(str)
+    
+    matched_count = 0
+    lease_id_matches = 0
+    ar_code_matches = 0
+    amount_matches = 0
+
+    audit_month_col = CanonicalField.AUDIT_MONTH.value
+    ar_has_audit_month = audit_month_col in ar_df.columns
+    sched_has_audit_month = audit_month_col in scheduled_df.columns
+
+    # Track which scheduled IDs have already been claimed to prevent double-matching
+    claimed_sched_ids: set = set()
+
+    # Try to match each unmatched AR transaction by LEASE_ID (across intervals)
+    for ar_idx, ar_row in ar_df.iterrows():
+        lease_id = ar_row.get(CanonicalField.LEASE_ID.value)
+        ar_code = ar_row.get(CanonicalField.AR_CODE_ID.value)
+        ar_amount = ar_row.get(CanonicalField.ACTUAL_AMOUNT.value)
+        ar_month = ar_row.get(audit_month_col) if ar_has_audit_month else None
+
+        # Skip if key fields are missing
+        if pd.isna(lease_id) or pd.isna(ar_code):
+            continue
+
+        # Count how many AR transactions have overlapping LEASE_IDs
+        if lease_id in overlap_ids:
+            lease_id_matches += 1
+
+        # Find candidate scheduled charges:
+        # same LEASE_ID, same AR_CODE_ID, same AUDIT_MONTH, not already claimed
+        candidates = scheduled_df[
+            (scheduled_df[CanonicalField.LEASE_ID.value] == lease_id) &
+            (scheduled_df[CanonicalField.AR_CODE_ID.value] == ar_code) &
+            (~scheduled_df[CanonicalField.SCHEDULED_CHARGES_ID.value].isin(claimed_sched_ids))
+        ]
+
+        # Enforce AUDIT_MONTH match when available — prevents cross-month false matches
+        if ar_has_audit_month and sched_has_audit_month and not pd.isna(ar_month):
+            candidates = candidates[candidates[audit_month_col] == ar_month]
+
+        if len(candidates) == 0:
+            continue
+
+        ar_code_matches += 1
+
+        # Filter by amount match (within tolerance)
+        if pd.isna(ar_amount):
+            continue
+
+        amount_match_candidates = candidates[
+            abs(candidates[CanonicalField.EXPECTED_AMOUNT.value] - ar_amount) <= recon_config.amount_tolerance
+        ]
+
+        if len(amount_match_candidates) == 0:
+            continue
+
+        amount_matches += 1
+
+        # Pick the best match: prefer exact amount, then take the first
+        exact = amount_match_candidates[
+            amount_match_candidates[CanonicalField.EXPECTED_AMOUNT.value] == ar_amount
+        ]
+        matched_sched = exact.iloc[0] if len(exact) > 0 else amount_match_candidates.iloc[0]
+        matched_sched_id = matched_sched[CanonicalField.SCHEDULED_CHARGES_ID.value]
+
+        # Claim this scheduled ID so no other AR transaction can steal it
+        claimed_sched_ids.add(matched_sched_id)
+
+        # Update AR match
+        ar_result.loc[ar_idx, 'MATCHED'] = True
+        ar_result.loc[ar_idx, 'MATCH_TYPE'] = 'CROSS_INTERVAL'
+        ar_result.loc[ar_idx, 'MATCHED_SCHEDULED_ID'] = matched_sched_id
+
+        # Update scheduled match
+        sched_mask = scheduled_result[CanonicalField.SCHEDULED_CHARGES_ID.value] == matched_sched_id
+        scheduled_result.loc[sched_mask, 'MATCHED'] = True
+        scheduled_result.loc[sched_mask, 'MATCH_TYPE'] = 'CROSS_INTERVAL'
+
+        # Append AR ID to dictionary map
+        if matched_sched_id not in scheduled_to_ar_map:
+            scheduled_to_ar_map[matched_sched_id] = []
+        scheduled_to_ar_map[matched_sched_id].append(ar_row[CanonicalField.AR_TRANSACTION_ID.value])
+
+        matched_count += 1
+    
+    logger.info(f"[CROSS-INTERVAL] Matching funnel: {lease_id_matches} AR txns with overlapping LEASE_ID → {ar_code_matches} with matching AR_CODE → {amount_matches} with matching amount → {matched_count} final matches")
+    logger.info(f"[CROSS-INTERVAL] Matched {matched_count} AR transactions across lease intervals (unit transfers/renewals)")
+    
+    return ar_result, scheduled_result
 
 
 def _identify_variances(

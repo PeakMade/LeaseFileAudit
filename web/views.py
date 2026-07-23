@@ -6211,7 +6211,8 @@ def lease_view(property_id: str, lease_interval_id: str, run_id: str = None):
         
         # Build Entrata URL using LEASE_ID (not LEASE_INTERVAL_ID)
         entrata_url = build_entrata_url(lease_id, customer_id)
-        has_customer_id = customer_id is not None and lease_id is not None
+        _cid_str = str(customer_id).strip() if customer_id is not None else ''
+        has_customer_id = bool(_cid_str) and _cid_str.lower() not in ('nan', 'none') and lease_id is not None
         
         return render_template(
             'lease.html',

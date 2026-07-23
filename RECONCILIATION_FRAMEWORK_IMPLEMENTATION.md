@@ -3,6 +3,26 @@
 ## Overview
 This document describes the comprehensive reconciliation framework implemented in the audit engine to match scheduled charges against AR transactions with high accuracy.
 
+## Matching Tier Summary
+
+| Tier | Name | Match Key | Purpose |
+|------|------|-----------|---------|
+| 1 | Primary (Exact) | LEASE_INTERVAL_ID + AR_CODE_ID + AUDIT_MONTH + amount | Standard match |
+| 2 | Secondary | LEASE_INTERVAL_ID + AR_CODE_ID + AUDIT_MONTH (amount differs) | Amount mismatch |
+| 3 | Tertiary | LEASE_INTERVAL_ID + AR_CODE_ID (date window) | Date-shifted charges |
+| 4 | Cross-Interval | LEASE_ID + AR_CODE_ID + AUDIT_MONTH + amount | Unit transfers / renewals |
+
+### Tier 4: Cross-Interval Matching (added 2026-07-23)
+Handles properties with frequent unit transfers (e.g. student housing). When a resident moves units, Entrata creates a new lease interval with the scheduled charges, but actual AR transactions stay on the old interval. Without this tier, every affected lease produces a false mirror-image discrepancy (same dollar amount as both undercharge and overcharge).
+
+**Key implementation details:**
+- Runs after Tiers 1–3 on all unmatched records
+- Matches by `LEASE_ID` (resident) not `LEASE_INTERVAL_ID` (specific period)
+- Enforces `AUDIT_MONTH` equality to prevent cross-month false matches
+- Normalizes `AR_CODE_ID` to string on both sides (fixes integer vs. string type mismatch from API)
+- Uses a `claimed_sched_ids` set to prevent one scheduled charge from being matched twice
+- Prefers exact amount match over tolerance-range match when multiple candidates exist
+
 ## Implementation Summary
 
 ### 1. Source Columns Enhanced (mappings.py)

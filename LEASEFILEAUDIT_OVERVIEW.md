@@ -1,7 +1,7 @@
 # LeaseFileAudit Application - Complete Overview
 
-**Last Updated:** 2026-07-06  
-**Application Version:** 2.0 (Post-CSV Migration)
+**Last Updated:** 2026-07-23  
+**Application Version:** 2.1 (Cross-Interval Matching + AR Pagination)
 
 ---
 
@@ -48,7 +48,7 @@ Property managers schedule recurring rent and fee charges for thousands of resid
 ### The Solution
 LeaseFileAudit **automatically reconciles** scheduled charges against actual transactions using:
 - **Entrata API integration** to fetch live lease and transaction data
-- **Three-tier matching algorithm** to identify exact matches, amount mismatches, and missing charges
+- **Four-tier matching algorithm** to identify exact matches, amount mismatches, missing charges, and unit transfer cross-interval matches
 - **SharePoint persistence** to track audit history and exception resolution
 - **Portfolio dashboard** to monitor billing health across all properties
 
@@ -348,11 +348,11 @@ Output (9 monthly records):
 - `mappings.py`: Source-to-canonical field transformations
 - `normalize.py`: Data validation and cleaning
 - `expand.py`: Scheduled charge expansion to monthly buckets
-- `reconcile.py`: Three-tier matching algorithm
+- `reconcile.py`: Four-tier matching algorithm (includes cross-interval matching for unit transfers)
 - `metrics.py`: KPI calculation (match rate, financial impact)
 - `canonical_fields.py`: Standard field name enums
 
-**Three-Tier Matching Algorithm**:
+**Four-Tier Matching Algorithm**:
 ```
 TIER 1: Exact Match (MATCHED)
   - Property ID matches
@@ -371,6 +371,16 @@ TIER 3: Unbilled/Unexpected
   - Expected charge has no matching actual → SCHEDULED_NOT_BILLED
   - Actual transaction has no matching expected → BILLED_NOT_SCHEDULED
   → High severity findings requiring manual review
+
+TIER 4: Cross-Interval Match (CROSS_INTERVAL)
+  - Handles unit transfers and renewals where Entrata creates a new
+    lease interval — AR transactions remain on the old interval while
+    scheduled charges move to the new one
+  - Matches by LEASE_ID (not LEASE_INTERVAL_ID) + AR_CODE_ID +
+    AUDIT_MONTH + amount within tolerance
+  - Prevents false mirror-image discrepancies (same amount appearing
+    as both undercharge and overcharge)
+  → Status: MATCHED (cross-interval), Variance: $0.00
 ```
 
 #### 3. **Storage Layer** (`storage/service.py`)
@@ -450,11 +460,12 @@ TIER 3: Unbilled/Unexpected
 ┌─────────────────────────────────────────────────────────────┐
 │      PHASE 5: RECONCILIATION (EXPECTED vs ACTUAL)            │
 │  • Group by (property, lease, AR code, month)                │
-│  • Three-tier matching algorithm:                            │
+│  • Four-tier matching algorithm:                             │
 │    1. Exact match → MATCHED                                  │
 │    2. Amount differs → AMOUNT_MISMATCH                       │
 │    3. Unbilled → SCHEDULED_NOT_BILLED                        │
 │    4. Unexpected → BILLED_NOT_SCHEDULED                      │
+│    + Cross-interval: unit transfers matched by LEASE_ID      │
 │  • bucket_results: 8,971 rows (reconciled records)           │
 │  • findings: 187 rows (discrepancies)                        │
 └──────────────────────┬──────────────────────────────────────┘
@@ -891,7 +902,7 @@ User expects to view transaction details **immediately** (like old CSV system), 
 
 LeaseFileAudit automates billing reconciliation for student housing properties by:
 1. **Fetching live data** from Entrata API (scheduled charges + posted transactions)
-2. **Reconciling expected vs actual** using three-tier matching algorithm
+2. **Reconciling expected vs actual** using four-tier matching algorithm (including cross-interval matching for unit transfers)
 3. **Persisting results** to SharePoint (Parquet files + aggregated snapshots)
 4. **Tracking exceptions** via manual resolution workflow
 5. **Displaying insights** via portfolio/property/lease drill-down views

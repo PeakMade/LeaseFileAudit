@@ -34,7 +34,7 @@ Property managers need to ensure that all scheduled rent and fee charges are bil
 - Calculate portfolio-level financial metrics
 
 ### Key Features
-- **Automated Reconciliation**: Matches thousands of transactions using a three-tier matching algorithm
+- **Automated Reconciliation**: Matches thousands of transactions using a four-tier matching algorithm (including cross-interval matching for unit transfers)
 - **Exception Management**: Track and resolve billing exceptions by month and AR code
 - **SharePoint Integration**: Store audit runs, track exceptions, and log user activity in SharePoint
 - **Entrata Lease-Term Sidecar**: Extract lease expectations from Entrata documents and overlay on AR-code review without changing core match statuses
@@ -97,7 +97,7 @@ LeaseFileAudit/
 │   ├── mappings.py                # Source data transformations
 │   ├── normalize.py               # Data validation and cleaning
 │   ├── expand.py                  # Scheduled charge expansion to months
-│   ├── reconcile.py               # Matching algorithm (3-tier)
+│   ├── reconcile.py               # Matching algorithm (4-tier, incl. cross-interval)
 │   ├── rules.py                   # Business rule validation
 │   ├── findings.py                # Exception detection and categorization
 │   ├── metrics.py                 # KPI calculations
@@ -193,7 +193,7 @@ LeaseFileAudit/
    - Loads raw DataFrames from workbook sheets
 - **API property path** (`/upload-api-property`):
    - User selects property and optional date window (`api_from_date` / `api_to_date`) and/or audit year/month
-   - `audit_engine/api_ingest.py` fetches Entrata API sources (`getLeaseDetails`, `getLeaseArTransactions`)
+   - `audit_engine/api_ingest.py` fetches Entrata API sources (`getLeaseDetails` paginated, `getLeaseArTransactions` paginated — 500 leases/page to avoid timeouts on large properties)
    - `api_from_date`/`api_to_date` are sent to Entrata's `getLeaseArTransactions` as `transactionFromDate`/`transactionToDate` (AR pre-filtered server-side) AND applied post-fetch as an `AUDIT_MONTH` range filter to **both** AR and scheduled DataFrames so both sides of the reconciliation cover the same window
    - Builds AR and Scheduled raw DataFrames aligned to the same pipeline contract
 - **API lease path** (`/upload-api-lease`):
@@ -544,7 +544,7 @@ StorageService:
 ## Reconciliation Engine
 
 ### Overview
-The reconciliation engine matches scheduled charges against posted AR transactions to identify variances. It uses a **three-tier matching algorithm** with hash-based grouping for O(n) performance.
+The reconciliation engine matches scheduled charges against posted AR transactions to identify variances. It uses a **four-tier matching algorithm** with hash-based grouping for O(n) performance.
 
 ### Bucket Key Concept
 Each transaction is grouped into a "bucket" defined by:
@@ -586,6 +586,17 @@ else:
 - Matches charges posted in wrong month
 - Same property, lease, AR code, but different month
 - Helps identify timing issues vs true missing charges
+
+#### Tier 4: CROSS-INTERVAL Match (Unit transfers / renewals, added 2026-07-23)
+- Handles leases where a resident transfers units mid-tenancy
+- Entrata creates a new `LEASE_INTERVAL_ID` with the scheduled charges, but
+  actual AR transactions remain on the old interval
+- Without this tier: false mirror-image result (same dollar amount appearing
+  as both undercharge AND overcharge)
+- Matches by `LEASE_ID` (resident) instead of `LEASE_INTERVAL_ID`
+- Additional guards: same `AUDIT_MONTH`, same `AR_CODE_ID` (normalized to str),
+  amount within tolerance, no double-claiming of a scheduled charge
+- Activates automatically only for unmatched records after Tiers 1–3
 
 ### Variance Calculation
 ```python
@@ -2156,6 +2167,7 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **2026-03-09**: Tightened `AMENITY_PREMIUM` extraction configuration in `lease_term_extraction_config.json` to only evaluate Exclusive Bedspace Addendum focus context (`source_order: ["focus"]`) and ignore floorplan multi-option/potential-fee listing language (for example `Floorplan Rate Addendum`, `premium features below`, `potential rent range`) so only signed addendum-specific premium amounts are extracted
 - **2026-03-09**: Centralized term-specific lease extraction heuristics into JSON configuration: added `lease_term_extraction_config.json` as the single source for `BASE_RENT`, `APPLICATION_FEE`, `ADMIN_FEE`, `AMENITY_PREMIUM`, `PARKING`, and `PET_RENT` extraction patterns/tokens/filters; added loader/access helpers in `audit_engine/lease_term_extraction_rules.py`; updated `audit_engine/entrata_lease_terms.py` to consume config-driven page hints, anchor tokens, regex patterns, exclusion signals, monthly/one-time context signals, and admin application-leak guard patterns instead of hardcoded term regex lists
 - **2026-03-06**: Fixed API parking recurrence classification and property-name rendering across views: `audit_engine/api_ingest.py` now treats non-date explicit end markers (for example, `End During Move-Out`) as recurring lease-end fallbacks when charges are not one-time, preventing monthly charges from collapsing into one-time behavior; `web/views.py` now builds a normalized run-scoped property name lookup (metadata + snapshots + actual/expected detail) and uses it in portfolio/property/lease routes so property names reliably render instead of `Property <id>` fallbacks; `templates/property.html` and `templates/lease.html` page titles now display resolved property names when available
+- **2026-07-23**: Added Tier 4 cross-interval matching and AR API pagination to fix Bixby Kennesaw and Cobalt Row false discrepancies: `audit_engine/reconcile.py` adds `_match_cross_interval()` as Step 3D — matches unmatched AR transactions to scheduled charges across lease intervals using `LEASE_ID` + `AR_CODE_ID` + `AUDIT_MONTH` + amount tolerance, with `AR_CODE_ID` normalized to string on both sides to fix integer/string type mismatch, `claimed_sched_ids` set to prevent double-claiming, and exact-amount preference over tolerance-range when multiple candidates exist; `audit_engine/api_ingest.py` adds `_fetch_all_ar_pages()` to paginate `getLeaseArTransactions` 500 leases/page (matching existing lease-details pagination), fixing 300-second timeout on large properties; `web/views.py` tightens `has_customer_id` check to require non-empty, non-NaN customer_id before rendering Open in Entrata button; result: 99.80% portfolio match rate, unit-transfer false mirror-image discrepancies eliminated
 - **2026-03-05**: Externalized lease-term mapping configuration and wired AR-code human-readable labels: added editable rules file `lease_term_mapping_config.json` (loaded by `audit_engine/lease_term_rules.py` via `get_term_to_ar_code_rules()` with env override `LEASE_TERM_RULES_CONFIG_PATH` and safe fallback defaults); added AR code name reference ingestion from `ar_code_name_usage_map.json` for display formatting; updated `audit_engine/entrata_lease_terms.py` to use config-driven primary AR code defaults for extracted terms and to emit human-readable AR labels in lease expectation overlay messages; updated `audit_engine/mappings.py` to apply AR name enrichment from the AR code map and log unknown AR codes not present in the allowlist
 - **2026-03-05**: Reduced false exception noise and improved write/read-path performance: `audit_engine/reconcile.py` now carries bucket-level reversal/deleted activity flags and classifies zero-net reversed/deleted buckets as `matched` (suppressing false `scheduled_not_billed` exceptions for reversal pairs); `storage/service.py` now supports context-aware Graph `$batch` sizing via `SHAREPOINT_BATCH_SIZE_AUDITRUNS`, `SHAREPOINT_BATCH_SIZE_SNAPSHOTS`, and fallback `SHAREPOINT_BATCH_SIZE` (bounded to 1–20); `web/views.py` now reduces property-scoped overlay baseline discovery from `storage.list_runs(limit=50)` to `limit=2` in both upload flows
 - **2026-03-05**: Improved AR↔scheduled primary linkage and safe prefilter controls: `audit_engine/api_ingest.py` now persists raw Entrata scheduled charge IDs (`SCHEDULED_CHARGE_ID`) alongside synthetic scheduled row IDs; `audit_engine/mappings.py`, `audit_engine/normalize.py`, `audit_engine/expand.py`, and `audit_engine/reconcile.py` now carry and prioritize raw scheduled charge IDs for primary matching (`SCHEDULED_CHARGE_ID_LINK` → `SCHEDULED_CHARGE_ID`, with fallback to synthetic keys); `storage/service.py` now includes async metrics/snapshot-validation execution and storage stage timers; `web/views.py` adds deterministic raw-date normalization + optional guarded early audit-window prefiltering (`EARLY_AUDIT_WINDOW_PREFILTER`) with parity logging

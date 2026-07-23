@@ -911,6 +911,84 @@ def _fetch_all_lease_details_pages(
 
 
 
+def _fetch_all_ar_pages(
+    endpoint_url: str,
+    api_key: str,
+    api_key_header: str,
+    method_name: str,
+    version: str,
+    params: dict[str, Any],
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    """Call getLeaseArTransactions repeatedly until all pages are collected, then return a
+    merged payload whose lease list contains every lease node across all pages."""
+
+    def _is_page_overflow_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "page_no" in msg and "value must be between" in msg
+
+    parsed = urlparse(endpoint_url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+
+    qs["per_page"] = ["500"]
+    per_page = 500
+
+    all_lease_nodes: list[dict[str, Any]] = []
+    first_payload: dict[str, Any] | None = None
+    page_no = 1
+
+    while True:
+        qs["page_no"] = [str(page_no)]
+        page_url = urlunparse(parsed._replace(query=urlencode({k: v[0] for k, v in qs.items()})))
+
+        try:
+            payload = _post_method(
+                endpoint_url=page_url,
+                api_key=api_key,
+                api_key_header=api_key_header,
+                method_name=method_name,
+                version=version,
+                params=params,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            if _is_page_overflow_error(exc):
+                print(
+                    "[AR API PAGINATION] "
+                    f"Reached Entrata page boundary at page={page_no}; stopping pagination."
+                )
+                break
+            raise
+
+        if first_payload is None:
+            first_payload = payload
+
+        page_nodes = _extract_ar_lease_nodes(payload)
+        all_lease_nodes.extend(page_nodes)
+        print(
+            f"[AR API PAGINATION] page={page_no}, "
+            f"leases_on_page={len(page_nodes)}, total_so_far={len(all_lease_nodes)}"
+        )
+
+        if len(page_nodes) < per_page:
+            break
+        page_no += 1
+
+    if first_payload is None:
+        return {}
+
+    # Stitch all collected lease nodes into a single merged payload
+    merged = dict(first_payload)
+    response = dict(merged.get("response") or {})
+    result = dict(response.get("result") or {})
+    leases = dict(result.get("leases") or {})
+    leases["lease"] = all_lease_nodes
+    result["leases"] = leases
+    response["result"] = result
+    merged["response"] = response
+    return merged
+
+
 def _is_other_income_lease_node(node: dict[str, Any]) -> bool:
     """Return True if this lease node is an Other Income lease.
 
@@ -1008,7 +1086,7 @@ def fetch_property_api_sources(
             if transaction_to_date:
                 ar_params["transactionToDate"] = transaction_to_date
 
-            ar_payload = _post_method(
+            ar_payload = _fetch_all_ar_pages(
                 endpoint_url=ar_url,
                 api_key=api_key,
                 api_key_header=api_key_header,
