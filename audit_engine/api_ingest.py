@@ -267,6 +267,7 @@ def fetch_entrata_property_picklist() -> list[dict[str, str]]:
         "PropertyName",
         "LEGACY_ENTRATA_ID",
         "LegacyEntrataId",
+        "DATE_MGMT_TAKEOVER",
     ]
     endpoint = f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists/{list_id}/items"
     params = {
@@ -283,6 +284,12 @@ def fetch_entrata_property_picklist() -> list[dict[str, str]]:
             fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
             property_name = _to_str(fields.get("PROPERTY_NAME") or fields.get("PropertyName"))
             property_id = _to_legacy_entrata_property_id(fields.get("LEGACY_ENTRATA_ID") or fields.get("LegacyEntrataId"))
+            mgmt_takeover_date = _to_str(
+                fields.get("DATE_MGMT_TAKEOVER") or
+                fields.get("Date_Mgmt_Takeover") or
+                fields.get("DateMgmtTakeover") or
+                ""
+            )
 
             # Skip if missing required fields or if require_reportable and no LEGACY_ENTRATA_ID
             if require_reportable and not property_id:
@@ -293,6 +300,7 @@ def fetch_entrata_property_picklist() -> list[dict[str, str]]:
             rows.append({
                 "property_id": property_id,
                 "property_name": property_name,
+                "mgmt_takeover_date": mgmt_takeover_date,
             })
 
         next_url = _to_str(page_payload.get("@odata.nextLink") or "") or None
@@ -306,6 +314,7 @@ def fetch_entrata_property_picklist() -> list[dict[str, str]]:
         deduped[pid] = {
             "property_id": pid,
             "property_name": _to_str(row.get("property_name")),
+            "mgmt_takeover_date": _to_str(row.get("mgmt_takeover_date") or ""),
         }
 
     result_rows = list(deduped.values())

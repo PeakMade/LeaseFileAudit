@@ -193,6 +193,19 @@ def cached_load_api_property_picklist(session_cache_key: str = None, entrata_env
     return fetch_entrata_property_picklist()
 
 
+def _get_property_mgmt_takeover_date(property_id) -> str:
+    """Look up management takeover date for a property from the cached picklist. Returns ISO date string or empty string."""
+    try:
+        picklist = cached_load_api_property_picklist()
+        pid_str = str(int(float(property_id)))
+        for entry in (picklist or []):
+            if str(entry.get("property_id", "")).strip() == pid_str:
+                return str(entry.get("mgmt_takeover_date") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 @cache.memoize(timeout=14400)
 def cached_load_bucket_results(run_id: str, property_id=None, lease_interval_id=None, session_cache_key: str = None):
     """Cached wrapper for bucket results by run and optional scope."""
@@ -4944,7 +4957,36 @@ def property_view(property_id: str, run_id: str = None):
         property_exception_count = int(
             sum(int(_safe_float(lease.get('exception_count'), 0)) for lease in lease_summary)
         )
-        
+
+        # Management takeover date — fetched from Properties_0 picklist.
+        mgmt_takeover_date_raw = _get_property_mgmt_takeover_date(property_id)
+        mgmt_takeover_date_display = ""
+        pre_takeover_exception_count = 0
+        if mgmt_takeover_date_raw:
+            try:
+                _takeover_dt = pd.to_datetime(mgmt_takeover_date_raw, errors='coerce', utc=True).normalize()
+                if _takeover_dt is not pd.NaT and not pd.isna(_takeover_dt):
+                    # Normalize to tz-naive for display and comparison
+                    _takeover_naive = _takeover_dt.tz_localize(None) if _takeover_dt.tzinfo is None else _takeover_dt.tz_convert('UTC').tz_localize(None)
+                    mgmt_takeover_date_display = f"{_takeover_naive.month}/{_takeover_naive.day}/{_takeover_naive.year}"
+                    # Count exception rows (unresolved) where AUDIT_MONTH < takeover date
+                    _am_col = CanonicalField.AUDIT_MONTH.value
+                    _st_col = CanonicalField.STATUS.value
+                    if not all_property_buckets.empty and _am_col in all_property_buckets.columns and _st_col in all_property_buckets.columns:
+                        _audit_months = pd.to_datetime(all_property_buckets[_am_col], errors='coerce', utc=False)
+                        try:
+                            _audit_months = _audit_months.dt.tz_localize(None)
+                        except Exception:
+                            pass
+                        _pre_mask = (
+                            _audit_months < _takeover_naive
+                        ) & (
+                            ~all_property_buckets[_st_col].isin({config.reconciliation.status_matched, 'SCHEDULED_ONLY'})
+                        )
+                        pre_takeover_exception_count = int(_pre_mask.sum())
+            except Exception:
+                mgmt_takeover_date_display = mgmt_takeover_date_raw
+
         response = render_template(
             'property.html',
             run_id=run_id,
@@ -4954,6 +4996,8 @@ def property_view(property_id: str, run_id: str = None):
             kpis=property_kpis,
             lease_summary=lease_summary,
             exception_count=property_exception_count,
+            mgmt_takeover_date=mgmt_takeover_date_display,
+            pre_takeover_exception_count=pre_takeover_exception_count,
             all_runs=[
                 {
                     'run_id': run_id,

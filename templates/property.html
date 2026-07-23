@@ -35,6 +35,36 @@
             {% endif %}
         </div>
     </div>
+
+    {% if mgmt_takeover_date %}
+    <div class="row mb-3">
+        <div class="col">
+            {% if pre_takeover_exception_count > 0 %}
+            <div class="alert mb-0 d-flex align-items-start gap-2" role="alert"
+                 style="background-color:#fff8e1; border:1px solid #ffe082; border-radius:6px; font-size:0.85rem; padding:10px 14px;">
+                <i class="fas fa-exclamation-triangle mt-1" style="color:#f59e0b; flex-shrink:0;"></i>
+                <div>
+                    <strong>Management Takeover: {{ mgmt_takeover_date }}</strong>
+                    &nbsp;&mdash;&nbsp;
+                    <strong style="color:#92400e;">{{ pre_takeover_exception_count }} discrepanc{{ 'y' if pre_takeover_exception_count == 1 else 'ies' }}</strong>
+                    in this audit fall before your management takeover date.
+                    Lease records were not under your management for those months —
+                    these discrepancies are expected and are not actionable.
+                </div>
+            </div>
+            {% else %}
+            <div class="alert mb-0 d-flex align-items-start gap-2" role="alert"
+                 style="background-color:#e8f4fd; border:1px solid #b8daff; border-radius:6px; font-size:0.85rem; padding:10px 14px;">
+                <i class="fas fa-calendar-check mt-1" style="color:#0d6efd; flex-shrink:0;"></i>
+                <div>
+                    <strong>Management Takeover: {{ mgmt_takeover_date }}</strong>
+                    &nbsp;&mdash;&nbsp; All audit data falls within your management period.
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
     </div>
     
     <script>
