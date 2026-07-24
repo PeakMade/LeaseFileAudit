@@ -555,37 +555,27 @@ Each transaction is grouped into a "bucket" defined by:
 
 ### Matching Algorithm (file: `reconcile.py`)
 
-#### Tier 1: PRIMARY Match (Exact)
-```python
-# Group by bucket key
-expected_grouped = expected.groupby(BUCKET_KEY).sum()
-actual_grouped = actual.groupby(BUCKET_KEY).sum()
+The engine performs **transaction-level (line-item) matching** — every individual AR transaction is paired to the specific scheduled charge that generated it. Records matched in an earlier tier are removed from the pool before later tiers run, so each transaction is matched exactly once.
 
-# Pandas merge (hash join under the hood)
-matched = expected_grouped.merge(actual_grouped, on=BUCKET_KEY, how='inner')
+#### Tier 1: PRIMARY Match (Foreign key)
+- Uses `SCHEDULED_CHARGE_ID_LINK` embedded directly on each AR transaction by Entrata
+- This field is a foreign key pointing to the exact scheduled charge that created the AR record
+- Implemented as a hash lookup — O(1) per transaction
+- Covers the majority of modern (post-2025) Entrata data
+- Most reliable tier: no ambiguity possible when the link is present
 
-# STATUS assignment:
-if expected_total == actual_total:
-    STATUS = "MATCHED"
-elif expected_total > actual_total:
-    STATUS = "SCHEDULED_NOT_BILLED"  (undercharge)
-elif actual_total > expected_total:
-    STATUS = "BILLED_NOT_SCHEDULED"  (overcharge)
-else:
-    STATUS = "AMOUNT_MISMATCH"
-```
+#### Tier 2: SECONDARY Match (Same-interval, date-validated fuzzy match)
+- Handles AR transactions with no `SCHEDULED_CHARGE_ID_LINK` (older/pre-2025 data, manual posts)
+- Groups unmatched records by `(LEASE_INTERVAL_ID, AR_CODE_ID)`
+- Within each group: AR `POST_DATE` must fall within scheduled charge `PERIOD_START → PERIOD_END` window
+- Amount must match within configured tolerance
+- Catches pre-2025 data where the foreign key wasn't populated by Entrata
 
-**Performance**: O(n) via hash grouping (pandas groupby uses hash tables)
-
-#### Tier 2: SECONDARY Match (Amount-only, different buckets)
-- Matches scheduled charges to AR transactions with different bucket keys but same amount
-- Useful for charges posted to wrong AR code or wrong lease
-- Still flags as variance but helps explain discrepancies
-
-#### Tier 3: TERTIARY Match (Date mismatch)
-- Matches charges posted in wrong month
-- Same property, lease, AR code, but different month
-- Helps identify timing issues vs true missing charges
+#### Tier 3: TERTIARY Match (Same-interval, date relaxed)
+- Same `LEASE_INTERVAL_ID + AR_CODE_ID` grouping as Tier 2
+- Specifically targets records where `POST_DATE` is **outside** the scheduled `PERIOD_START → PERIOD_END` window (confirmed date mismatch)
+- Matches by amount tolerance, ignoring the date constraint
+- Prevents false split exceptions: a single late-posted charge would otherwise appear as two false exceptions (`BILLED_NOT_SCHEDULED` + `SCHEDULED_NOT_BILLED`); Tier 3 collapses these into one `TERTIARY_DATE_MISMATCH` flag
 
 #### Tier 4: CROSS-INTERVAL Match (Unit transfers / renewals, added 2026-07-23)
 - Handles leases where a resident transfers units mid-tenancy
@@ -608,31 +598,9 @@ VARIANCE > 0  → Overcharged (billed more than expected)
 VARIANCE = 0  → Perfectly matched
 ```
 
-### Why Hash-Based Grouping?
+### Performance Characteristics
 
-**Naive Approach** (O(n²)):
-```python
-for scheduled in scheduled_charges:
-    for ar in ar_transactions:
-        if matches(scheduled, ar):
-            # Found match
-```
-Performance: 10,000 scheduled × 50,000 AR = 500M comparisons 😱
-
-**Hash-Based Grouping** (O(n)):
-```python
-# Pandas internally creates hash tables:
-scheduled_hash = {
-    (property, lease, ar_code, month): [charges],
-    ...
-}
-actual_hash = {
-    (property, lease, ar_code, month): [transactions],
-    ...
-}
-# Merge = hash lookup per key
-```
-Performance: 10,000 + 50,000 = 60,000 operations ✅
+All four tiers use pandas `groupby` and vectorized merge operations. The dominant cost in a full audit run is network I/O (Entrata API pagination, SharePoint batch writes), not reconciliation computation. Typical reconciliation time for a property with 1,000–5,000 AR transactions is under 1 second in memory. The audit engine is not the bottleneck.
 
 ### Exception Status Types
 
@@ -2167,6 +2135,7 @@ portfolio() / property_view() / lease_view()  ← web/views.py
 - **2026-03-09**: Tightened `AMENITY_PREMIUM` extraction configuration in `lease_term_extraction_config.json` to only evaluate Exclusive Bedspace Addendum focus context (`source_order: ["focus"]`) and ignore floorplan multi-option/potential-fee listing language (for example `Floorplan Rate Addendum`, `premium features below`, `potential rent range`) so only signed addendum-specific premium amounts are extracted
 - **2026-03-09**: Centralized term-specific lease extraction heuristics into JSON configuration: added `lease_term_extraction_config.json` as the single source for `BASE_RENT`, `APPLICATION_FEE`, `ADMIN_FEE`, `AMENITY_PREMIUM`, `PARKING`, and `PET_RENT` extraction patterns/tokens/filters; added loader/access helpers in `audit_engine/lease_term_extraction_rules.py`; updated `audit_engine/entrata_lease_terms.py` to consume config-driven page hints, anchor tokens, regex patterns, exclusion signals, monthly/one-time context signals, and admin application-leak guard patterns instead of hardcoded term regex lists
 - **2026-03-06**: Fixed API parking recurrence classification and property-name rendering across views: `audit_engine/api_ingest.py` now treats non-date explicit end markers (for example, `End During Move-Out`) as recurring lease-end fallbacks when charges are not one-time, preventing monthly charges from collapsing into one-time behavior; `web/views.py` now builds a normalized run-scoped property name lookup (metadata + snapshots + actual/expected detail) and uses it in portfolio/property/lease routes so property names reliably render instead of `Property <id>` fallbacks; `templates/property.html` and `templates/lease.html` page titles now display resolved property names when available
+- **2026-07-24**: Corrected `MASTER_DOCUMENTATION.md` and `RECONCILIATION_FRAMEWORK_IMPLEMENTATION.md` reconciliation engine descriptions: replaced stale bucket-level GROUP BY pseudocode for Tiers 1–3 with accurate transaction-level (line-item) matching descriptions; Tier 1 correctly documented as `SCHEDULED_CHARGE_ID_LINK` foreign key lookup; Tier 2 as same-interval date-validated fuzzy match; Tier 3 as same-interval date-relaxed match that collapses late-post false-split exceptions into a single `TERTIARY_DATE_MISMATCH` flag
 - **2026-07-23**: Added management takeover date banner to property audit view: `audit_engine/api_ingest.py` now fetches `DATE_MGMT_TAKEOVER` from the `Properties_0` SharePoint list alongside property name/ID (no additional API call — piggybacks the existing picklist fetch, cached 1 hour); `web/views.py` adds `_get_property_mgmt_takeover_date()` helper that resolves the takeover date for a property from the cached picklist, then in `property_view()` normalizes the ISO 8601 timezone-aware date to tz-naive, formats it as M/D/YYYY, and counts how many unresolved exception rows have `AUDIT_MONTH` before the takeover date; `templates/property.html` renders a contextual banner under the property header — amber warning when pre-takeover exceptions exist ("N discrepancies fall before your management takeover date — lease records were not under your management for those months — these discrepancies are expected and are not actionable"), blue info when all data falls within management period; banner is suppressed entirely when no takeover date is configured for the property
 - **2026-07-23**: Added Tier 4 cross-interval matching and AR API pagination to fix Bixby Kennesaw and Cobalt Row false discrepancies: `audit_engine/reconcile.py` adds `_match_cross_interval()` as Step 3D — matches unmatched AR transactions to scheduled charges across lease intervals using `LEASE_ID` + `AR_CODE_ID` + `AUDIT_MONTH` + amount tolerance, with `AR_CODE_ID` normalized to string on both sides to fix integer/string type mismatch, `claimed_sched_ids` set to prevent double-claiming, and exact-amount preference over tolerance-range when multiple candidates exist; `audit_engine/api_ingest.py` adds `_fetch_all_ar_pages()` to paginate `getLeaseArTransactions` 500 leases/page (matching existing lease-details pagination), fixing 300-second timeout on large properties; `web/views.py` tightens `has_customer_id` check to require non-empty, non-NaN customer_id before rendering Open in Entrata button; result: 99.80% portfolio match rate, unit-transfer false mirror-image discrepancies eliminated
 - **2026-03-05**: Externalized lease-term mapping configuration and wired AR-code human-readable labels: added editable rules file `lease_term_mapping_config.json` (loaded by `audit_engine/lease_term_rules.py` via `get_term_to_ar_code_rules()` with env override `LEASE_TERM_RULES_CONFIG_PATH` and safe fallback defaults); added AR code name reference ingestion from `ar_code_name_usage_map.json` for display formatting; updated `audit_engine/entrata_lease_terms.py` to use config-driven primary AR code defaults for extracted terms and to emit human-readable AR labels in lease expectation overlay messages; updated `audit_engine/mappings.py` to apply AR name enrichment from the AR code map and log unknown AR codes not present in the allowlist

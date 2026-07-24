@@ -7,10 +7,10 @@ This document describes the comprehensive reconciliation framework implemented i
 
 | Tier | Name | Match Key | Purpose |
 |------|------|-----------|---------|
-| 1 | Primary (Exact) | LEASE_INTERVAL_ID + AR_CODE_ID + AUDIT_MONTH + amount | Standard match |
-| 2 | Secondary | LEASE_INTERVAL_ID + AR_CODE_ID + AUDIT_MONTH (amount differs) | Amount mismatch |
-| 3 | Tertiary | LEASE_INTERVAL_ID + AR_CODE_ID (date window) | Date-shifted charges |
-| 4 | Cross-Interval | LEASE_ID + AR_CODE_ID + AUDIT_MONTH + amount | Unit transfers / renewals |
+| 1 | PRIMARY | `SCHEDULED_CHARGE_ID_LINK` foreign key | Direct foreign key — AR transaction points to the exact scheduled charge that generated it; most reliable; covers majority of post-2025 Entrata data |
+| 2 | SECONDARY | `LEASE_INTERVAL_ID` + `AR_CODE_ID` + `POST_DATE` within `PERIOD_START→PERIOD_END` + amount tolerance | Fuzzy match for pre-2025 / manual posts with no link field |
+| 3 | TERTIARY | `LEASE_INTERVAL_ID` + `AR_CODE_ID` + amount tolerance (date ignored) | Date-relaxed match for late posts / backdated corrections; collapses false split-exceptions into `TERTIARY_DATE_MISMATCH` |
+| 4 | CROSS_INTERVAL | `LEASE_ID` + `AR_CODE_ID` + `AUDIT_MONTH` + amount tolerance | Cross-interval match for unit transfers; uses parent lease ID not interval ID |
 
 ### Tier 4: Cross-Interval Matching (added 2026-07-23)
 Handles properties with frequent unit transfers (e.g. student housing). When a resident moves units, Entrata creates a new lease interval with the scheduled charges, but actual AR transactions stay on the old interval. Without this tier, every affected lease produces a false mirror-image discrepancy (same dollar amount as both undercharge and overcharge).
